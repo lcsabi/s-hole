@@ -13,6 +13,12 @@ import (
 
 const cacheMaxAge = 24 * time.Hour
 
+// httpClient has a generous timeout to handle slow mirrors; 256 MB cap prevents
+// a runaway download from filling the disk.
+var httpClient = &http.Client{Timeout: 60 * time.Second}
+
+const maxBodyBytes = 256 << 20 // 256 MB
+
 // Update downloads (or loads from cache) all lists and replaces the store.
 func Update(store *Store, urls []string, cacheDir string) error {
 	var all []string
@@ -39,7 +45,7 @@ func fetchList(url, cacheDir string) ([]string, error) {
 		}
 	}
 
-	resp, err := http.Get(url) //nolint:gosec // URL comes from user config
+	resp, err := httpClient.Get(url) //nolint:gosec // URL comes from operator config
 	if err != nil {
 		// Fall back to stale cache if download fails.
 		if _, statErr := os.Stat(cachePath); statErr == nil {
@@ -50,13 +56,22 @@ func fetchList(url, cacheDir string) ([]string, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		// Do not write the error-page body to the cache file.
+		if _, statErr := os.Stat(cachePath); statErr == nil {
+			fmt.Printf("[blocklist] HTTP %d for %s, using stale cache\n", resp.StatusCode, url)
+			return loadFromFile(cachePath)
+		}
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
 	f, err := os.Create(cachePath)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 
-	tee := io.TeeReader(resp.Body, f)
+	tee := io.TeeReader(io.LimitReader(resp.Body, maxBodyBytes), f)
 	return parseHostsFormat(tee)
 }
 

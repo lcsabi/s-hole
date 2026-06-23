@@ -2,7 +2,6 @@ package dns
 
 import (
 	"fmt"
-	"sync"
 
 	"github.com/miekg/dns"
 )
@@ -20,29 +19,32 @@ func NewServer(addr string, handler dns.Handler) *Server {
 	}
 }
 
-// Start runs both UDP and TCP listeners. It blocks until both have started
-// or one returns an error.
+// Start runs both UDP and TCP listeners and blocks until one exits.
+// Each goroutine always sends exactly one value (nil or error), so the
+// caller can drain both slots and neither goroutine ever leaks.
 func (s *Server) Start() error {
 	errs := make(chan error, 2)
-	var wg sync.WaitGroup
 
 	for _, srv := range []*dns.Server{s.udp, s.tcp} {
-		wg.Add(1)
 		go func(srv *dns.Server) {
-			defer wg.Done()
 			fmt.Printf("[dns] listening on %s (%s)\n", srv.Addr, srv.Net)
-			if err := srv.ListenAndServe(); err != nil {
-				errs <- fmt.Errorf("%s: %w", srv.Net, err)
-			}
+			errs <- srv.ListenAndServe()
 		}(srv)
 	}
 
-	// Return the first error, if any.
-	go func() {
-		wg.Wait()
-		close(errs)
-	}()
+	// Block on the first result.
+	if err := <-errs; err != nil {
+		// Drain the second slot so the other goroutine can exit;
+		// log it if it also failed so the error is not silently lost.
+		go func() {
+			if err2 := <-errs; err2 != nil {
+				fmt.Printf("[dns] secondary server error: %v\n", err2)
+			}
+		}()
+		return fmt.Errorf("dns: %w", err)
+	}
 
+	// First server stopped cleanly (shutdown); wait for the second.
 	return <-errs
 }
 

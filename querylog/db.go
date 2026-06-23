@@ -3,6 +3,7 @@ package querylog
 import (
 	"database/sql"
 	"fmt"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -35,6 +36,7 @@ type DBLogger struct {
 	db            *sql.DB
 	ch            chan entry
 	done          chan struct{}
+	wg            sync.WaitGroup
 	logQueries    string
 	flushInterval time.Duration
 }
@@ -69,6 +71,7 @@ func NewDBLogger(path, logQueries string, flushInterval time.Duration) (*DBLogge
 		logQueries:    logQueries,
 		flushInterval: flushInterval,
 	}
+	l.wg.Add(1)
 	go l.run()
 	return l, nil
 }
@@ -87,12 +90,16 @@ func (d *DBLogger) Log(clientIP, domain string, blocked bool) {
 	}
 }
 
+// Close signals the writer goroutine to flush remaining entries and waits for
+// it to finish before closing the database. This prevents data loss on shutdown.
 func (d *DBLogger) Close() error {
 	close(d.done)
+	d.wg.Wait()
 	return d.db.Close()
 }
 
 func (d *DBLogger) run() {
+	defer d.wg.Done()
 	batch := make([]entry, 0, 100)
 	tick := time.NewTicker(d.flushInterval)
 	defer tick.Stop()
@@ -111,9 +118,16 @@ func (d *DBLogger) run() {
 				batch = batch[:0]
 			}
 		case <-d.done:
-			// Drain remaining entries before exit.
-			for len(d.ch) > 0 {
-				batch = append(batch, <-d.ch)
+			// Non-blocking drain: use select so len(ch) is not sampled
+			// separately from the receive (avoids TOCTOU race).
+		drain:
+			for {
+				select {
+				case e := <-d.ch:
+					batch = append(batch, e)
+				default:
+					break drain
+				}
 			}
 			if len(batch) > 0 {
 				d.flush(batch)
@@ -142,7 +156,9 @@ func (d *DBLogger) flush(batch []entry) {
 		if e.blocked {
 			blocked = 1
 		}
-		stmt.Exec(e.ts.Format(time.RFC3339), e.clientIP, e.domain, blocked)
+		if _, err := stmt.Exec(e.ts.Format(time.RFC3339), e.clientIP, e.domain, blocked); err != nil {
+			fmt.Printf("[querylog] db insert: %v\n", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		fmt.Printf("[querylog] db commit: %v\n", err)

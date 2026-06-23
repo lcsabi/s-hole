@@ -1,6 +1,9 @@
 package blocklist
 
-import "sync"
+import (
+	"strings"
+	"sync"
+)
 
 // Store is a thread-safe in-memory set of blocked domains.
 type Store struct {
@@ -82,15 +85,5 @@ func normalize(d string) string {
 	if len(d) > 0 && d[len(d)-1] == '.' {
 		d = d[:len(d)-1]
 	}
-	return toLower(d)
-}
-
-func toLower(s string) string {
-	b := []byte(s)
-	for i, c := range b {
-		if c >= 'A' && c <= 'Z' {
-			b[i] = c + 32
-		}
-	}
-	return string(b)
+	return strings.ToLower(d)
 }

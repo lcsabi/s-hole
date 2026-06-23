@@ -1,14 +1,17 @@
 package api
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/laszlo/s-hole/blocklist"
 	"github.com/laszlo/s-hole/querylog"
@@ -20,10 +23,12 @@ var staticFiles embed.FS
 
 // Server exposes the admin REST API and serves the web UI.
 type Server struct {
-	counter  *stats.Counter
-	db       *querylog.DBLogger // nil when query_db is not configured
-	store    *blocklist.Store
-	reloadFn func()
+	counter    *stats.Counter
+	db         *querylog.DBLogger // nil when query_db is not configured
+	store      *blocklist.Store
+	reloadFn   func()
+	reloadMu   sync.Mutex
+	httpServer *http.Server
 }
 
 func New(counter *stats.Counter, db *querylog.DBLogger, store *blocklist.Store, reloadFn func()) *Server {
@@ -32,7 +37,20 @@ func New(counter *stats.Counter, db *querylog.DBLogger, store *blocklist.Store, 
 
 func (s *Server) ListenAndServe(addr string) error {
 	fmt.Printf("[api] admin UI → http://%s\n", addr)
-	return http.ListenAndServe(addr, s.handler())
+	hs := &http.Server{Addr: addr, Handler: s.handler()}
+	s.httpServer = hs
+	if err := hs.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}
+
+// Shutdown gracefully stops the HTTP server, waiting up to the deadline in ctx.
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s.httpServer == nil {
+		return nil
+	}
+	return s.httpServer.Shutdown(ctx)
 }
 
 func (s *Server) handler() http.Handler {
@@ -121,7 +139,14 @@ func (s *Server) handleWhitelistRemove(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleReload(w http.ResponseWriter, _ *http.Request) {
-	go s.reloadFn()
+	if !s.reloadMu.TryLock() {
+		writeJSON(w, map[string]string{"status": "reload already in progress"})
+		return
+	}
+	go func() {
+		defer s.reloadMu.Unlock()
+		s.reloadFn()
+	}()
 	writeJSON(w, map[string]string{"status": "reload triggered"})
 }
 

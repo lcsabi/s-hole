@@ -23,6 +23,7 @@ type Cache struct {
 	mu      sync.RWMutex
 	entries map[string]*entry
 	maxSize int
+	stop    chan struct{}
 
 	hits   uint64
 	misses uint64
@@ -32,9 +33,15 @@ func New(maxSize int) *Cache {
 	c := &Cache{
 		entries: make(map[string]*entry, maxSize),
 		maxSize: maxSize,
+		stop:    make(chan struct{}),
 	}
 	go c.runCleanup()
 	return c
+}
+
+// Close stops the background cleanup goroutine.
+func (c *Cache) Close() {
+	close(c.stop)
 }
 
 // Get returns a cloned response for q with TTLs decremented, or (nil, false).
@@ -96,20 +103,25 @@ func (c *Cache) Stats() (hits, misses uint64, size int) {
 func (c *Cache) runCleanup() {
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
-	for range tick.C {
-		now := time.Now()
-		c.mu.Lock()
-		for k, e := range c.entries {
-			if now.Sub(e.cached) >= time.Duration(e.minTTL)*time.Second {
-				delete(c.entries, k)
+	for {
+		select {
+		case <-tick.C:
+			now := time.Now()
+			c.mu.Lock()
+			for k, e := range c.entries {
+				if now.Sub(e.cached) >= time.Duration(e.minTTL)*time.Second {
+					delete(c.entries, k)
+				}
 			}
+			c.mu.Unlock()
+		case <-c.stop:
+			return
 		}
-		c.mu.Unlock()
 	}
 }
 
 func key(q dns.Question) string {
-	return q.Name + "\x00" + dns.TypeToString[q.Qtype]
+	return q.Name + "\x00" + dns.TypeToString[q.Qtype] + "\x00" + dns.ClassToString[q.Qclass]
 }
 
 func decrementTTLs(msg *dns.Msg, elapsed uint32) {

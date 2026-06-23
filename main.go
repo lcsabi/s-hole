@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -60,6 +61,9 @@ func main() {
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	if err := cfg.Validate(); err != nil {
 		log.Fatalf("config: %v", err)
 	}
 	refreshInterval, err := cfg.ParsedRefreshInterval()
@@ -131,6 +135,12 @@ func main() {
 		fmt.Println("[main] shutting down...")
 		counter.Print()
 		dnsServer.Shutdown()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		apiServer.Shutdown(ctx)
+		if dnsCache != nil {
+			dnsCache.Close()
+		}
 		fileLog.Close()
 		if db != nil {
 			db.Close()

@@ -85,6 +85,21 @@ func (c *Config) applyDefaults() {
 	}
 }
 
+// Validate checks enumerated fields and returns an error on invalid values.
+func (c *Config) Validate() error {
+	switch c.BlockMode {
+	case "zero", "nxdomain":
+	default:
+		return fmt.Errorf("block_mode %q: must be \"zero\" or \"nxdomain\"", c.BlockMode)
+	}
+	switch c.LogQueries {
+	case "all", "blocked", "none":
+	default:
+		return fmt.Errorf("log_queries %q: must be \"all\", \"blocked\", or \"none\"", c.LogQueries)
+	}
+	return nil
+}
+
 func (c *Config) ParsedDBFlushInterval() (time.Duration, error) {
 	d, err := time.ParseDuration(c.DBFlushInterval)
 	if err != nil {

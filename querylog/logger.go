@@ -46,16 +46,22 @@ func (l *FileLogger) Close() error {
 	return nil
 }
 
-// Multi fans out Log calls to multiple loggers.
-type Multi struct {
-	loggers []interface {
-		Log(clientIP, domain string, blocked bool)
-	}
+// Logger is the interface that all query log backends must implement.
+type Logger interface {
+	Log(clientIP, domain string, blocked bool)
 }
 
-func NewMulti(loggers ...interface {
-	Log(clientIP, domain string, blocked bool)
-}) *Multi {
+// Compile-time interface checks.
+var _ Logger = (*FileLogger)(nil)
+var _ Logger = (*DBLogger)(nil)
+var _ Logger = (*Multi)(nil)
+
+// Multi fans out Log calls to multiple loggers.
+type Multi struct {
+	loggers []Logger
+}
+
+func NewMulti(loggers ...Logger) *Multi {
 	return &Multi{loggers: loggers}
 }
 

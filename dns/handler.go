@@ -69,7 +69,9 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		if cached, ok := h.cache.Get(q); ok {
 			cached.Id = req.Id
 			h.counter.RecordCacheHit()
-			w.WriteMsg(cached)
+			if err := w.WriteMsg(cached); err != nil {
+				fmt.Printf("[dns] write cached: %v\n", err)
+			}
 			return
 		}
 	}
@@ -85,7 +87,9 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		h.cache.Set(q, resp)
 	}
 
-	w.WriteMsg(resp)
+	if err := w.WriteMsg(resp); err != nil {
+		fmt.Printf("[dns] write: %v\n", err)
+	}
 }
 
 func (h *Handler) writeSinkhole(w dns.ResponseWriter, req *dns.Msg, q dns.Question) {
@@ -95,7 +99,9 @@ func (h *Handler) writeSinkhole(w dns.ResponseWriter, req *dns.Msg, q dns.Questi
 
 	if h.blockMode == "nxdomain" {
 		resp.SetRcode(req, dns.RcodeNameError)
-		w.WriteMsg(resp)
+		if err := w.WriteMsg(resp); err != nil {
+			fmt.Printf("[dns] write sinkhole: %v\n", err)
+		}
 		return
 	}
 
@@ -113,7 +119,9 @@ func (h *Handler) writeSinkhole(w dns.ResponseWriter, req *dns.Msg, q dns.Questi
 		})
 	}
 	// For MX, TXT, etc. return NOERROR with no answer — clients won't retry.
-	w.WriteMsg(resp)
+	if err := w.WriteMsg(resp); err != nil {
+		fmt.Printf("[dns] write sinkhole: %v\n", err)
+	}
 }
 
 func clientAddr(w dns.ResponseWriter) string {

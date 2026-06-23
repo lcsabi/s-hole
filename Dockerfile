@@ -17,7 +17,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o s-hole .
 
 # ── Runtime stage ─────────────────────────────────────────────
-FROM alpine:latest
+FROM alpine:3.21
 
 # ca-certificates: required for HTTPS blocklist downloads.
 # tzdata: optional, allows log timestamps in local time.

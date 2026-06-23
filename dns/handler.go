@@ -1,0 +1,129 @@
+package dns
+
+import (
+	"fmt"
+	"net"
+
+	"github.com/laszlo/s-hole/blocklist"
+	"github.com/laszlo/s-hole/cache"
+	"github.com/laszlo/s-hole/stats"
+	"github.com/miekg/dns"
+)
+
+// Logger is a minimal interface so callers can inject any writer.
+type Logger interface {
+	Log(clientIP, domain string, blocked bool)
+}
+
+type Handler struct {
+	store     *blocklist.Store
+	counter   *stats.Counter
+	upstreams []string
+	logger    Logger
+	blockMode string // "zero" or "nxdomain"
+	blockTTL  uint32
+	cache     *cache.Cache // nil when caching is disabled
+}
+
+func NewHandler(
+	store *blocklist.Store,
+	counter *stats.Counter,
+	upstreams []string,
+	logger Logger,
+	blockMode string,
+	blockTTL uint32,
+	c *cache.Cache,
+) *Handler {
+	return &Handler{
+		store:     store,
+		counter:   counter,
+		upstreams: upstreams,
+		logger:    logger,
+		blockMode: blockMode,
+		blockTTL:  blockTTL,
+		cache:     c,
+	}
+}
+
+func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
+	if len(req.Question) == 0 {
+		dns.HandleFailed(w, req)
+		return
+	}
+
+	q := req.Question[0]
+	domain := q.Name // already has trailing dot
+	clientIP := clientAddr(w)
+
+	blocked := h.store.IsBlocked(domain)
+	h.counter.RecordQuery(clientIP, domain, blocked)
+	h.logger.Log(clientIP, domain, blocked)
+
+	if blocked {
+		h.writeSinkhole(w, req, q)
+		return
+	}
+
+	// Serve from cache if available — avoids upstream round-trip entirely.
+	if h.cache != nil {
+		if cached, ok := h.cache.Get(q); ok {
+			cached.Id = req.Id
+			h.counter.RecordCacheHit()
+			w.WriteMsg(cached)
+			return
+		}
+	}
+
+	resp, err := forward(req, h.upstreams)
+	if err != nil {
+		fmt.Printf("[dns] forward error: %v\n", err)
+		dns.HandleFailed(w, req)
+		return
+	}
+
+	if h.cache != nil {
+		h.cache.Set(q, resp)
+	}
+
+	w.WriteMsg(resp)
+}
+
+func (h *Handler) writeSinkhole(w dns.ResponseWriter, req *dns.Msg, q dns.Question) {
+	resp := new(dns.Msg)
+	resp.SetReply(req)
+	resp.Authoritative = true
+
+	if h.blockMode == "nxdomain" {
+		resp.SetRcode(req, dns.RcodeNameError)
+		w.WriteMsg(resp)
+		return
+	}
+
+	// Default: "zero" — return 0.0.0.0 / ::
+	switch q.Qtype {
+	case dns.TypeA:
+		resp.Answer = append(resp.Answer, &dns.A{
+			Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: h.blockTTL},
+			A:   net.IPv4zero,
+		})
+	case dns.TypeAAAA:
+		resp.Answer = append(resp.Answer, &dns.AAAA{
+			Hdr:  dns.RR_Header{Name: q.Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: h.blockTTL},
+			AAAA: net.IPv6zero,
+		})
+	}
+	// For MX, TXT, etc. return NOERROR with no answer — clients won't retry.
+	w.WriteMsg(resp)
+}
+
+func clientAddr(w dns.ResponseWriter) string {
+	addr := w.RemoteAddr()
+	if addr == nil {
+		return "unknown"
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return addr.String()
+	}
+	return host
+}

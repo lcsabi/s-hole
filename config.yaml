@@ -1,0 +1,53 @@
+listen: "0.0.0.0:53"
+
+upstreams:
+  - "1.1.1.1:53"
+  - "8.8.8.8:53"
+
+# Blocklist URLs — hosts-file format or plain domain-per-line.
+blocklists:
+  - "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
+  - "https://adaway.org/hosts.txt"
+
+# Domains to never block regardless of blocklist hits.
+whitelist:
+  # - "example.com"
+
+# How often to re-download blocklists (Go duration: 1h, 24h, 168h …)
+refresh_interval: "24h"
+
+# How often to print stats to stdout
+stats_interval: "5m"
+
+# How to respond to blocked queries: "zero" (0.0.0.0) or "nxdomain"
+block_mode: "zero"
+
+# TTL in seconds advertised on blocked replies
+block_ttl: 300
+
+# Which queries to write to the log: "all", "blocked", or "none"
+log_queries: "all"
+
+# Plain-text query log file (leave empty to write to stdout)
+log_file: ""
+
+# SQLite database for persistent query log + historical top-domain queries
+# Leave empty to disable SQLite logging.
+query_db: "queries.db"
+
+# Directory to cache downloaded blocklists (avoids re-downloading on restart)
+cache_dir: "."
+
+# Address:port for the admin web UI and REST API
+# Set to "127.0.0.1:8080" to restrict access to localhost only
+api_listen: "0.0.0.0:8080"
+
+# Maximum number of DNS responses to hold in the in-memory cache.
+# Cached responses are served without an upstream round-trip until their TTL expires.
+# Set to 0 to disable. Recommended: 2000–5000 for a Raspberry Pi.
+cache_size: 2000
+
+# How often the query log is flushed to SQLite.
+# Longer intervals reduce SD card / flash write cycles on embedded hardware.
+# 30s is a good balance between data freshness and write wear.
+db_flush_interval: "30s"

@@ -1,0 +1,139 @@
+// Package cache provides a TTL-based in-memory DNS response cache.
+// It is the primary latency and upstream-load optimisation for low-power
+// deployments (Raspberry Pi, etc.) where upstream round-trips are expensive.
+package cache
+
+import (
+	"sync"
+	"time"
+
+	"github.com/miekg/dns"
+)
+
+type entry struct {
+	msg    *dns.Msg
+	cached time.Time
+	minTTL uint32 // smallest TTL seen in Answer section at cache time
+}
+
+// Cache is a thread-safe, size-bounded DNS response cache.
+// Entries expire after their DNS TTL elapses.
+// When the cache is full, new entries are silently dropped.
+type Cache struct {
+	mu      sync.RWMutex
+	entries map[string]*entry
+	maxSize int
+
+	hits   uint64
+	misses uint64
+}
+
+func New(maxSize int) *Cache {
+	c := &Cache{
+		entries: make(map[string]*entry, maxSize),
+		maxSize: maxSize,
+	}
+	go c.runCleanup()
+	return c
+}
+
+// Get returns a cloned response for q with TTLs decremented, or (nil, false).
+func (c *Cache) Get(q dns.Question) (*dns.Msg, bool) {
+	k := key(q)
+
+	c.mu.RLock()
+	e, ok := c.entries[k]
+	c.mu.RUnlock()
+
+	if !ok || time.Since(e.cached) >= time.Duration(e.minTTL)*time.Second {
+		c.mu.Lock()
+		c.misses++
+		c.mu.Unlock()
+		return nil, false
+	}
+
+	msg := e.msg.Copy()
+	decrementTTLs(msg, uint32(time.Since(e.cached).Seconds()))
+
+	c.mu.Lock()
+	c.hits++
+	c.mu.Unlock()
+
+	return msg, true
+}
+
+// Set caches msg for question q if it has a non-zero TTL and answers present.
+func (c *Cache) Set(q dns.Question, msg *dns.Msg) {
+	if msg.Rcode != dns.RcodeSuccess || len(msg.Answer) == 0 {
+		return
+	}
+	minTTL := minAnswerTTL(msg)
+	if minTTL == 0 {
+		return
+	}
+
+	k := key(q)
+	e := &entry{
+		msg:    msg.Copy(),
+		cached: time.Now(),
+		minTTL: minTTL,
+	}
+
+	c.mu.Lock()
+	if len(c.entries) < c.maxSize {
+		c.entries[k] = e
+	}
+	c.mu.Unlock()
+}
+
+// Stats returns (hits, misses, current size).
+func (c *Cache) Stats() (hits, misses uint64, size int) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.hits, c.misses, len(c.entries)
+}
+
+func (c *Cache) runCleanup() {
+	tick := time.NewTicker(time.Minute)
+	defer tick.Stop()
+	for range tick.C {
+		now := time.Now()
+		c.mu.Lock()
+		for k, e := range c.entries {
+			if now.Sub(e.cached) >= time.Duration(e.minTTL)*time.Second {
+				delete(c.entries, k)
+			}
+		}
+		c.mu.Unlock()
+	}
+}
+
+func key(q dns.Question) string {
+	return q.Name + "\x00" + dns.TypeToString[q.Qtype]
+}
+
+func decrementTTLs(msg *dns.Msg, elapsed uint32) {
+	for _, section := range [][]dns.RR{msg.Answer, msg.Ns, msg.Extra} {
+		for _, rr := range section {
+			hdr := rr.Header()
+			if hdr.Ttl > elapsed {
+				hdr.Ttl -= elapsed
+			} else {
+				hdr.Ttl = 0
+			}
+		}
+	}
+}
+
+func minAnswerTTL(msg *dns.Msg) uint32 {
+	min := ^uint32(0)
+	for _, rr := range msg.Answer {
+		if t := rr.Header().Ttl; t < min {
+			min = t
+		}
+	}
+	if min == ^uint32(0) {
+		return 0
+	}
+	return min
+}

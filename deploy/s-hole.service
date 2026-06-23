@@ -1,0 +1,29 @@
+[Unit]
+Description=s-hole DNS Sinkhole
+Documentation=https://github.com/laszlo/s-hole
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=s-hole
+Group=s-hole
+
+ExecStart=/usr/local/bin/s-hole -config /etc/s-hole/config.yaml
+WorkingDirectory=/var/lib/s-hole
+
+Restart=on-failure
+RestartSec=5s
+
+# Allow binding to port 53 without running as root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Harden the service process.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/s-hole
+
+[Install]
+WantedBy=multi-user.target

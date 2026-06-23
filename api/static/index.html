@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>s-hole</title>
+  <style>
+    :root {
+      --bg:      #0f1117;
+      --surface: #1a1d27;
+      --border:  #252836;
+      --text:    #e2e8f0;
+      --muted:   #64748b;
+      --accent:  #818cf8;
+      --red:     #f87171;
+      --green:   #4ade80;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    /* ── Header ─────────────────────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 24px;
+      border-bottom: 1px solid var(--border);
+    }
+    .logo { font-size: 18px; font-weight: 700; letter-spacing: -0.3px; }
+    .logo .dot { color: var(--accent); margin-right: 6px; }
+    .meta { color: var(--muted); font-size: 12px; }
+    .meta strong { color: var(--text); }
+
+    /* ── Stat cards ──────────────────────────────────────────── */
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      padding: 24px;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px 24px;
+    }
+    .card-label {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .card-value {
+      font-size: 38px;
+      font-weight: 700;
+      margin-top: 6px;
+      font-variant-numeric: tabular-nums;
+    }
+    .card-value.red { color: var(--red); }
+
+    /* ── Panels ──────────────────────────────────────────────── */
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      padding: 0 24px 24px;
+    }
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .panel-hd {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 11px 16px;
+      font-weight: 600;
+      font-size: 13px;
+      border-bottom: 1px solid var(--border);
+    }
+    .panel-hd .count { color: var(--muted); font-weight: 400; font-size: 12px; }
+
+    /* ── Tables ──────────────────────────────────────────────── */
+    table { width: 100%; border-collapse: collapse; }
+    thead th {
+      padding: 8px 16px;
+      text-align: left;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      border-bottom: 1px solid var(--border);
+    }
+    tbody td {
+      padding: 9px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover { background: rgba(255,255,255,0.02); }
+    .mono { font-family: 'Cascadia Code', 'Consolas', 'Fira Mono', monospace; font-size: 12px; }
+    .muted { color: var(--muted); }
+    .num { font-variant-numeric: tabular-nums; }
+    .empty { color: var(--muted); font-style: italic; text-align: center; padding: 20px 0 !important; }
+
+    /* ── Badges ──────────────────────────────────────────────── */
+    .badge {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+    .badge-block { background: rgba(248,113,113,0.15); color: var(--red); }
+    .badge-allow { background: rgba(74,222,128,0.12); color: var(--green); }
+
+    /* ── Full-width panel ────────────────────────────────────── */
+    .full { margin: 0 24px 24px; }
+
+    /* ── Actions ─────────────────────────────────────────────── */
+    .actions-body {
+      padding: 14px 16px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    input[type=text] {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 11px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-family: inherit;
+      width: 230px;
+      transition: border-color 0.15s;
+    }
+    input[type=text]::placeholder { color: var(--muted); }
+    input[type=text]:focus { outline: none; border-color: var(--accent); }
+    button {
+      padding: 6px 13px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: opacity 0.15s;
+    }
+    button:hover { opacity: 0.8; }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-secondary { background: transparent; color: var(--text); border-color: var(--border); }
+    .action-msg { font-size: 13px; }
+    .action-msg.ok  { color: var(--green); }
+    .action-msg.err { color: var(--red); }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo"><span class="dot">◉</span>s-hole</div>
+  <div class="meta">
+    uptime <strong id="uptime">—</strong>
+    &nbsp;·&nbsp;
+    refreshed <span id="last-refresh">—</span>
+  </div>
+</header>
+
+<div class="cards">
+  <div class="card">
+    <div class="card-label">Total Queries</div>
+    <div class="card-value num" id="stat-total">—</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Blocked</div>
+    <div class="card-value num red" id="stat-blocked">—</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Block Rate</div>
+    <div class="card-value num" id="stat-pct">—</div>
+  </div>
+</div>
+
+<div class="two-col">
+  <div class="panel">
+    <div class="panel-hd">Top Blocked Domains <span class="count" id="domains-count"></span></div>
+    <table>
+      <thead><tr><th>Domain</th><th>Blocks</th></tr></thead>
+      <tbody id="top-domains"><tr><td colspan="2" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+  <div class="panel">
+    <div class="panel-hd">Top Clients <span class="count" id="clients-count"></span></div>
+    <table>
+      <thead><tr><th>Client IP</th><th>Queries</th></tr></thead>
+      <tbody id="top-clients"><tr><td colspan="2" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="full panel">
+  <div class="panel-hd">Recent Queries</div>
+  <table>
+    <thead><tr><th>Time</th><th>Client</th><th>Domain</th><th>Status</th></tr></thead>
+    <tbody id="queries"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+  </table>
+</div>
+
+<div class="full panel" style="margin-bottom:32px">
+  <div class="panel-hd">Actions</div>
+  <div class="actions-body">
+    <button class="btn-secondary" onclick="reloadBlocklists()">↺ Reload Blocklists</button>
+    <form onsubmit="addWhitelist(event)" style="display:flex;gap:8px;align-items:center">
+      <input id="wl-input" type="text" placeholder="domain to whitelist…">
+      <button type="submit" class="btn-primary">+ Whitelist</button>
+    </form>
+    <span id="action-msg" class="action-msg"></span>
+  </div>
+</div>
+
+<script>
+  const $ = id => document.getElementById(id);
+  const fmt = n => Number(n).toLocaleString();
+  const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+  function setTbody(id, html) { $(id).innerHTML = html; }
+
+  async function refresh() {
+    try {
+      const s = await fetch('/api/stats').then(r => r.json());
+      $('uptime').textContent       = s.uptime;
+      $('last-refresh').textContent = new Date().toLocaleTimeString();
+      $('stat-total').textContent   = fmt(s.total_queries);
+      $('stat-blocked').textContent = fmt(s.blocked_count);
+      $('stat-pct').textContent     = s.blocked_pct.toFixed(1) + '%';
+
+      const domains = s.top_domains || [];
+      setTbody('top-domains', domains.length
+        ? domains.map(e =>
+            `<tr><td class="mono">${esc(e.name)}</td><td class="muted num">${fmt(e.count)}</td></tr>`
+          ).join('')
+        : '<tr><td colspan="2" class="empty">No blocked queries yet</td></tr>');
+      $('domains-count').textContent = domains.length ? `(${domains.length})` : '';
+
+      const clients = s.top_clients || [];
+      setTbody('top-clients', clients.length
+        ? clients.map(e =>
+            `<tr><td class="mono">${esc(e.name)}</td><td class="muted num">${fmt(e.count)}</td></tr>`
+          ).join('')
+        : '<tr><td colspan="2" class="empty">No queries yet</td></tr>');
+      $('clients-count').textContent = clients.length ? `(${clients.length})` : '';
+    } catch(e) { console.error('stats fetch failed:', e); }
+
+    try {
+      const { queries } = await fetch('/api/queries?limit=50').then(r => r.json());
+      setTbody('queries', (queries || []).length
+        ? (queries || []).map(q => {
+            const badge = q.blocked
+              ? '<span class="badge badge-block">BLOCK</span>'
+              : '<span class="badge badge-allow">ALLOW</span>';
+            const t = new Date(q.ts).toLocaleTimeString();
+            return `<tr>
+              <td class="muted num">${t}</td>
+              <td class="mono">${esc(q.client_ip)}</td>
+              <td class="mono">${esc(q.domain)}</td>
+              <td>${badge}</td>
+            </tr>`;
+          }).join('')
+        : '<tr><td colspan="4" class="empty">No queries logged — ensure query_db is set in config.yaml</td></tr>');
+    } catch(e) { console.error('queries fetch failed:', e); }
+  }
+
+  async function reloadBlocklists() {
+    try {
+      const res = await fetch('/api/reload', { method: 'POST' });
+      flash(res.ok ? '✓ Reload triggered' : '✗ Request failed', res.ok);
+    } catch(e) { flash('✗ ' + e.message, false); }
+  }
+
+  async function addWhitelist(e) {
+    e.preventDefault();
+    const input = $('wl-input');
+    const domain = input.value.trim();
+    if (!domain) return;
+    try {
+      const res = await fetch('/api/whitelist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain }),
+      });
+      if (res.ok) { input.value = ''; flash(`✓ ${domain} whitelisted`, true); }
+      else flash('✗ Request failed', false);
+    } catch(e) { flash('✗ ' + e.message, false); }
+  }
+
+  function flash(text, ok) {
+    const el = $('action-msg');
+    el.textContent = text;
+    el.className = 'action-msg ' + (ok ? 'ok' : 'err');
+    setTimeout(() => { el.textContent = ''; el.className = 'action-msg'; }, 3000);
+  }
+
+  setInterval(refresh, 5000);
+  refresh();
+</script>
+</body>
+</html>

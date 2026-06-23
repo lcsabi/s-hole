@@ -1,0 +1,7 @@
+.claude/
+*.exe
+*.db
+blocklist_*.txt
+CL.md
+DESIGN.md
+deploy/

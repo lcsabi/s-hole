@@ -1,0 +1,29 @@
+# Compiled binaries
+s-hole
+s-hole.exe
+s-hole-linux-arm64
+s-hole-linux-amd64
+s-hole-linux-armv7
+
+# Runtime data
+*.db
+*.db-shm
+*.db-wal
+blocklist_*.txt
+
+# Log files
+*.log
+
+# Docker data volume
+data/
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo

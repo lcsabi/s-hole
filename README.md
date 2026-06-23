@@ -113,7 +113,7 @@ The admin web UI is served at `http://<host>:8080`. All data is also available a
 | `GET` | `/api/whitelist` | List all runtime-whitelisted domains |
 | `POST` | `/api/whitelist` | Add a domain — body: `{"domain": "example.com"}` |
 | `DELETE` | `/api/whitelist?domain=…` | Remove a domain from the runtime whitelist |
-| `POST` | `/api/reload` | Trigger an immediate blocklist refresh |
+| `POST` | `/api/reload` | Trigger an immediate blocklist refresh (returns `"reload already in progress"` if one is running) |
 
 Runtime whitelist changes take effect immediately but do not persist across restarts. To make a whitelist entry permanent, add it to `config.yaml`.
 

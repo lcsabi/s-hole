@@ -95,7 +95,9 @@ Upstream forwarding uses a 3-second per-upstream timeout. Upstreams are tried in
 
 The store is an in-memory `map[string]struct{}` (hash set) keyed on normalised domain names (lowercase, no trailing dot). Lookup is O(1).
 
-Blocklists are downloaded from configurable URLs on startup and periodically thereafter (default: every 24 hours). Both the hosts-file format (`0.0.0.0 ads.example.com`) and the plain-domain-per-line format are supported. Downloaded files are cached on disk so a restart does not require a network round-trip. If a download fails, the stale cache is used.
+Blocklists are downloaded from configurable URLs on startup and periodically thereafter (default: every 24 hours). Both the hosts-file format (`0.0.0.0 ads.example.com`) and the plain-domain-per-line format are supported. Downloaded files are cached on disk so a restart does not require a network round-trip. If a download fails or the server returns a non-200 status, the stale cache is used (the error response body is never written to disk).
+
+Downloads use a dedicated `http.Client` with a 60-second timeout. The response body is wrapped in `io.LimitReader` capped at 256 MB to bound disk and memory use if a server misbehaves.
 
 A whitelist (exact domain names) is checked before the blocklist. A whitelisted domain is never blocked regardless of blocklist membership. The whitelist can be extended at runtime via the REST API; runtime additions take effect immediately but do not persist across restarts.
 
@@ -107,12 +109,12 @@ The cache is a size-bounded, TTL-respecting in-memory store for upstream DNS res
 
 Key design decisions:
 
-- **Key:** `<qname>\x00<qtype>` — normalised question identity.
+- **Key:** `<qname>\x00<qtype>\x00<qclass>` — full question identity. `Qclass` is included so cross-class queries (e.g. `ClassCHAOS` for `version.bind`) cannot collide with the dominant `ClassINET` traffic.
 - **Value:** a cloned `dns.Msg` with the time it was cached and the minimum TTL across all answer records.
 - **TTL adjustment:** on retrieval, elapsed seconds are subtracted from each record's TTL so clients receive accurate expiry times.
 - **Eviction:** when the cache reaches `cache_size` entries, new entries are silently dropped rather than evicting existing ones. This avoids the complexity of LRU at the scale of home DNS traffic.
 - **Only NOERROR responses with at least one answer are cached.** NXDOMAIN, SERVFAIL, and empty-answer responses are not stored.
-- **Cleanup:** a background goroutine sweeps expired entries every minute.
+- **Cleanup:** a background goroutine sweeps expired entries every minute. It exits cleanly on `Cache.Close()`, which is invoked from the shutdown path so the goroutine never outlives the process.
 - **Cache hit rate** is tracked in `stats.Counter` and reported in both the periodic `Print()` output and `GET /api/stats`.
 
 ### Sinkhole Responses
@@ -139,6 +141,10 @@ Query logging is split into two independent backends behind a `Multi` fan-out:
 Suitable for `grep`, `tail -f`, and log rotation via external tools (e.g. `logrotate`).
 
 **DBLogger** writes to a SQLite database (`modernc.org/sqlite`, pure Go, no CGO). It runs an internal goroutine that batches inserts: entries accumulate for up to `db_flush_interval` (default 30 seconds) or 100 entries, then are committed in a single transaction. This decouples DNS handler latency from disk I/O. If the channel buffer (capacity 1000) is full, entries are dropped rather than blocking a DNS goroutine — logging completeness is subordinate to DNS availability.
+
+On shutdown, `DBLogger.Close()` blocks on a `sync.WaitGroup` until the writer goroutine has drained the channel and committed the final batch. Only then is the underlying `*sql.DB` closed. This guarantees the last batch of queries is never lost on a clean exit.
+
+The `querylog.Logger` interface (`Log(clientIP, domain string, blocked bool)`) is implemented by `FileLogger`, `DBLogger`, and `Multi`, with compile-time assertions in the package so a future signature drift is caught at build time rather than at the call site.
 
 **SQLite pragmas applied on open:**
 ```sql
@@ -177,6 +183,10 @@ An HTTP server (default `:8080`) serves two things:
 
 The web UI has no external dependencies (no CDN, no framework). It is pure HTML/CSS/JS and works without an internet connection.
 
+The HTTP server is held as an `*http.Server` so it can be gracefully shut down. `doStop` in `main.go` calls `apiServer.Shutdown(ctx)` with a 5-second context before terminating the process, which drains in-flight admin requests. `http.ErrServerClosed` is suppressed inside `ListenAndServe` so a clean shutdown does not log a spurious error.
+
+`POST /api/reload` is guarded by a `sync.Mutex.TryLock`: if a refresh is already running, a second request returns `"reload already in progress"` immediately rather than spawning a concurrent download that could race on the on-disk cache files.
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/stats` | GET | Live stats snapshot (uptime, totals, cache rate, top domains/clients) |
@@ -184,7 +194,7 @@ The web UI has no external dependencies (no CDN, no framework). It is pure HTML/
 | `/api/whitelist` | GET | List runtime-whitelisted domains |
 | `/api/whitelist` | POST | Add domain: `{"domain":"..."}` |
 | `/api/whitelist` | DELETE | Remove domain: `?domain=...` |
-| `/api/reload` | POST | Trigger immediate blocklist refresh |
+| `/api/reload` | POST | Trigger immediate blocklist refresh (idempotent if already running) |
 
 ### Startup Network Hint
 
@@ -193,6 +203,8 @@ On startup, `main.go` calls `printNetworkHint`, which enumerates local interface
 ### Configuration (`config/`)
 
 All configuration lives in a single YAML file. The struct uses `yaml` tags and applies safe defaults in `applyDefaults()` so the minimal valid config is an empty file. Duration fields are stored as strings and parsed at startup; invalid durations are fatal errors rather than silently ignored.
+
+A `Validate()` method runs after `Load()` and rejects unrecognised values for the enumerated fields (`block_mode`, `log_queries`). A typo such as `block_mode: "NXDOMAIN"` is now a fatal startup error instead of a silent fallback to the default — operator misconfiguration is surfaced immediately at the source.
 
 ### Packaging and Deployment (`service/`, `deploy/`, `Dockerfile`)
 

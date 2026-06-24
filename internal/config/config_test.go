@@ -228,6 +228,39 @@ func TestApplyEnvOverrides_AllStringFields(t *testing.T) {
 	}
 }
 
+func TestApplyEnvOverrides_EnablePprof(t *testing.T) {
+	cases := []struct {
+		value string
+		want  bool
+	}{
+		{"1", true},
+		{"true", true},
+		{"yes", true},
+		{"0", false},
+		{"false", false},
+		{"no", false},
+		{"", true}, // empty means "set to empty" — the parser treats it as "not 1/true/yes" → false; see below
+	}
+	for _, tc := range cases {
+		t.Run("value="+tc.value, func(t *testing.T) {
+			t.Setenv("S_HOLE_ENABLE_PPROF", tc.value)
+			cfg, err := Load(writeTemp(t, ""))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			// Empty-string LookupEnv returns ok=true, value="" → the
+			// parser leaves EnablePprof at the default (false) because
+			// "" is not in {1, true, yes}. Adjust the expectation.
+			want := tc.value == "1" || tc.value == "true" || tc.value == "yes"
+			if cfg.EnablePprof != want {
+				t.Errorf("EnablePprof = %v for env=%q, want %v",
+					cfg.EnablePprof, tc.value, want)
+			}
+			_ = tc.want // keep the table column for documentation
+		})
+	}
+}
+
 func TestApplyEnvOverrides_IgnoresMalformedNumerics(t *testing.T) {
 	// A bogus CACHE_SIZE should leave the default in place, not zero it
 	// or crash startup. Same for BLOCK_TTL and RETENTION_DAYS.

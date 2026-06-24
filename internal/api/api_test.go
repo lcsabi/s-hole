@@ -221,6 +221,49 @@ func TestWriteJSON_LogsEncoderErrors(t *testing.T) {
 	writeJSON(w, map[string]string{"x": "y"})
 }
 
+func TestReadinessEndpoint_OkOnceBlocklistLoaded(t *testing.T) {
+	// /readyz is 200 once store.Len() > 0. newTestServer seeds one entry
+	// via store.Replace, so this server is "ready" immediately.
+	_, srv := newTestServer(t, nil)
+
+	resp, err := http.Get(srv.URL + "/readyz")
+	if err != nil {
+		t.Fatalf("GET /readyz: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "ok") {
+		t.Errorf("body = %q, want 'ok'", body)
+	}
+}
+
+func TestReadinessEndpoint_503BeforeBlocklist(t *testing.T) {
+	// Fresh store with no entries: /readyz must return 503 so a
+	// container orchestrator routes traffic away while the initial
+	// blocklist download is still in flight. This is the Kubernetes
+	// readiness contract — see DESIGN.md "Observability" section.
+	store := blocklist.NewStore() // empty
+	s := New(stats.New(), nil, store, nil, func() bool { return true })
+	srv := httptest.NewServer(s.handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/readyz")
+	if err != nil {
+		t.Fatalf("GET /readyz: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503 (blocklist empty)", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "empty") {
+		t.Errorf("503 body = %q, want it to mention 'empty'", body)
+	}
+}
+
 func TestHealthEndpoint(t *testing.T) {
 	_, srv := newTestServer(t, nil)
 	resp, err := http.Get(srv.URL + "/healthz")

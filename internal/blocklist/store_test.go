@@ -115,6 +115,35 @@ func TestStore_Len(t *testing.T) {
 	}
 }
 
+func TestStore_WhitelistLen(t *testing.T) {
+	// R34: WhitelistLen must mirror GetWhitelist's count without
+	// allocating the full slice. Verify by hand that the two stay in
+	// sync across SetWhitelist and AddToWhitelist/RemoveFromWhitelist.
+	s := NewStore()
+	if s.WhitelistLen() != 0 {
+		t.Errorf("empty whitelist WhitelistLen = %d, want 0", s.WhitelistLen())
+	}
+
+	s.SetWhitelist([]string{"a.com", "b.com"})
+	if s.WhitelistLen() != 2 {
+		t.Errorf("after SetWhitelist WhitelistLen = %d, want 2", s.WhitelistLen())
+	}
+	if len(s.GetWhitelist()) != s.WhitelistLen() {
+		t.Errorf("WhitelistLen %d disagrees with len(GetWhitelist()) %d",
+			s.WhitelistLen(), len(s.GetWhitelist()))
+	}
+
+	s.AddToWhitelist("c.com")
+	if s.WhitelistLen() != 3 {
+		t.Errorf("after AddToWhitelist WhitelistLen = %d, want 3", s.WhitelistLen())
+	}
+
+	s.RemoveFromWhitelist("a.com")
+	if s.WhitelistLen() != 2 {
+		t.Errorf("after RemoveFromWhitelist WhitelistLen = %d, want 2", s.WhitelistLen())
+	}
+}
+
 // BenchmarkStore_IsBlocked guards the hot DNS path against accidental
 // O(n) regressions: IsBlocked is called once per query and is the single
 // largest call-graph hop on every blocked-or-not decision.

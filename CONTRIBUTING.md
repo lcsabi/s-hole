@@ -123,11 +123,17 @@ Every behaviour change needs a test. Coverage gates are not enforced
 strictly, but the per-package targets are:
 
 - `internal/stats`, `internal/config`, `internal/version`: 100 %
-- `internal/cache`, `internal/api`, `internal/blocklist`,
-  `internal/dnsserver`, `internal/querylog`: ≥ 85 %
+- `internal/cache`: ≥ 94 %
+- `internal/api`, `internal/blocklist`, `internal/dnsserver`,
+  `internal/querylog`: ≥ 85 %
 
-The `cmd/s-hole` package is at ~27 % because the rest is the `main()`
-bootstrap and SCM glue that aren't unit-testable.
+The `cmd/s-hole` package sits around 28 % because the rest is the
+`main()` bootstrap and SCM glue that aren't unit-testable. Module-wide
+coverage tracks around 71 %.
+
+Run `go test -cover ./...` locally to see the current state before
+sending a PR; if your change drops a number, please either add the
+missing test or note in the CL why the drop is acceptable.
 
 ## Code style
 

@@ -1377,3 +1377,137 @@ ok    github.com/laszlo/s-hole/internal/stats
 
 The new module path is `github.com/laszlo/s-hole/cmd/s-hole`; the rest of
 the package paths are unchanged.
+
+---
+
+## CL 19 — s-hole: build identity, lint, dependabot, templates
+
+**Bug:** —
+
+### Description
+
+Closes the remaining "things every production Go project ships with"
+gaps. No behaviour changes to the runtime; every addition is a build,
+review, or operator-facing improvement.
+
+**Build identity (`internal/version`)** — new package with three
+package-level vars (`Version`, `Commit`, `BuildDate`) populated via
+`-X` linker flags. The Makefile derives them from `git describe`,
+`git rev-parse --short HEAD`, and the current UTC timestamp; the
+Dockerfile accepts them as `--build-arg` (`VERSION`, `COMMIT`,
+`BUILD_DATE`); CI fills them from the GitHub Actions context.
+Source builds without flags fall back to placeholder values (`dev` /
+`unknown` / `unknown`). The binary gains a `-version` flag that
+prints the full identity, and the startup slog line includes
+`version=…`, `commit=…`, `built=…` attributes so a log scrape during
+an incident can pinpoint exactly which build is in production.
+
+**`Makefile` standardised** — beyond the existing cross-compile
+targets, the file now exposes the conventional production targets:
+
+- `make check` — fmt + vet + lint + test (what CI runs)
+- `make test` — plain test run
+- `make test-race` — with the race detector
+- `make bench` — single-iteration benchmark smoke
+- `make lint` — `golangci-lint run ./...`
+- `make fmt` — `gofmt -s -w .`
+- `make vet` — `go vet ./...`
+- `make install` — `go install` into `$GOBIN`
+- `make version` — print the version metadata that the next build
+  would embed
+- `make help` — auto-generated list of targets (parsed from the
+  `## ...:` comments)
+
+**`golangci-lint`** — new `.golangci.yml` enabling `errcheck`,
+`govet`, `ineffassign`, `staticcheck`, `unused`, `misspell`,
+`gocritic`, and `revive`. Tests are exempt from `errcheck` and
+`gosec` (false-positive heavy). A `lint` job is wired into CI and
+runs before the test job so a style violation fails the pipeline
+fast.
+
+**`dependabot.yml`** — weekly PRs for Go modules, GitHub Actions,
+and the Docker base image. Labelled `dependencies`, `ci`, or
+`docker` so they sort cleanly in the PR list. Limited to five open
+PRs at a time to avoid flooding the review queue.
+
+**`.github/CODEOWNERS`** — `*` defaults to the maintainer; the
+security-sensitive paths (`SECURITY.md`, `.github/`, `deploy/`,
+`internal/api/`, `internal/dnsserver/`, `internal/blocklist/`) are
+explicitly listed so the intent is obvious to a future co-maintainer.
+
+**Pull-request template** — `.github/pull_request_template.md`
+prompts for summary, linked CL/bug, why, test plan checklist, and
+risk. Doubles as the reviewer checklist.
+
+**Issue templates** — bug-report and feature-request templates
+under `.github/ISSUE_TEMPLATE/`. The bug template asks for
+`s-hole -version` output explicitly; the feature template prompts
+the reporter to confirm against the documented non-goals in DESIGN.
+
+**CI** — the cross-compile matrix now injects the same version
+metadata as the local Makefile, so artifacts produced by CI are
+introspectable.
+
+**README** — new "Development" section listing the Makefile targets,
+the per-package coverage table, sample `-version` output, and a note
+about CI + dependabot.
+
+**DESIGN.md** — "Packaging and Deployment" gains a "Build identity"
+paragraph documenting the `-X` ldflag scheme.
+
+### Files changed
+
+```
+internal/version/                  ← new package
+  ├── version.go                   — Version, Commit, BuildDate, String, Short
+  └── version_test.go              — defaults + format assertions
+cmd/s-hole/main.go                 — -version flag; startup slog line with metadata
+Makefile                           — version-injected ldflags; new targets
+Dockerfile                         — ARG VERSION/COMMIT/BUILD_DATE + -X ldflags
+.github/workflows/ci.yml           — new lint job; cross-compile injects metadata
+.github/dependabot.yml             — new (gomod, github-actions, docker)
+.github/CODEOWNERS                 — new
+.github/pull_request_template.md   — new
+.github/ISSUE_TEMPLATE/bug_report.md       — new
+.github/ISSUE_TEMPLATE/feature_request.md  — new
+.golangci.yml                      — new lint config
+README.md                          — Development section; layout updated
+docs/DESIGN.md                     — Build identity paragraph
+docs/CHANGELOG.md                  — version / Makefile / lint / dependabot entries
+docs/CL.md                         — this entry
+```
+
+### Testing
+
+```
+$ go build ./... && go vet ./... && go test -count=1 ./...
+ok    github.com/laszlo/s-hole/cmd/s-hole
+ok    github.com/laszlo/s-hole/internal/api
+ok    github.com/laszlo/s-hole/internal/blocklist
+ok    github.com/laszlo/s-hole/internal/cache
+ok    github.com/laszlo/s-hole/internal/config
+ok    github.com/laszlo/s-hole/internal/dnsserver
+ok    github.com/laszlo/s-hole/internal/querylog
+ok    github.com/laszlo/s-hole/internal/stats
+ok    github.com/laszlo/s-hole/internal/version
+```
+
+Verified `-version` output round-trips both injected and placeholder
+values:
+
+```
+$ go build -ldflags="-X '....Version=v0.1.0-test' -X '....Commit=abc1234' \
+                    -X '....BuildDate=2026-06-24T12:00:00Z'" -o /tmp/s ./cmd/s-hole
+$ /tmp/s -version
+s-hole v0.1.0-test
+  commit:  abc1234
+  built:   2026-06-24T12:00:00Z
+  go:      go1.25.0
+  os/arch: windows/amd64
+
+$ go build -o /tmp/s ./cmd/s-hole && /tmp/s -version
+s-hole dev
+  commit:  unknown
+  built:   unknown
+  ...
+```

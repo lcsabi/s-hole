@@ -1,11 +1,24 @@
-BINARY  = s-hole
-LDFLAGS = -ldflags="-s -w"
-PKG     = ./cmd/s-hole
+BINARY   = s-hole
+PKG      = ./cmd/s-hole
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+
+VERSION_PKG = github.com/laszlo/s-hole/internal/version
+LDFLAGS     = -ldflags="-s -w \
+                -X '$(VERSION_PKG).Version=$(VERSION)' \
+                -X '$(VERSION_PKG).Commit=$(COMMIT)' \
+                -X '$(VERSION_PKG).BuildDate=$(DATE)'"
 
 # On Windows use: $env:GOOS="linux"; $env:GOARCH="arm64"; go build ...
 # or run these targets from WSL / Git Bash.
 
-.PHONY: all pi pi32 linux clean
+.PHONY: all pi pi32 linux clean test test-race bench fmt vet lint check install help version
+
+## help: show this help text (default target)
+help:
+	@echo "s-hole — available targets:"
+	@grep -E '^## [a-z]' Makefile | sed 's/^## /  /'
 
 ## all: build for the current OS/architecture
 all:
@@ -22,6 +35,43 @@ pi32:
 ## linux: 64-bit x86 Linux (for VMs, cloud, NAS)
 linux:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BINARY)-linux-amd64 $(PKG)
+
+## install: build and install into $GOPATH/bin (or $GOBIN)
+install:
+	go install $(LDFLAGS) $(PKG)
+
+## test: run the full test suite
+test:
+	go test -count=1 ./...
+
+## test-race: run tests under the race detector (requires CGO)
+test-race:
+	CGO_ENABLED=1 go test -race -count=1 ./...
+
+## bench: run benchmarks (one iteration each — for regression smoke)
+bench:
+	go test -run=^$$ -bench=. -benchtime=1x ./...
+
+## fmt: gofmt every Go file in place
+fmt:
+	gofmt -s -w .
+
+## vet: go vet across all packages
+vet:
+	go vet ./...
+
+## lint: run golangci-lint (install: see https://golangci-lint.run/)
+lint:
+	golangci-lint run ./...
+
+## check: fmt + vet + lint + test — what CI does
+check: fmt vet lint test
+
+## version: print the version that would be embedded in a build
+version:
+	@echo "version: $(VERSION)"
+	@echo "commit:  $(COMMIT)"
+	@echo "date:    $(DATE)"
 
 ## clean: remove compiled binaries
 clean:

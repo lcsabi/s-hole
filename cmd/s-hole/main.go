@@ -48,6 +48,7 @@ import (
 	"github.com/laszlo/s-hole/internal/querylog"
 	"github.com/laszlo/s-hole/internal/service"
 	"github.com/laszlo/s-hole/internal/stats"
+	"github.com/laszlo/s-hole/internal/version"
 )
 
 // setupLogger installs the default slog handler. Format is text on a TTY
@@ -65,12 +66,25 @@ func setupLogger() {
 }
 
 func main() {
-	setupLogger()
-	mainLog := slog.With("pkg", "main")
-
 	cfgPath := flag.String("config", "config.yaml", "path to config file")
 	svcAction := flag.String("service", "", "manage the system service: install|uninstall|start|stop")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	// -version is a pure CLI introspection; print before any other init so
+	// it works inside scratch containers where logger setup might fail.
+	if *showVersion {
+		fmt.Println(version.String())
+		return
+	}
+
+	setupLogger()
+	mainLog := slog.With("pkg", "main")
+	mainLog.Info("starting s-hole",
+		"version", version.Version,
+		"commit", version.Commit,
+		"built", version.BuildDate,
+	)
 
 	// Service management commands exit immediately after completing.
 	switch *svcAction {

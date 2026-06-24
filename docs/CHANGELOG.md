@@ -9,6 +9,21 @@ operator-facing summary.
 ## [Unreleased]
 
 ### Added
+- Build-time version identity: `internal/version` holds `Version`,
+  `Commit`, and `BuildDate` vars written at link time via `-X` ldflags.
+  `s-hole -version` prints the full identity; startup logs include it.
+  Makefile and Dockerfile populate the values from git and the current
+  UTC timestamp; CI does the same via GitHub Actions context.
+- `Makefile` gains the conventional production targets: `make check`
+  (fmt + vet + lint + test), `test`, `test-race`, `bench`, `lint`,
+  `fmt`, `vet`, `install`, `version`, and `help`.
+- `golangci-lint` integrated: `.golangci.yml` config + a lint job in
+  CI that runs before the test job.
+- Dependabot keeps Go modules, GitHub Actions, and the Docker base
+  image up to date with weekly PRs.
+- `.github/CODEOWNERS` declares review ownership.
+- Pull-request template and issue templates (bug + feature) under
+  `.github/`.
 - Production-grade project layout: the `main` package now lives under
   `cmd/s-hole/`; `DESIGN.md`, `CL.md`, `BUGS.md`, and `CHANGELOG.md`
   live under `docs/`. The `go install` path is now

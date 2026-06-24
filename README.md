@@ -313,15 +313,48 @@ $env:GOOS=""; $env:GOARCH=""
 
 ---
 
-## Testing
+## Development
 
-Every implementation package under `internal/` has a `*_test.go` file. To run the full suite:
+The `Makefile` is the canonical entry point for every routine task. Run `make help` for the full list. The most useful targets:
 
 ```bash
-go test ./...
+make check       # gofmt + go vet + golangci-lint + go test
+make test        # plain test run
+make test-race   # tests under the race detector (CGO toolchain required)
+make bench       # one iteration of each benchmark
+make lint        # golangci-lint
+make fmt         # gofmt -s -w
+make install     # go install into $GOBIN
+make version     # print the version that the next build would embed
 ```
 
-Add `-v` for verbose output, `-race` to enable the race detector (requires CGO and a C toolchain on the host), or `-cover` to see line coverage. Tests use only the standard library and `httptest` — no external test runner or fixtures are required.
+Coverage by package (after `go test -cover ./...`):
+
+| Package | Coverage |
+|---|---|
+| `internal/stats` | 100 % |
+| `internal/config` | 100 % |
+| `internal/version` | 100 % |
+| `internal/cache` | 94.8 % |
+| `internal/api` | 91.9 % |
+| `internal/blocklist` | 89.3 % |
+| `internal/dnsserver` | 87.0 % |
+| `internal/querylog` | 85.4 % |
+
+The uncovered region is the `main()` bootstrap and the Windows-only SCM glue — both exercised by manual smoke tests, not unit tests.
+
+The binary reports its build identity at any time:
+
+```
+$ s-hole -version
+s-hole v1.0.0
+  commit:  ab12cd3
+  built:   2026-06-24T12:00:00Z
+  go:      go1.25.0
+  os/arch: linux/amd64
+```
+
+CI runs lint + race-enabled tests + cross-compile for `linux/{amd64,arm64,armv7}` and `windows/amd64` on every push and PR — see `.github/workflows/ci.yml`. Dependabot keeps Go modules, GitHub Actions, and the Docker base image up to date.
 
 ---
 
@@ -371,10 +404,11 @@ Add `-v` for verbose output, `-race` to enable the race detector (requires CGO a
 ├── internal/          implementation packages (not importable externally)
 ├── deploy/            systemd unit + Linux install script
 ├── docs/              DESIGN, CHANGELOG, CL log, BUGS
-├── .github/           CI workflows
+├── .github/           CI workflows, dependabot, CODEOWNERS, PR & issue templates
+├── .golangci.yml      lint config
 ├── config.yaml        default configuration
 ├── Dockerfile         multi-stage container build
-├── Makefile           cross-compile targets
+├── Makefile           build + lint + test + install targets
 ├── LICENSE            MIT
 ├── README.md          you are here
 └── SECURITY.md        security disclosure policy

@@ -1,0 +1,40 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - gocritic
+    - revive
+
+  settings:
+    revive:
+      rules:
+        # Allow short names in handler receivers and small loops.
+        - name: var-naming
+          disabled: false
+
+  exclusions:
+    rules:
+      # Tests routinely ignore errors from setup helpers (write file, close,
+      # cleanup) and over-strict errcheck is more noise than signal there.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+      # Generated/embed files don't need lint coverage.
+      - path: static/
+        linters:
+          - misspell
+
+formatters:
+  enable:
+    - gofmt

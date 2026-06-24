@@ -6,6 +6,19 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
   test:
     name: build / vet / test
     runs-on: ubuntu-latest
@@ -35,9 +48,9 @@ jobs:
         run: go test -run=^$ -bench=. -benchtime=1x ./...
 
   cross-compile:
-    name: cross-compile / ${{ matrix.target }}
+    name: cross-compile / ${{ matrix.target.goos }}-${{ matrix.target.goarch }}
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, lint]
     strategy:
       matrix:
         target:
@@ -50,10 +63,21 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
+      - name: Resolve version metadata
+        id: meta
+        run: |
+          echo "version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)" >> $GITHUB_OUTPUT
+          echo "commit=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
       - name: Build ${{ matrix.target.goos }}/${{ matrix.target.goarch }}
         env:
           GOOS: ${{ matrix.target.goos }}
           GOARCH: ${{ matrix.target.goarch }}
           GOARM: ${{ matrix.target.goarm }}
           CGO_ENABLED: "0"
-        run: go build -ldflags="-s -w" -o /tmp/s-hole ./cmd/s-hole
+        run: |
+          go build -ldflags="-s -w \
+            -X 'github.com/laszlo/s-hole/internal/version.Version=${{ steps.meta.outputs.version }}' \
+            -X 'github.com/laszlo/s-hole/internal/version.Commit=${{ steps.meta.outputs.commit }}' \
+            -X 'github.com/laszlo/s-hole/internal/version.BuildDate=${{ steps.meta.outputs.date }}'" \
+            -o /tmp/s-hole ./cmd/s-hole

@@ -12,9 +12,21 @@ RUN go mod download
 
 COPY . .
 
+# Build-time version metadata. Callers can override with --build-arg.
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+
 # CGO_ENABLED=0: modernc.org/sqlite is pure Go — no C toolchain needed.
 # -ldflags="-s -w": strip debug info to reduce binary size (~40%).
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o s-hole ./cmd/s-hole
+# Version metadata is injected via -X so the binary can report its identity
+# at runtime (use `s-hole -version`).
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w \
+      -X 'github.com/laszlo/s-hole/internal/version.Version=${VERSION}' \
+      -X 'github.com/laszlo/s-hole/internal/version.Commit=${COMMIT}' \
+      -X 'github.com/laszlo/s-hole/internal/version.BuildDate=${BUILD_DATE}'" \
+    -o s-hole ./cmd/s-hole
 
 # ── Runtime stage ─────────────────────────────────────────────
 FROM alpine:3.21

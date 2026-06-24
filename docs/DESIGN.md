@@ -261,7 +261,9 @@ Three deployment targets are supported:
 
 **Docker** — a multi-stage `Dockerfile` builds a statically linked binary (`CGO_ENABLED=0`) in a `golang:alpine` stage and copies it into an `alpine` runtime image for SSL certificate access (needed for HTTPS blocklist downloads). The `/app` directory is declared a `VOLUME` for config and database persistence.
 
-**Cross-compilation** — a `Makefile` provides `make pi` (arm64), `make pi32` (armv7), and `make linux` (amd64) targets. All produce stripped binaries (~10–17 MB) with no host toolchain requirements beyond the Go compiler.
+**Cross-compilation** — a `Makefile` provides `make pi` (arm64), `make pi32` (armv7), and `make linux` (amd64) targets. All produce stripped binaries (~10–17 MB) with no host toolchain requirements beyond the Go compiler. The Makefile also exposes the standard development targets (`make check`, `test`, `test-race`, `bench`, `lint`, `fmt`, `vet`, `install`, `version`) — `make help` lists the full set.
+
+**Build identity** — `internal/version` holds three vars (`Version`, `Commit`, `BuildDate`) written at link time via `-X` ldflags. The Makefile populates them from `git describe`, `git rev-parse`, and the current UTC timestamp; the Dockerfile accepts them as `--build-arg`; CI fills them from the GitHub Actions context. Source builds without those flags fall back to placeholder values (`dev` / `unknown` / `unknown`), which is acceptable for `go install` use. `s-hole -version` prints the full identity at any time.
 
 ---
 

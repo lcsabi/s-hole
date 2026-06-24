@@ -109,18 +109,28 @@ func (c *Cache) runCleanup() {
 	for {
 		select {
 		case <-tick.C:
-			now := time.Now()
-			c.mu.Lock()
-			for k, e := range c.entries {
-				if now.Sub(e.cached) >= time.Duration(e.minTTL)*time.Second {
-					delete(c.entries, k)
-				}
-			}
-			c.mu.Unlock()
+			c.cleanupExpired(time.Now())
 		case <-c.stop:
 			return
 		}
 	}
+}
+
+// cleanupExpired removes entries whose minTTL has elapsed since they were
+// cached. Returns the count removed. Extracted from runCleanup so tests
+// can exercise the sweep deterministically without waiting on the
+// 1-minute ticker.
+func (c *Cache) cleanupExpired(now time.Time) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	removed := 0
+	for k, e := range c.entries {
+		if now.Sub(e.cached) >= time.Duration(e.minTTL)*time.Second {
+			delete(c.entries, k)
+			removed++
+		}
+	}
+	return removed
 }
 
 func key(q dns.Question) string {

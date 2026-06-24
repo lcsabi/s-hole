@@ -126,9 +126,33 @@ func TestParsedDurations(t *testing.T) {
 }
 
 func TestParsedDurations_InvalidErrors(t *testing.T) {
-	cfg := &Config{RefreshInterval: "soon"}
-	if _, err := cfg.ParsedRefreshInterval(); err == nil {
-		t.Error("ParsedRefreshInterval accepted garbage")
+	cases := []struct {
+		name string
+		cfg  *Config
+		call func(*Config) error
+	}{
+		{
+			name: "refresh_interval",
+			cfg:  &Config{RefreshInterval: "soon"},
+			call: func(c *Config) error { _, e := c.ParsedRefreshInterval(); return e },
+		},
+		{
+			name: "stats_interval",
+			cfg:  &Config{StatsInterval: "soonish"},
+			call: func(c *Config) error { _, e := c.ParsedStatsInterval(); return e },
+		},
+		{
+			name: "db_flush_interval",
+			cfg:  &Config{DBFlushInterval: "later"},
+			call: func(c *Config) error { _, e := c.ParsedDBFlushInterval(); return e },
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.call(tc.cfg); err == nil {
+				t.Errorf("%s parser accepted garbage", tc.name)
+			}
+		})
 	}
 }
 
@@ -160,6 +184,47 @@ func TestApplyEnvOverrides(t *testing.T) {
 	}
 	if cfg.QueryDBRetentionDays != 14 {
 		t.Errorf("QueryDBRetentionDays = %d, want override 14", cfg.QueryDBRetentionDays)
+	}
+}
+
+func TestApplyEnvOverrides_AllStringFields(t *testing.T) {
+	t.Setenv("S_HOLE_LOG_FILE", "/var/log/x.log")
+	t.Setenv("S_HOLE_LOG_QUERIES", "blocked")
+	t.Setenv("S_HOLE_QUERY_DB", "/data/q.db")
+	t.Setenv("S_HOLE_CACHE_DIR", "/data/cache")
+	t.Setenv("S_HOLE_BLOCK_MODE", "nxdomain")
+	t.Setenv("S_HOLE_REFRESH_INTERVAL", "12h")
+	t.Setenv("S_HOLE_STATS_INTERVAL", "1m")
+	t.Setenv("S_HOLE_DB_FLUSH_INTERVAL", "1s")
+
+	cfg, err := Load(writeTemp(t, ""))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := map[string]string{
+		"LogFile":         cfg.LogFile,
+		"LogQueries":      cfg.LogQueries,
+		"QueryDB":         cfg.QueryDB,
+		"CacheDir":        cfg.CacheDir,
+		"BlockMode":       cfg.BlockMode,
+		"RefreshInterval": cfg.RefreshInterval,
+		"StatsInterval":   cfg.StatsInterval,
+		"DBFlushInterval": cfg.DBFlushInterval,
+	}
+	expected := map[string]string{
+		"LogFile":         "/var/log/x.log",
+		"LogQueries":      "blocked",
+		"QueryDB":         "/data/q.db",
+		"CacheDir":        "/data/cache",
+		"BlockMode":       "nxdomain",
+		"RefreshInterval": "12h",
+		"StatsInterval":   "1m",
+		"DBFlushInterval": "1s",
+	}
+	for k, v := range expected {
+		if want[k] != v {
+			t.Errorf("%s = %q, want %q", k, want[k], v)
+		}
 	}
 }
 

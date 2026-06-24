@@ -51,6 +51,30 @@ func TestFileLogger_LogBlockedOnly(t *testing.T) {
 	}
 }
 
+func TestNewFileLogger_FallsBackToStdoutOnBadPath(t *testing.T) {
+	// A path inside a nonexistent directory cannot be opened. NewFileLogger
+	// must fall back to os.Stdout rather than returning a useless logger.
+	l := NewFileLogger("/does/not/exist/queries.log", "all")
+	if l == nil {
+		t.Fatal("NewFileLogger returned nil")
+	}
+	if l.f != os.Stdout {
+		t.Errorf("FileLogger.f = %v, want os.Stdout", l.f)
+	}
+	// Close should be a no-op when writing to stdout — verify it does
+	// not panic and returns nil.
+	if err := l.Close(); err != nil {
+		t.Errorf("Close on stdout-backed FileLogger returned %v", err)
+	}
+}
+
+func TestNewFileLogger_EmptyPathUsesStdout(t *testing.T) {
+	l := NewFileLogger("", "all")
+	if l.f != os.Stdout {
+		t.Errorf("empty path FileLogger.f = %v, want os.Stdout", l.f)
+	}
+}
+
 func TestFileLogger_LogNone(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "queries.log")
 	l := NewFileLogger(path, "none")

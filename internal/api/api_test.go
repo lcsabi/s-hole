@@ -2,16 +2,21 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/laszlo/s-hole/internal/blocklist"
+	"github.com/laszlo/s-hole/internal/querylog"
 	"github.com/laszlo/s-hole/internal/stats"
 )
 
@@ -40,6 +45,180 @@ func decode[T any](t *testing.T, body io.Reader) T {
 		t.Fatalf("decode: %v", err)
 	}
 	return v
+}
+
+func TestListenAndServe_LifecycleAndShutdown(t *testing.T) {
+	// Exercise the production code path (not just s.handler() inside
+	// httptest): bind a free port, hit /healthz, then Shutdown.
+	store := blocklist.NewStore()
+	counter := stats.New()
+	s := New(counter, nil, store, nil, func() bool { return true })
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := l.Addr().String()
+	l.Close()
+
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- s.ListenAndServe(addr) }()
+
+	// Wait briefly for the server to come up, then probe /healthz.
+	deadline := time.Now().Add(2 * time.Second)
+	var resp *http.Response
+	for time.Now().Before(deadline) {
+		resp, err = http.Get("http://" + addr + "/healthz")
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		s.Shutdown(context.Background())
+		t.Fatalf("server never accepted a connection: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("/healthz status = %d", resp.StatusCode)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := s.Shutdown(ctx); err != nil {
+		t.Errorf("Shutdown returned %v", err)
+	}
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			t.Errorf("ListenAndServe returned %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ListenAndServe did not return after Shutdown")
+	}
+}
+
+func TestShutdown_BeforeListenIsNoOp(t *testing.T) {
+	// If the caller calls Shutdown without ever calling ListenAndServe,
+	// the helper must not panic — s.httpServer is nil at that point.
+	store := blocklist.NewStore()
+	s := New(stats.New(), nil, store, nil, func() bool { return true })
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Errorf("Shutdown on never-started server = %v, want nil", err)
+	}
+}
+
+// queriesResponse mirrors the JSON shape returned by /api/queries — kept
+// local so the test does not depend on api package internals.
+type queriesResponse struct {
+	Queries []querylog.QueryRow `json:"queries"`
+}
+
+func TestQueriesEndpoint_WithRealDB(t *testing.T) {
+	// Wire a real DBLogger so the handleQueries branch that calls
+	// s.db.Recent is exercised end-to-end.
+	dbPath := filepath.Join(t.TempDir(), "q.db")
+	db, err := querylog.NewDBLogger(dbPath, "all", 50*time.Millisecond, 0)
+	if err != nil {
+		t.Fatalf("NewDBLogger: %v", err)
+	}
+	defer db.Close()
+
+	db.Log("1.1.1.1", "first.com.", false)
+	db.Log("1.1.1.1", "second.com.", true)
+	time.Sleep(150 * time.Millisecond) // wait for the flush tick
+
+	store := blocklist.NewStore()
+	s := New(stats.New(), db, store, nil, func() bool { return true })
+	srv := httptest.NewServer(s.handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/queries?limit=10")
+	if err != nil {
+		t.Fatalf("GET /api/queries: %v", err)
+	}
+	defer resp.Body.Close()
+	body := decode[queriesResponse](t, resp.Body)
+	if len(body.Queries) != 2 {
+		t.Errorf("got %d rows, want 2", len(body.Queries))
+	}
+}
+
+func TestQueriesEndpoint_IgnoresBadLimit(t *testing.T) {
+	// A non-numeric ?limit= must fall through to the default.
+	_, srv := newTestServer(t, nil)
+	resp, err := http.Get(srv.URL + "/api/queries?limit=garbage")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestWhitelistRemove_RejectsEmptyDomain(t *testing.T) {
+	_, srv := newTestServer(t, nil)
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/whitelist?domain=", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestWhitelistAdd_RejectsInvalidDomain(t *testing.T) {
+	// R13: ValidDomain gate catches malformed input even when the body
+	// shape itself is valid JSON.
+	_, srv := newTestServer(t, nil)
+	resp, err := http.Post(srv.URL+"/api/whitelist", "application/json",
+		strings.NewReader(`{"domain":"no-dot-here"}`))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (invalid domain)", resp.StatusCode)
+	}
+}
+
+// brokenResponseWriter is an http.ResponseWriter whose Write always
+// errors. Used to drive the writeJSON encoder-error branch.
+type brokenResponseWriter struct {
+	header http.Header
+}
+
+func (b *brokenResponseWriter) Header() http.Header {
+	if b.header == nil {
+		b.header = http.Header{}
+	}
+	return b.header
+}
+func (b *brokenResponseWriter) Write([]byte) (int, error) { return 0, errBrokenWrite }
+func (b *brokenResponseWriter) WriteHeader(int)           {}
+
+var errBrokenWrite = brokenError{}
+
+type brokenError struct{}
+
+func (brokenError) Error() string { return "broken writer" }
+
+func TestWriteJSON_LogsEncoderErrors(t *testing.T) {
+	// The encoder error path is hard to drive via a real HTTP call
+	// because json.NewEncoder succeeds on every JSON-encodable type.
+	// Inject a ResponseWriter whose Write always errors instead. The
+	// purpose is coverage + no panic — the actual log line is verified
+	// by inspection in the slog handler.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("writeJSON panicked on a broken writer: %v", r)
+		}
+	}()
+	w := &brokenResponseWriter{}
+	writeJSON(w, map[string]string{"x": "y"})
 }
 
 func TestHealthEndpoint(t *testing.T) {

@@ -194,6 +194,71 @@ func TestServeDNS_BlockedPreservesEDNS0(t *testing.T) {
 	}
 }
 
+func TestServeDNS_CacheMissForwardsToUpstream(t *testing.T) {
+	// Exercises the cache-miss → forward → cache-set → write path. With
+	// no entry in the cache, the handler must dispatch to the upstream
+	// mock and store the result.
+	addr, hits := startMockUpstream(t, net.IPv4(4, 4, 4, 4))
+
+	store := blocklist.NewStore()
+	c := cache.New(10)
+	defer c.Close()
+
+	h := NewHandler(store, stats.New(), []string{addr}, nullLogger{}, "zero", 60, c)
+	w := fakeClient()
+	h.ServeDNS(w, buildReq("example.com"))
+
+	if hits.Load() != 1 {
+		t.Errorf("upstream got %d queries, want 1", hits.Load())
+	}
+	if w.written == nil || len(w.written.Answer) != 1 {
+		t.Fatal("no answer written to client")
+	}
+	// And the result should now be cached.
+	if _, ok := c.Get(dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}); !ok {
+		t.Error("response was not stored in the cache after forward")
+	}
+}
+
+func TestServeDNS_UpstreamFailureProducesServfail(t *testing.T) {
+	// All upstreams are unreachable. Handler must surface SERVFAIL via
+	// dns.HandleFailed rather than write a malformed reply.
+	store := blocklist.NewStore()
+	h := NewHandler(store, stats.New(), []string{"127.0.0.1:1"}, nullLogger{}, "zero", 60, nil)
+	w := fakeClient()
+	h.ServeDNS(w, buildReq("example.com"))
+	if w.written == nil {
+		t.Fatal("no response written")
+	}
+	if w.written.Rcode != dns.RcodeServerFailure {
+		t.Errorf("Rcode = %d, want SERVFAIL", w.written.Rcode)
+	}
+}
+
+func TestServeDNS_WriteSinkholeErrorIsLogged(t *testing.T) {
+	// Confirm the writeSinkhole error branch is exercised when the
+	// ResponseWriter fails. We don't capture log output here — the
+	// purpose is to drive the branch for coverage and ensure the
+	// handler doesn't panic.
+	store := blocklist.NewStore()
+	store.Replace([]string{"ads.example.com"})
+
+	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil)
+	w := fakeClient()
+	w.writeError = errFakeWriteFailed
+	h.ServeDNS(w, buildReq("ads.example.com"))
+	if w.written == nil {
+		t.Error("WriteMsg should still have been called (just with an error)")
+	}
+}
+
+// errFakeWriteFailed is a sentinel injected via fakeWriter.writeError.
+var errFakeWriteFailed = fakeError{}
+
+type fakeError struct{}
+
+func (fakeError) Error() string { return "fake write failed" }
+
 func TestServeDNS_BlockedMXReturnsNoAnswer(t *testing.T) {
 	// Blocked domain in zero mode, queried for MX: handler should reply
 	// NOERROR with no Answer rather than fabricating an MX record.

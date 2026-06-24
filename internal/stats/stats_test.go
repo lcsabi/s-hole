@@ -1,10 +1,53 @@
 package stats
 
 import (
+	"bytes"
+	"io"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 )
+
+func TestCounter_Print(t *testing.T) {
+	// Print writes to stdout; redirect it through a pipe to assert the
+	// human-readable format includes the values from a recorded query.
+	c := New()
+	c.RecordQuery("1.2.3.4", "ads.example.com.", true)
+	c.RecordQuery("1.2.3.4", "google.com.", false)
+
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	done := make(chan string)
+	go func() {
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+
+	c.Print()
+	w.Close()
+	os.Stdout = orig
+	out := <-done
+
+	if !strings.Contains(out, "[stats]") {
+		t.Errorf("Print() output missing [stats] prefix: %q", out)
+	}
+	if !strings.Contains(out, "total=2") {
+		t.Errorf("Print() output missing total=2: %q", out)
+	}
+	if !strings.Contains(out, "blocked=1") {
+		t.Errorf("Print() output missing blocked=1: %q", out)
+	}
+	if !strings.Contains(out, "top blocked domains") {
+		t.Errorf("Print() output missing top blocked domains section: %q", out)
+	}
+}
 
 func TestCounter_RecordAndSnapshot(t *testing.T) {
 	c := New()

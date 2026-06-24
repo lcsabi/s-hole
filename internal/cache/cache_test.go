@@ -172,6 +172,35 @@ func TestCache_StatsHitsAndMisses(t *testing.T) {
 	}
 }
 
+func TestCache_CleanupExpiredRemovesStale(t *testing.T) {
+	// Direct unit test for the cleanup body so we don't have to wait on
+	// the 1-minute ticker for coverage of the sweep.
+	c := New(10)
+	defer c.Close()
+
+	live := dns.Question{Name: "live.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	expired := dns.Question{Name: "expired.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	c.Set(live, buildResponse(live, 600))
+	c.Set(expired, buildResponse(expired, 5))
+
+	// Backdate the expired entry past its TTL.
+	c.mu.Lock()
+	e := c.entries[key(expired)]
+	e.cached = e.cached.Add(-10 * time.Second)
+	c.mu.Unlock()
+
+	removed := c.cleanupExpired(time.Now())
+	if removed != 1 {
+		t.Errorf("cleanupExpired removed %d, want 1", removed)
+	}
+	if _, ok := c.entries[key(live)]; !ok {
+		t.Error("live entry was incorrectly purged")
+	}
+	if _, ok := c.entries[key(expired)]; ok {
+		t.Error("expired entry survived cleanup")
+	}
+}
+
 func TestCache_CloseStopsGoroutine(t *testing.T) {
 	// Regression for b/018: Close must signal the cleanup goroutine to
 	// return. A second Close() would panic on "close of closed channel"

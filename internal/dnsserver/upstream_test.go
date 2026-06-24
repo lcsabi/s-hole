@@ -153,6 +153,29 @@ func TestUpstreamTracker_CooldownExpires(t *testing.T) {
 	}
 }
 
+func TestForward_PackageLevelHonorsTracker(t *testing.T) {
+	// forward() is a thin wrapper around forwardWith(forwardTracker).
+	// Cover it by issuing one query through a live mock upstream so the
+	// package-level tracker records a success.
+	addr, hits := startMockUpstream(t, net.IPv4(5, 5, 5, 5))
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	resp, err := forward(ctx, req, []string{addr})
+	if err != nil {
+		t.Fatalf("forward: %v", err)
+	}
+	if hits.Load() != 1 {
+		t.Errorf("upstream hits = %d, want 1", hits.Load())
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("response has %d answers, want 1", len(resp.Answer))
+	}
+}
+
 func TestUpstreamTracker_SuccessClearsCooldown(t *testing.T) {
 	tr := newUpstreamTracker()
 	now := time.Now()

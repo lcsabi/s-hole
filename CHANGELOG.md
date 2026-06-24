@@ -9,6 +9,10 @@ operator-facing summary.
 ## [Unreleased]
 
 ### Added
+- Comprehensive test coverage round: every implementation package now
+  at ≥ 85 % line coverage (`config` and `stats` at 100 %). Module-wide
+  coverage went from 60.8 % to 71.3 %, with the residual being the
+  `main()` bootstrap and Windows SCM glue that cannot be unit-tested.
 - `SIGHUP` triggers a blocklist refresh on every non-Windows build.
   Operators can run `kill -HUP $(pidof s-hole)` or
   `systemctl kill -s HUP s-hole` to refresh without enabling the

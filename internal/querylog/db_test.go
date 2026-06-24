@@ -17,6 +17,28 @@ func newDB(t *testing.T, logQueries string) (*DBLogger, string) {
 	return db, path
 }
 
+func TestNewDBLogger_BadPathErrors(t *testing.T) {
+	// A path inside a nonexistent directory cannot be created. Verify
+	// NewDBLogger surfaces the error rather than returning a half-built
+	// DBLogger that would crash on the first write.
+	_, err := NewDBLogger("/does/not/exist/queries.db", "all", time.Hour, 0)
+	if err == nil {
+		t.Error("NewDBLogger with unwritable path returned nil error")
+	}
+}
+
+func TestDBLogger_PruneIsNoOpWhenEmpty(t *testing.T) {
+	// prune() on an empty table must not error. Covers the
+	// "RowsAffected == 0" log branch.
+	path := filepath.Join(t.TempDir(), "queries.db")
+	db, err := NewDBLogger(path, "all", time.Hour, 1)
+	if err != nil {
+		t.Fatalf("NewDBLogger: %v", err)
+	}
+	defer db.Close()
+	db.prune() // must not panic or error visibly
+}
+
 func TestDBLogger_RoundTrip(t *testing.T) {
 	db, _ := newDB(t, "all")
 

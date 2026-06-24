@@ -1,6 +1,7 @@
 package querylog
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -9,7 +10,7 @@ import (
 func newDB(t *testing.T, logQueries string) (*DBLogger, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "queries.db")
-	db, err := NewDBLogger(path, logQueries, 50*time.Millisecond)
+	db, err := NewDBLogger(path, logQueries, 50*time.Millisecond, 0)
 	if err != nil {
 		t.Fatalf("NewDBLogger: %v", err)
 	}
@@ -44,7 +45,7 @@ func TestDBLogger_RecentReturnsNewestFirst(t *testing.T) {
 	// Wait for the flush tick.
 	time.Sleep(150 * time.Millisecond)
 
-	rows, err := db.Recent(10)
+	rows, err := db.Recent(context.Background(), 10)
 	if err != nil {
 		t.Fatalf("Recent: %v", err)
 	}
@@ -71,7 +72,7 @@ func TestDBLogger_TopBlocked(t *testing.T) {
 
 	time.Sleep(150 * time.Millisecond)
 
-	top, err := db.TopBlocked(5)
+	top, err := db.TopBlocked(context.Background(), 5)
 	if err != nil {
 		t.Fatalf("TopBlocked: %v", err)
 	}
@@ -92,7 +93,7 @@ func TestDBLogger_FilterBlocked(t *testing.T) {
 
 	time.Sleep(150 * time.Millisecond)
 
-	rows, err := db.Recent(10)
+	rows, err := db.Recent(context.Background(), 10)
 	if err != nil {
 		t.Fatalf("Recent: %v", err)
 	}
@@ -108,7 +109,7 @@ func TestDBLogger_CloseFlushesPending(t *testing.T) {
 	// Regression for b/005: entries enqueued just before Close must be
 	// persisted; Close waits on the WaitGroup.
 	path := filepath.Join(t.TempDir(), "queries.db")
-	db, err := NewDBLogger(path, "all", 1*time.Hour) // long interval — only drain on Close fires
+	db, err := NewDBLogger(path, "all", 1*time.Hour, 0) // long interval — only drain on Close fires
 	if err != nil {
 		t.Fatalf("NewDBLogger: %v", err)
 	}
@@ -120,17 +121,52 @@ func TestDBLogger_CloseFlushesPending(t *testing.T) {
 	}
 
 	// Re-open and verify all 10 rows landed.
-	db2, err := NewDBLogger(path, "all", 1*time.Hour)
+	db2, err := NewDBLogger(path, "all", 1*time.Hour, 0)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
 	defer db2.Close()
-	rows, err := db2.Recent(20)
+	rows, err := db2.Recent(context.Background(), 20)
 	if err != nil {
 		t.Fatalf("Recent: %v", err)
 	}
 	if len(rows) != 10 {
 		t.Errorf("got %d rows after Close+reopen, want 10", len(rows))
+	}
+}
+
+func TestDBLogger_RetentionPruneDeletesOldRows(t *testing.T) {
+	// R16: with retentionDays=1, a row dated 2 days ago must be deleted
+	// by the prune goroutine. We bypass the periodic ticker by calling
+	// prune() directly on a DBLogger built with retention enabled.
+	path := filepath.Join(t.TempDir(), "queries.db")
+	db, err := NewDBLogger(path, "all", 1*time.Hour, 1)
+	if err != nil {
+		t.Fatalf("NewDBLogger: %v", err)
+	}
+	defer db.Close()
+
+	// Inject one fresh row and one row stamped 2 days ago.
+	tx, _ := db.db.Begin()
+	old := time.Now().Add(-48 * time.Hour).Format(time.RFC3339)
+	now := time.Now().Format(time.RFC3339)
+	tx.Exec("INSERT INTO queries(ts,client_ip,domain,blocked) VALUES(?,?,?,?)", old, "1.1.1.1", "old.com", 1)
+	tx.Exec("INSERT INTO queries(ts,client_ip,domain,blocked) VALUES(?,?,?,?)", now, "1.1.1.1", "new.com", 1)
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+
+	db.prune()
+
+	rows, err := db.Recent(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("Recent: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("after prune got %d rows, want 1", len(rows))
+	}
+	if rows[0].Domain != "new.com" {
+		t.Errorf("kept row = %q, want new.com", rows[0].Domain)
 	}
 }
 

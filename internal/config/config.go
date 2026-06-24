@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -43,6 +44,9 @@ type Config struct {
 	// DBFlushInterval controls how often batched queries are written to SQLite.
 	// Longer values reduce SD card writes on embedded hardware.
 	DBFlushInterval string `yaml:"db_flush_interval"`
+	// QueryDBRetentionDays caps how long query rows are kept in SQLite. A
+	// background prune deletes rows older than this. 0 = retain forever.
+	QueryDBRetentionDays int `yaml:"query_db_retention_days"`
 }
 
 // Load reads and parses the YAML config at path. Missing fields receive
@@ -63,7 +67,78 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	cfg.applyDefaults()
+	cfg.applyEnvOverrides()
 	return cfg, nil
+}
+
+// applyEnvOverrides reads S_HOLE_* environment variables and overrides
+// the corresponding YAML fields. Container deployments use this to avoid
+// rebuilding a config bind-mount for every change. Unknown keys are
+// ignored; malformed numeric values are silently ignored to preserve
+// startup (a warn-level slog message would also work but the config
+// package deliberately avoids logging).
+//
+// Supported overrides:
+//
+//	S_HOLE_LISTEN              → listen
+//	S_HOLE_API_LISTEN          → api_listen
+//	S_HOLE_LOG_FILE            → log_file
+//	S_HOLE_LOG_QUERIES         → log_queries
+//	S_HOLE_QUERY_DB            → query_db
+//	S_HOLE_CACHE_DIR           → cache_dir
+//	S_HOLE_BLOCK_MODE          → block_mode
+//	S_HOLE_REFRESH_INTERVAL    → refresh_interval
+//	S_HOLE_STATS_INTERVAL      → stats_interval
+//	S_HOLE_DB_FLUSH_INTERVAL   → db_flush_interval
+//	S_HOLE_CACHE_SIZE          → cache_size (integer)
+//	S_HOLE_BLOCK_TTL           → block_ttl  (integer)
+//	S_HOLE_RETENTION_DAYS      → query_db_retention_days (integer)
+func (c *Config) applyEnvOverrides() {
+	if v, ok := os.LookupEnv("S_HOLE_LISTEN"); ok {
+		c.Listen = v
+	}
+	if v, ok := os.LookupEnv("S_HOLE_API_LISTEN"); ok {
+		c.APIListen = v
+	}
+	if v, ok := os.LookupEnv("S_HOLE_LOG_FILE"); ok {
+		c.LogFile = v
+	}
+	if v, ok := os.LookupEnv("S_HOLE_LOG_QUERIES"); ok {
+		c.LogQueries = v
+	}
+	if v, ok := os.LookupEnv("S_HOLE_QUERY_DB"); ok {
+		c.QueryDB = v
+	}
+	if v, ok := os.LookupEnv("S_HOLE_CACHE_DIR"); ok {
+		c.CacheDir = v
+	}
+	if v, ok := os.LookupEnv("S_HOLE_BLOCK_MODE"); ok {
+		c.BlockMode = v
+	}
+	if v, ok := os.LookupEnv("S_HOLE_REFRESH_INTERVAL"); ok {
+		c.RefreshInterval = v
+	}
+	if v, ok := os.LookupEnv("S_HOLE_STATS_INTERVAL"); ok {
+		c.StatsInterval = v
+	}
+	if v, ok := os.LookupEnv("S_HOLE_DB_FLUSH_INTERVAL"); ok {
+		c.DBFlushInterval = v
+	}
+	if v, ok := os.LookupEnv("S_HOLE_CACHE_SIZE"); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.CacheSize = n
+		}
+	}
+	if v, ok := os.LookupEnv("S_HOLE_BLOCK_TTL"); ok {
+		if n, err := strconv.ParseUint(v, 10, 32); err == nil {
+			c.BlockTTL = uint32(n)
+		}
+	}
+	if v, ok := os.LookupEnv("S_HOLE_RETENTION_DAYS"); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.QueryDBRetentionDays = n
+		}
+	}
 }
 
 func (c *Config) applyDefaults() {
@@ -92,7 +167,10 @@ func (c *Config) applyDefaults() {
 		c.LogQueries = "all"
 	}
 	if c.APIListen == "" {
-		c.APIListen = "0.0.0.0:8080"
+		// Localhost-only default: the admin UI is unauthenticated and
+		// exposing it to the LAN should be an opt-in. Operators who want
+		// LAN access set api_listen: "0.0.0.0:8080" explicitly.
+		c.APIListen = "127.0.0.1:8080"
 	}
 	if c.CacheSize == 0 {
 		c.CacheSize = 2000

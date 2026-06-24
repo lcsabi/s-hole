@@ -115,6 +115,43 @@ func TestStore_Len(t *testing.T) {
 	}
 }
 
+// BenchmarkStore_IsBlocked guards the hot DNS path against accidental
+// O(n) regressions: IsBlocked is called once per query and is the single
+// largest call-graph hop on every blocked-or-not decision.
+func BenchmarkStore_IsBlocked(b *testing.B) {
+	s := NewStore()
+	const N = 100_000
+	dom := make([]string, 0, N)
+	for i := 0; i < N; i++ {
+		d := "x" + itoa(i) + ".example.com"
+		dom = append(dom, d)
+	}
+	s.Replace(dom)
+
+	probe := "x50000.example.com"
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if !s.IsBlocked(probe) {
+			b.Fatal("probe not found")
+		}
+	}
+}
+
+// itoa avoids strconv import in the benchmark hot loop.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
+}
+
 func TestNormalize(t *testing.T) {
 	tests := []struct {
 		in, want string

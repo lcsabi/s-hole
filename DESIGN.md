@@ -49,28 +49,38 @@ s-hole ("sinkhole") is a minimal DNS sinkhole written in Go. It is designed to b
 Client devices (DNS server learned via DHCP from router)
         │ UDP/TCP :53
         ▼
-┌───────────────────────────────────────────────────────────────┐
-│                        s-hole process                          │
-│                                                               │
-│  ┌──────────┐  blocked?   ┌─────────────────────────────────┐ │
-│  │ Handler  │────────────▶│ Sinkhole reply                  │ │
-│  │          │             │ (0.0.0.0 / :: or NXDOMAIN)      │ │
-│  │          │  cache hit? └─────────────────────────────────┘ │
-│  │          │────────────▶ DNS Response Cache (in-memory)      │
-│  │          │  cache miss → upstream forward                   │
-│  └────┬─────┘                                                 │
-│       │ every query                                           │
-│  ┌────▼──────┐  ┌──────────────┐  ┌──────────────────────┐  │
-│  │ Blocklist │  │    Stats     │  │    Query Logger       │  │
-│  │   Store   │  │   Counter    │  │  (file + SQLite WAL)  │  │
-│  └───────────┘  └──────────────┘  └──────────────────────┘  │
-│                                                               │
-│  ┌──────────────────────────────────────────────────────┐    │
-│  │              Admin HTTP Server (:8080)                │    │
-│  │          REST API  +  embedded web UI                 │    │
-│  └──────────────────────────────────────────────────────┘    │
-└───────────────────────────────────────────────────────────────┘
-        │ cache miss
+┌────────────────────────────────────────────────────────────────────┐
+│                          s-hole process                             │
+│                                                                    │
+│  ┌──────────┐  blocked?   ┌──────────────────────────────────────┐ │
+│  │ Handler  │────────────▶│ Sinkhole reply (zero / NXDOMAIN)     │ │
+│  │          │             │ EDNS0 OPT mirrored from request       │ │
+│  │          │  cache hit? └──────────────────────────────────────┘ │
+│  │          │────────────▶ DNS Response Cache  (atomic hits/misses)│
+│  │          │  cache miss → upstream forward (health-tracked)      │
+│  └────┬─────┘                                                      │
+│       │ every query                                                │
+│  ┌────▼──────┐  ┌──────────────┐  ┌──────────────────────────┐    │
+│  │ Blocklist │  │    Stats     │  │   Query Logger            │   │
+│  │   Store   │  │   Counter    │  │  (file + SQLite WAL)      │   │
+│  │ (atomic   │  │ (top-N maps  │  │  context-aware reads;     │   │
+│  │  Replace) │  │  bounded)    │  │  optional retention prune)│   │
+│  └───────────┘  └──────────────┘  └──────────────────────────┘    │
+│                                                                    │
+│  ┌──────────────────────────────────────────────────────────┐     │
+│  │       Admin HTTP Server (default 127.0.0.1:8080)          │     │
+│  │   REST API  +  embedded web UI  +  /healthz  +  /metrics  │     │
+│  └──────────────────────────────────────────────────────────┘     │
+│                                                                    │
+│  ┌─────────────────────┐  ┌──────────────────────────────────┐    │
+│  │  Periodic refresh   │  │  Periodic stats print            │    │
+│  │  ticker  ── shares ─┼──┤  ticker (panic-recovered)        │    │
+│  │  single-flight gate │  └──────────────────────────────────┘    │
+│  └─────────────────────┘                                          │
+│                                                                    │
+│  Structured logging via log/slog. JSON format opt-in.              │
+└────────────────────────────────────────────────────────────────────┘
+        │ cache miss; ctx-bounded; per-upstream 3 s + cooldown
         ▼
   Upstream DNS (1.1.1.1:53, 8.8.8.8:53, …)
 ```
@@ -89,7 +99,11 @@ The `Handler` struct is the core routing point. For each query:
 4. Check the DNS response cache. If a valid (non-expired) entry exists, decrement its TTLs and return it directly.
 5. Forward to the first responsive upstream resolver. On success, store the response in the cache.
 
-Upstream forwarding uses a 3-second per-upstream timeout. Upstreams are tried in order; the first successful response wins.
+Upstream forwarding uses a 3-second per-upstream timeout. Upstreams are tried in order; the first successful response wins. Forwarding accepts a `context.Context` so the overall query has a hard deadline (default 10 s) and is cancelled if the calling DNS handler exits.
+
+An in-process upstream health tracker remembers which upstream failed most recently. On the next query, upstreams that failed within the last 30 seconds are skipped on the first sweep — so a primary outage no longer adds 3 s of round-trip latency to every subsequent query. If every upstream is in cooldown, the tracker is bypassed and every upstream is retried (we never want a transient outage to turn into a hard failure).
+
+Blocked replies preserve the EDNS0 OPT pseudo-record from the request when the client advertised one, so a client that advertises EDNS0 (and DNSSEC OK) does not fall back to legacy DNS for the sinkholed response.
 
 ### Blocklist Store (`internal/blocklist/`)
 
@@ -104,6 +118,10 @@ Downloads use a dedicated `http.Client` with a 60-second timeout. The response b
 A whitelist (exact domain names) is checked before the blocklist. A whitelisted domain is never blocked regardless of blocklist membership. The whitelist can be extended at runtime via the REST API; runtime additions take effect immediately but do not persist across restarts.
 
 Blocklist replacement is atomic from the perspective of DNS handlers: `Store.Replace` swaps the internal map pointer under a write lock, so handlers either see the old list or the new list — never a partial update.
+
+The on-disk cache file is also written atomically: `fetchList` streams to a sibling `.tmp` file and `os.Rename`s on success. A network drop or `kill -9` mid-download leaves only the `.tmp` and the prior cache file in place; the next start still sees a usable cache.
+
+Entries in a parsed list that fail `ValidDomain` (empty, no dot, over 253 chars, or containing characters illegal in a DNS label) are silently dropped so one malformed blocklist line cannot pollute the store. The same validator gates user-supplied whitelist entries via `POST /api/whitelist`.
 
 ### DNS Response Cache (`internal/cache/`)
 
@@ -146,6 +164,10 @@ Suitable for `grep`, `tail -f`, and log rotation via external tools (e.g. `logro
 
 On shutdown, `DBLogger.Close()` blocks on a `sync.WaitGroup` until the writer goroutine has drained the channel and committed the final batch. Only then is the underlying `*sql.DB` closed. This guarantees the last batch of queries is never lost on a clean exit.
 
+`Recent` and `TopBlocked` accept a `context.Context` and pass it through to `db.QueryContext`, so a client-disconnect on the admin server cancels the underlying SQL query rather than letting it run to completion.
+
+A retention prune goroutine runs every hour when `query_db_retention_days > 0`, issuing `DELETE FROM queries WHERE ts < ?` against the configured cutoff. Default is 0 (retain forever).
+
 The `querylog.Logger` interface (`Log(clientIP, domain string, blocked bool)`) is implemented by `FileLogger`, `DBLogger`, and `Multi`, with compile-time assertions in the package so a future signature drift is caught at build time rather than at the call site.
 
 **SQLite pragmas applied on open:**
@@ -178,6 +200,8 @@ CREATE TABLE queries (
 
 `Snapshot` loads `blocked` *before* `total`. This load order matters: `RecordQuery` increments `total` atomically *before* taking the mutex and incrementing `blocked`, so reading `total` first allows concurrent queries to inflate `blocked` past the snapshotted `total` and yield a block percentage greater than 100. Reading `blocked` first guarantees the invariant `blocked ≤ total` because every `blocked.Add(1)` is preceded by a `total.Add(1)`.
 
+The per-domain and per-client tally maps are capped at 4 096 entries each. When the cap is exceeded, the bottom half by count is dropped — preserving the high-traffic entries that the top-N report cares about and keeping memory bounded against a long-running process that sees millions of unique keys.
+
 ### Admin Interface (`internal/api/`)
 
 An HTTP server (default `:8080`) serves two things:
@@ -198,9 +222,22 @@ Blocklist refresh is single-flighted via a `sync.Mutex` held in `main.go` and sh
 | `/api/stats` | GET | Live stats snapshot (uptime, totals, cache rate, top domains/clients) |
 | `/api/queries` | GET | Recent queries from SQLite (`?limit=N`, default 50) |
 | `/api/whitelist` | GET | List runtime-whitelisted domains |
-| `/api/whitelist` | POST | Add domain: `{"domain":"..."}` |
+| `/api/whitelist` | POST | Add domain: `{"domain":"..."}`. 64 KiB body cap; rejects malformed domains via `blocklist.ValidDomain`. |
 | `/api/whitelist` | DELETE | Remove domain: `?domain=...` |
 | `/api/reload` | POST | Trigger immediate blocklist refresh (de-duplicated via single-flight mutex) |
+| `/healthz` | GET | Liveness probe — returns 200 OK while the HTTP server is responsive |
+| `/metrics` | GET | Prometheus text exposition: `shole_queries_total`, `shole_blocked_total`, `shole_cache_hits_total`, `shole_cache_misses_total`, `shole_cache_size`, `shole_blocklist_size`, `shole_whitelist_size` |
+
+### Observability and Logging
+
+Logging is structured via `log/slog`. Each package binds a child logger with a `pkg=<name>` attribute so a grep on the log stream cleanly separates DNS, blocklist, querylog, and api messages. The default handler is text on stdout (`time=… level=… msg=… key=value`); `S_HOLE_LOG_FORMAT=json` switches to JSON, which is what most container/log-aggregation pipelines expect.
+
+Operational diagnostics ship over two surfaces:
+
+- **`/healthz`** — a tiny endpoint that returns 200 as long as the HTTP server is responsive. Liveness only — it deliberately makes no downstream call so a flaky upstream cannot cause the container orchestrator to restart the process.
+- **`/metrics`** — Prometheus text exposition (format `0.0.4`) for the in-process counters: query totals, block counts, cache hits/misses, cache size, blocklist size, whitelist size. We hand-roll the exposition rather than pulling in `prometheus/client_golang` to keep the dependency graph small.
+
+Periodic `runTicker` goroutines (stats print, blocklist refresh) are wrapped in `recover()`. A panic inside the ticker function is logged and the next tick still fires — a transient parser failure no longer silently freezes the refresh loop.
 
 ### Startup Network Hint
 
@@ -211,6 +248,8 @@ On startup, `main.go` calls `printNetworkHint`, which enumerates local interface
 All configuration lives in a single YAML file. The struct uses `yaml` tags and applies safe defaults in `applyDefaults()` so the minimal valid config is an empty file. Duration fields are stored as strings and parsed at startup; invalid durations are fatal errors rather than silently ignored.
 
 A `Validate()` method runs after `Load()` and rejects unrecognised values for the enumerated fields (`block_mode`, `log_queries`). A typo such as `block_mode: "NXDOMAIN"` is now a fatal startup error instead of a silent fallback to the default — operator misconfiguration is surfaced immediately at the source.
+
+`applyEnvOverrides()` runs after `applyDefaults()` and lets a container deployment override any commonly-tuned field via an `S_HOLE_*` environment variable without rebuilding a bind-mounted YAML file. The full list is in `README.md`. Malformed numeric values are silently ignored so a typo in an env var never blocks startup.
 
 ### Packaging and Deployment (`internal/service/`, `deploy/`, `Dockerfile`)
 

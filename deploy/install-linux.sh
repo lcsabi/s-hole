@@ -38,7 +38,6 @@ echo "==> installing systemd unit"
 cat > /etc/systemd/system/s-hole.service << 'EOF'
 [Unit]
 Description=s-hole DNS Sinkhole
-Documentation=https://github.com/laszlo/s-hole
 After=network-online.target
 Wants=network-online.target
 

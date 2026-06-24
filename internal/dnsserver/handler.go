@@ -1,19 +1,32 @@
-// Package dns implements the DNS sinkhole's listening servers and per-query
-// handler. The handler consults the blocklist, then the in-memory response
-// cache, then upstream resolvers — in that order — and routes the reply
-// back to the client. UDP and TCP listeners run in parallel; clients fall
-// back to TCP automatically when a UDP reply is truncated.
-package dns
+// Package dnsserver implements the DNS sinkhole's listening servers and
+// per-query handler. The handler consults the blocklist, then the in-memory
+// response cache, then upstream resolvers — in that order — and routes the
+// reply back to the client. UDP and TCP listeners run in parallel; clients
+// fall back to TCP automatically when a UDP reply is truncated.
+//
+// The package is named dnsserver to avoid colliding with github.com/miekg/dns,
+// which we import as `dns` for its message-codec types.
+package dnsserver
 
 import (
-	"fmt"
+	"context"
+	"log/slog"
 	"net"
+	"time"
 
 	"github.com/laszlo/s-hole/internal/blocklist"
 	"github.com/laszlo/s-hole/internal/cache"
 	"github.com/laszlo/s-hole/internal/stats"
 	"github.com/miekg/dns"
 )
+
+var logger = slog.With("pkg", "dns")
+
+// queryDeadline is the maximum time the handler is allowed to spend
+// resolving a single query end-to-end (upstreams × per-upstream timeout
+// is the worst case). Bounds the goroutine lifetime under pathological
+// upstream behaviour.
+const queryDeadline = 10 * time.Second
 
 // Logger is the minimal log sink used by the DNS handler. Both the file
 // and SQLite query loggers satisfy it; main.go fans out to multiple via
@@ -86,15 +99,17 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			cached.Id = req.Id
 			h.counter.RecordCacheHit()
 			if err := w.WriteMsg(cached); err != nil {
-				fmt.Printf("[dns] write cached: %v\n", err)
+				logger.Warn("write cached response failed", "err", err, "domain", domain)
 			}
 			return
 		}
 	}
 
-	resp, err := forward(req, h.upstreams)
+	ctx, cancel := context.WithTimeout(context.Background(), queryDeadline)
+	defer cancel()
+	resp, err := forward(ctx, req, h.upstreams)
 	if err != nil {
-		fmt.Printf("[dns] forward error: %v\n", err)
+		logger.Warn("upstream forward failed", "err", err, "domain", domain)
 		dns.HandleFailed(w, req)
 		return
 	}
@@ -104,7 +119,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	if err := w.WriteMsg(resp); err != nil {
-		fmt.Printf("[dns] write: %v\n", err)
+		logger.Warn("write response failed", "err", err, "domain", domain)
 	}
 }
 
@@ -112,11 +127,17 @@ func (h *Handler) writeSinkhole(w dns.ResponseWriter, req *dns.Msg, q dns.Questi
 	resp := new(dns.Msg)
 	resp.SetReply(req)
 	resp.Authoritative = true
+	// Pass EDNS0 / OPT through so clients that advertised it do not retry
+	// with a smaller buffer or fall back to legacy DNS. Mirrors what an
+	// upstream resolver would do.
+	if opt := req.IsEdns0(); opt != nil {
+		resp.SetEdns0(opt.UDPSize(), opt.Do())
+	}
 
 	if h.blockMode == "nxdomain" {
 		resp.SetRcode(req, dns.RcodeNameError)
 		if err := w.WriteMsg(resp); err != nil {
-			fmt.Printf("[dns] write sinkhole: %v\n", err)
+			logger.Warn("write sinkhole reply failed", "err", err, "domain", q.Name)
 		}
 		return
 	}
@@ -136,7 +157,7 @@ func (h *Handler) writeSinkhole(w dns.ResponseWriter, req *dns.Msg, q dns.Questi
 	}
 	// For MX, TXT, etc. return NOERROR with no answer — clients won't retry.
 	if err := w.WriteMsg(resp); err != nil {
-		fmt.Printf("[dns] write sinkhole: %v\n", err)
+		logger.Warn("write sinkhole reply failed", "err", err, "domain", q.Name)
 	}
 }
 

@@ -1,4 +1,4 @@
-package dns
+package dnsserver
 
 import (
 	"net"
@@ -168,6 +168,29 @@ func TestServeDNS_EmptyQuestion(t *testing.T) {
 	}
 	if w.written.Rcode != dns.RcodeServerFailure {
 		t.Errorf("Rcode = %d, want SERVFAIL", w.written.Rcode)
+	}
+}
+
+func TestServeDNS_BlockedPreservesEDNS0(t *testing.T) {
+	// R12: clients that advertise EDNS0 expect the OPT record to be
+	// echoed in the reply. A missing OPT causes some resolvers to fall
+	// back to legacy DNS, adding round trips. Verify that a sinkholed
+	// reply still carries OPT.
+	store := blocklist.NewStore()
+	store.Replace([]string{"ads.example.com"})
+
+	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil)
+	w := fakeClient()
+	req := new(dns.Msg)
+	req.SetQuestion("ads.example.com.", dns.TypeA)
+	req.SetEdns0(4096, true)
+
+	h.ServeDNS(w, req)
+	if w.written == nil {
+		t.Fatal("no response written")
+	}
+	if w.written.IsEdns0() == nil {
+		t.Error("sinkhole reply dropped OPT pseudo-record; clients will fall back to legacy DNS")
 	}
 }
 

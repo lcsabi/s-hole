@@ -13,9 +13,8 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io/fs"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -26,14 +25,24 @@ import (
 	"github.com/laszlo/s-hole/internal/stats"
 )
 
+var logger = slog.With("pkg", "api")
+
 //go:embed static
 var staticFiles embed.FS
 
+// CacheStatser is the subset of *cache.Cache that /metrics needs. Modelled
+// as an interface so the field can be nil (caching disabled) and so the
+// api package can be tested without instantiating a real cache.
+type CacheStatser interface {
+	Stats() (hits, misses uint64, size int)
+}
+
 // Server exposes the admin REST API and serves the web UI.
 type Server struct {
-	counter *stats.Counter
-	db      *querylog.DBLogger // nil when query_db is not configured
-	store   *blocklist.Store
+	counter  *stats.Counter
+	db       *querylog.DBLogger // nil when query_db is not configured
+	store    *blocklist.Store
+	dnsCache CacheStatser // nil when caching is disabled
 	// reloadFn is the single-flight blocklist refresh; the caller owns the
 	// mutex so the periodic timer and the API are serialised against the
 	// same gate. Returns false if a refresh is already running.
@@ -41,12 +50,12 @@ type Server struct {
 	httpServer *http.Server
 }
 
-// New constructs a Server. db may be nil if SQLite logging is disabled —
-// the queries endpoint will then return an empty array. reloadFn must be
-// the single-flight blocklist refresh closure owned by main.go; see the
+// New constructs a Server. db and dnsCache may be nil to disable the
+// corresponding metric/endpoint surfaces. reloadFn must be the
+// single-flight blocklist refresh closure owned by main.go; see the
 // reloadFn field for the contract.
-func New(counter *stats.Counter, db *querylog.DBLogger, store *blocklist.Store, reloadFn func() bool) *Server {
-	return &Server{counter: counter, db: db, store: store, reloadFn: reloadFn}
+func New(counter *stats.Counter, db *querylog.DBLogger, store *blocklist.Store, dnsCache CacheStatser, reloadFn func() bool) *Server {
+	return &Server{counter: counter, db: db, store: store, dnsCache: dnsCache, reloadFn: reloadFn}
 }
 
 // Timeouts protect the unauthenticated admin server from slowloris-style
@@ -63,7 +72,7 @@ const (
 // http.ErrServerClosed (raised by a clean Shutdown) is suppressed so callers
 // can treat any returned error as an actual failure.
 func (s *Server) ListenAndServe(addr string) error {
-	fmt.Printf("[api] admin UI → http://%s\n", addr)
+	logger.Info("admin UI listening", "addr", addr, "url", "http://"+addr)
 	hs := &http.Server{
 		Addr:              addr,
 		Handler:           s.handler(),
@@ -96,10 +105,15 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /api/whitelist", s.handleWhitelistAdd)
 	mux.HandleFunc("DELETE /api/whitelist", s.handleWhitelistRemove)
 	mux.HandleFunc("POST /api/reload", s.handleReload)
+	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("GET /metrics", s.handleMetrics)
 
 	sub, err := fs.Sub(staticFiles, "static")
 	if err != nil {
-		log.Fatalf("[api] embed: %v", err)
+		// Build-time impossible: the embed.FS contains a "static" subtree.
+		// Treat as fatal — this should never fire in a released binary.
+		logger.Error("embedded static FS missing 'static' subtree", "err", err)
+		panic(err)
 	}
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 
@@ -127,9 +141,10 @@ func (s *Server) handleQueries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := s.db.Recent(limit)
+	rows, err := s.db.Recent(r.Context(), limit)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		logger.Warn("recent query failed", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	if rows == nil {
@@ -161,6 +176,10 @@ func (s *Server) handleWhitelistAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	domain := strings.TrimSpace(body.Domain)
+	if !blocklist.ValidDomain(domain) {
+		http.Error(w, "invalid domain (max 253 chars, must contain a dot, alphanumerics/hyphen/underscore only)", http.StatusBadRequest)
+		return
+	}
 	s.store.AddToWhitelist(domain)
 	writeJSON(w, map[string]string{"domain": domain, "status": "whitelisted"})
 }
@@ -185,5 +204,10 @@ func (s *Server) handleReload(w http.ResponseWriter, _ *http.Request) {
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		// Body may be half-written at this point; we cannot fix that, but
+		// at least surface the failure to the operator instead of letting
+		// the client see a silent truncation.
+		logger.Warn("json encode failed", "err", err)
+	}
 }

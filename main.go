@@ -19,7 +19,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -32,13 +32,30 @@ import (
 	"github.com/laszlo/s-hole/internal/blocklist"
 	"github.com/laszlo/s-hole/internal/cache"
 	"github.com/laszlo/s-hole/internal/config"
-	dnsserver "github.com/laszlo/s-hole/internal/dns"
+	"github.com/laszlo/s-hole/internal/dnsserver"
 	"github.com/laszlo/s-hole/internal/querylog"
 	"github.com/laszlo/s-hole/internal/service"
 	"github.com/laszlo/s-hole/internal/stats"
 )
 
+// setupLogger installs the default slog handler. Format is text on a TTY
+// for human readability; switch to JSON via S_HOLE_LOG_FORMAT=json for
+// production / container deployments.
+func setupLogger() {
+	var h slog.Handler
+	opts := &slog.HandlerOptions{Level: slog.LevelInfo}
+	if os.Getenv("S_HOLE_LOG_FORMAT") == "json" {
+		h = slog.NewJSONHandler(os.Stdout, opts)
+	} else {
+		h = slog.NewTextHandler(os.Stdout, opts)
+	}
+	slog.SetDefault(slog.New(h))
+}
+
 func main() {
+	setupLogger()
+	mainLog := slog.With("pkg", "main")
+
 	cfgPath := flag.String("config", "config.yaml", "path to config file")
 	svcAction := flag.String("service", "", "manage the system service: install|uninstall|start|stop")
 	flag.Parse()
@@ -48,58 +65,69 @@ func main() {
 	case "install":
 		absConfig, err := filepath.Abs(*cfgPath)
 		if err != nil {
-			log.Fatalf("config path: %v", err)
+			mainLog.Error("config path", "err", err)
+			os.Exit(1)
 		}
 		if err := service.Install(absConfig); err != nil {
-			log.Fatalf("install: %v", err)
+			mainLog.Error("install", "err", err)
+			os.Exit(1)
 		}
 		return
 	case "uninstall":
 		if err := service.Uninstall(); err != nil {
-			log.Fatalf("uninstall: %v", err)
+			mainLog.Error("uninstall", "err", err)
+			os.Exit(1)
 		}
 		return
 	case "start":
 		if err := service.Start(); err != nil {
-			log.Fatalf("start: %v", err)
+			mainLog.Error("start", "err", err)
+			os.Exit(1)
 		}
 		return
 	case "stop":
 		if err := service.Stop(); err != nil {
-			log.Fatalf("stop: %v", err)
+			mainLog.Error("stop", "err", err)
+			os.Exit(1)
 		}
 		return
 	case "":
 		// continue to normal startup
 	default:
-		log.Fatalf("unknown -service action %q; valid: install, uninstall, start, stop", *svcAction)
+		mainLog.Error("unknown -service action", "action", *svcAction, "valid", "install|uninstall|start|stop")
+		os.Exit(1)
 	}
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		mainLog.Error("load config", "err", err)
+		os.Exit(1)
 	}
 	if err := cfg.Validate(); err != nil {
-		log.Fatalf("config: %v", err)
+		mainLog.Error("validate config", "err", err)
+		os.Exit(1)
 	}
 	refreshInterval, err := cfg.ParsedRefreshInterval()
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		mainLog.Error("parse refresh_interval", "err", err)
+		os.Exit(1)
 	}
 	statsInterval, err := cfg.ParsedStatsInterval()
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		mainLog.Error("parse stats_interval", "err", err)
+		os.Exit(1)
 	}
 	dbFlushInterval, err := cfg.ParsedDBFlushInterval()
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		mainLog.Error("parse db_flush_interval", "err", err)
+		os.Exit(1)
 	}
 
 	store := blocklist.NewStore()
 	store.SetWhitelist(cfg.Whitelist)
 
 	if err := blocklist.Update(store, cfg.Blocklists, cfg.CacheDir); err != nil {
-		log.Printf("blocklist update warning: %v", err)
+		mainLog.Warn("initial blocklist update", "err", err)
 	}
 
 	counter := stats.New()
@@ -108,18 +136,18 @@ func main() {
 
 	var db *querylog.DBLogger
 	if cfg.QueryDB != "" {
-		db, err = querylog.NewDBLogger(cfg.QueryDB, cfg.LogQueries, dbFlushInterval)
+		db, err = querylog.NewDBLogger(cfg.QueryDB, cfg.LogQueries, dbFlushInterval, cfg.QueryDBRetentionDays)
 		if err != nil {
-			log.Printf("[main] SQLite logger disabled: %v", err)
+			mainLog.Warn("SQLite logger disabled", "err", err)
 		} else {
-			fmt.Printf("[main] query log database: %s\n", cfg.QueryDB)
+			mainLog.Info("query log database opened", "path", cfg.QueryDB)
 		}
 	}
 
 	var dnsCache *cache.Cache
 	if cfg.CacheSize > 0 {
 		dnsCache = cache.New(cfg.CacheSize)
-		fmt.Printf("[main] DNS response cache: %d entries max\n", cfg.CacheSize)
+		mainLog.Info("DNS response cache enabled", "max_entries", cfg.CacheSize)
 	}
 
 	logger := buildMultiLogger(fileLog, db)
@@ -134,23 +162,33 @@ func main() {
 	// means a prior refresh is still running. The actual download work runs
 	// in a background goroutine so callers (including the HTTP handler)
 	// return quickly.
+	//
+	// reloadWG lets doStop wait for any in-flight refresh to complete (or
+	// be cancelled by deadline) before the process exits; otherwise the
+	// goroutine could be killed mid-rename and leave a half-written
+	// cache .tmp file behind.
 	var reloadMu sync.Mutex
+	var reloadWG sync.WaitGroup
 	reloadFn := func() bool {
 		if !reloadMu.TryLock() {
 			return false
 		}
+		reloadWG.Add(1)
 		go func() {
 			defer reloadMu.Unlock()
-			fmt.Println("[main] refreshing blocklists...")
-			blocklist.Update(store, cfg.Blocklists, cfg.CacheDir)
+			defer reloadWG.Done()
+			mainLog.Info("refreshing blocklists")
+			if err := blocklist.Update(store, cfg.Blocklists, cfg.CacheDir); err != nil {
+				mainLog.Warn("blocklist refresh failed", "err", err)
+			}
 		}()
 		return true
 	}
 
-	apiServer := api.New(counter, db, store, reloadFn)
+	apiServer := api.New(counter, db, store, dnsCache, reloadFn)
 	go func() {
 		if err := apiServer.ListenAndServe(cfg.APIListen); err != nil {
-			log.Printf("[api] server error: %v", err)
+			mainLog.Error("api server", "err", err)
 		}
 	}()
 
@@ -164,18 +202,28 @@ func main() {
 	// doStop is the single shutdown path used by both the signal handler
 	// (interactive) and the Windows SCM stop event (service mode).
 	doStop := func() {
-		fmt.Println("[main] shutting down...")
+		mainLog.Info("shutting down")
 		counter.Print()
 		dnsServer.Shutdown()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		apiServer.Shutdown(ctx)
+		if err := apiServer.Shutdown(ctx); err != nil {
+			mainLog.Warn("api shutdown", "err", err)
+		}
+		// Wait for any in-flight blocklist refresh to finish so it can
+		// complete its os.Rename before we exit. Bounded by the same 5s
+		// deadline as the API shutdown.
+		waitWithDeadline(ctx, &reloadWG, mainLog, "blocklist refresh")
 		if dnsCache != nil {
 			dnsCache.Close()
 		}
-		fileLog.Close()
+		if err := fileLog.Close(); err != nil {
+			mainLog.Warn("file log close", "err", err)
+		}
 		if db != nil {
-			db.Close()
+			if err := db.Close(); err != nil {
+				mainLog.Warn("db close", "err", err)
+			}
 		}
 		os.Exit(0)
 	}
@@ -190,22 +238,28 @@ func main() {
 	if service.IsWindowsService() {
 		if err := service.Run(func() {
 			if err := dnsServer.Start(); err != nil {
-				log.Printf("[dns] server stopped: %v", err)
+				mainLog.Warn("dns server stopped", "err", err)
 			}
 		}, doStop); err != nil {
-			log.Fatalf("service error: %v", err)
+			mainLog.Error("service", "err", err)
+			os.Exit(1)
 		}
 		return
 	}
 
 	// Interactive mode: block until the DNS server exits.
 	if err := dnsServer.Start(); err != nil {
-		log.Fatalf("dns server error: %v", err)
+		mainLog.Error("dns server", "err", err)
+		os.Exit(1)
 	}
 }
 
-// printNetworkHint prints the machine's LAN-facing IPv4 addresses so the user
-// knows what to enter in the router's DHCP DNS field.
+// printNetworkHint prints the machine's LAN-facing IPv4 addresses so the
+// user knows what to enter in the router's DHCP DNS field. The banner is
+// drawn with Unicode box-drawing by default; ASCII fallback kicks in when
+// JSON logs are selected or S_HOLE_ASCII_BANNER=1 is set, so terminals
+// without a UTF-8 codepage (notably the legacy Windows console) and log
+// collectors that don't expect prose are not littered with mojibake.
 func printNetworkHint(dnsPort, apiPort string) {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
@@ -229,12 +283,32 @@ func printNetworkHint(dnsPort, apiPort string) {
 		return
 	}
 
+	if useASCIIBanner() {
+		fmt.Println("[main] +-- Router setup ---------------------------------------")
+		for _, ip := range lanIPs {
+			fmt.Printf("[main] |   DNS server -> %s:%s\n", ip, dnsPort)
+			fmt.Printf("[main] |   Admin UI   -> http://%s:%s\n", ip, apiPort)
+		}
+		fmt.Println("[main] +------------------------------------------------------")
+		return
+	}
+
 	fmt.Println("[main] ┌─ Router setup ───────────────────────────────────────")
 	for _, ip := range lanIPs {
 		fmt.Printf("[main] │  DNS server → %s:%s\n", ip, dnsPort)
 		fmt.Printf("[main] │  Admin UI   → http://%s:%s\n", ip, apiPort)
 	}
 	fmt.Println("[main] └──────────────────────────────────────────────────────")
+}
+
+func useASCIIBanner() bool {
+	if os.Getenv("S_HOLE_LOG_FORMAT") == "json" {
+		return true
+	}
+	if v := os.Getenv("S_HOLE_ASCII_BANNER"); v != "" && v != "0" && v != "false" {
+		return true
+	}
+	return false
 }
 
 // buildMultiLogger fans out to the file logger and optionally the DB logger.
@@ -249,10 +323,35 @@ func buildMultiLogger(fl *querylog.FileLogger, db *querylog.DBLogger) dnsserver.
 // for the stats printer and the periodic blocklist refresh. There is no
 // stop channel: the goroutine outlives the rest of the runtime by design
 // and is reclaimed when os.Exit fires in doStop.
+//
+// A panic inside fn is recovered and logged so a transient failure (e.g.,
+// a malformed blocklist line that triggers an out-of-bounds read) does
+// not silently kill the ticker and freeze updates until restart.
 func runTicker(d time.Duration, fn func()) {
 	t := time.NewTicker(d)
 	defer t.Stop()
 	for range t.C {
-		fn()
+		runTickerOnce(fn)
+	}
+}
+
+func runTickerOnce(fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("ticker fn panic recovered", "panic", r)
+		}
+	}()
+	fn()
+}
+
+// waitWithDeadline blocks until wg drains or ctx is done. Used during
+// shutdown to give background work a bounded window to finish cleanly.
+func waitWithDeadline(ctx context.Context, wg *sync.WaitGroup, log *slog.Logger, what string) {
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		log.Warn("shutdown deadline exceeded waiting for "+what, "err", ctx.Err())
 	}
 }

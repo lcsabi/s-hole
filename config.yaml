@@ -38,9 +38,10 @@ query_db: "queries.db"
 # Directory to cache downloaded blocklists (avoids re-downloading on restart)
 cache_dir: "."
 
-# Address:port for the admin web UI and REST API
-# Set to "127.0.0.1:8080" to restrict access to localhost only
-api_listen: "0.0.0.0:8080"
+# Address:port for the admin web UI and REST API.
+# Default is "127.0.0.1:8080" — localhost only, no LAN access.
+# Set to "0.0.0.0:8080" to expose the UI to every device on the LAN.
+api_listen: "127.0.0.1:8080"
 
 # Maximum number of DNS responses to hold in the in-memory cache.
 # Cached responses are served without an upstream round-trip until their TTL expires.
@@ -51,3 +52,7 @@ cache_size: 2000
 # Longer intervals reduce SD card / flash write cycles on embedded hardware.
 # 30s is a good balance between data freshness and write wear.
 db_flush_interval: "30s"
+
+# Delete query-log rows older than this many days. 0 = retain forever.
+# A background prune runs hourly when this is > 0.
+query_db_retention_days: 0

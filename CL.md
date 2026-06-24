@@ -755,3 +755,249 @@ ok    github.com/laszlo/s-hole/internal/stats      0.342s
 The race detector requires CGO and a C toolchain; not exercised locally
 on this Windows host but the tests are race-safe by construction (every
 shared map is mutex-guarded).
+
+---
+
+## CL 11 — s-hole: architecture (slog, context, package rename)
+
+**Bug:** R1, R2, R7
+
+### Description
+
+Three foundational changes to bring the runtime up to current Go
+idioms.
+
+**slog adoption (R1)** — every package now binds a child
+`slog.With("pkg", "<name>")` logger and replaces ad-hoc
+`fmt.Printf("[xxx] …")` with `slog.Info/Warn/Error` calls. `main.go`
+installs the default handler; format is text on a TTY and JSON when
+`S_HOLE_LOG_FORMAT=json` is set. The stats printer (`Counter.Print`)
+and the startup banner deliberately keep `fmt.Println` because they are
+human banners, not diagnostic logs.
+
+**Context propagation (R2)** — `forward` takes `ctx context.Context`
+and uses `client.ExchangeContext` so the overall query has a 10 s
+deadline and is cancelled if the calling DNS handler returns.
+`querylog.DBLogger.Recent` and `TopBlocked` now take a context too and
+forward it to `db.QueryContext`, so an HTTP-client disconnect cancels
+the SQL query rather than letting it complete.
+
+**Package rename (R7)** — `internal/dns` → `internal/dnsserver`. The
+old name collided with `github.com/miekg/dns` (which we import as
+`dns`); inside the package, references to `dns.Question` and friends
+now unambiguously refer to miekg's types. `main.go` drops the
+`dnsserver` alias since the package name now matches.
+
+### Files changed
+
+```
+internal/dnsserver/                    ← renamed from internal/dns/
+internal/dnsserver/handler.go          — slog + ctx + queryDeadline const
+internal/dnsserver/server.go           — slog
+internal/dnsserver/upstream.go         — ctx-aware forward
+internal/dnsserver/handler_test.go     — package rename
+internal/blocklist/loader.go           — slog
+internal/querylog/logger.go            — slog
+internal/querylog/db.go                — slog + ctx on Recent/TopBlocked
+internal/api/api.go                    — slog + ctx forwarded to Recent
+main.go                                — setupLogger; slog throughout;
+                                         drop dnsserver alias
+```
+
+---
+
+## CL 12 — s-hole: correctness fixes (R8–R20)
+
+**Bug:** R8, R9, R10, R11, R12, R13, R14, R15, R16, R17, R18, R19, R20
+
+### Description
+
+Bundle of focused correctness improvements following the second
+independent staff review.
+
+- **R8** `runTicker` wraps the user fn in `recover()`; a panic is
+  logged and the next tick still fires. Previously a single bad
+  blocklist line could freeze the refresh ticker until restart.
+- **R9** `blocklist.fetchList` writes to `cachePath + ".tmp"` and
+  `os.Rename`s on success. A killed process or dropped connection no
+  longer leaves a half-written cache file with a fresh mtime. This
+  caught a latent bug: bare colons in URLs (e.g. embedded ports) had
+  to be escaped in `cacheFilename` for the rename to work on NTFS.
+- **R10** `writeJSON` logs `json.Encoder.Encode` errors.
+- **R11** `apiServer.Shutdown` errors during `doStop` are logged.
+- **R12** Sinkhole replies mirror the EDNS0 OPT pseudo-record when
+  the request carried one; clients no longer fall back to legacy DNS.
+- **R13** `POST /api/whitelist` validates the domain via
+  `blocklist.ValidDomain` (max 253 chars, must contain a dot,
+  alphanumerics + `-` + `_` + `.` only).
+- **R14** `blocklist.parseHostsFormat` drops tokens that fail
+  `ValidDomain` so one malformed list line cannot pollute the store.
+- **R15** `cache.Cache` switches `hits`/`misses` to `atomic.Uint64`;
+  `Get` no longer takes the write lock on the hot path.
+- **R16** New config knob `query_db_retention_days`. When > 0, the
+  DBLogger spawns a prune goroutine that runs hourly and deletes
+  query rows older than the cutoff.
+- **R17** `main.go` tracks the in-flight reload goroutine in a
+  `sync.WaitGroup`. `doStop` waits on it (bounded by the same 5 s
+  shutdown context) so the atomic rename can complete before
+  `os.Exit`.
+- **R18** Default `api_listen` is now `127.0.0.1:8080`. LAN access
+  is opt-in.
+- **R19** `stats.Counter` caps `topDomains`/`topClients` at 4096
+  entries. When exceeded, the bottom half by count is dropped
+  (`pruneBottomHalf`).
+- **R20** Channel/batch tuning constants in `querylog`
+  (`queryQueueSize`, `flushBatchSize`, `pruneTickPeriod`) are now
+  named and documented.
+
+### Files changed
+
+```
+main.go                                — R8 (runTicker recover), R17 (reloadWG)
+internal/blocklist/loader.go           — R9, R14
+internal/api/api.go                    — R10, R13
+internal/dnsserver/handler.go          — R12 EDNS0 echo
+internal/cache/cache.go                — R15 atomic counters
+internal/querylog/db.go                — R16 retention prune, R20 named consts
+internal/config/config.go              — R16 retention field, R18 default
+internal/stats/stats.go                — R19 topNMaxEntries + pruneBottomHalf
+internal/config/config_test.go         — assertion for R18 default
+internal/querylog/db_test.go           — wired ctx + retention args
+```
+
+---
+
+## CL 13 — s-hole: new endpoints + features
+
+**Bug:** R3, R4, R5, R6, R24
+
+### Description
+
+- **R3 `/metrics`** — Prometheus text exposition (format `0.0.4`)
+  for in-process counters. Hand-rolled — no external dependency, in
+  line with the project's "small, auditable" goal. Exposed counters:
+  `shole_queries_total`, `shole_blocked_total`, `shole_cache_hits_total`,
+  `shole_cache_misses_total`, `shole_cache_size`,
+  `shole_blocklist_size`, `shole_whitelist_size`. Cache metrics are
+  only included when a `CacheStatser` is wired into the API server
+  (i.e., when caching is enabled). `api.New` gains the `CacheStatser`
+  parameter (may be nil).
+- **R4 `/healthz`** — liveness probe. Returns 200 OK with body `ok`.
+  Makes no downstream call so an upstream outage cannot trigger a
+  container restart.
+- **R5 env-var overrides** — `applyEnvOverrides()` runs after
+  `applyDefaults()`. Every commonly-tuned config field can be
+  overridden via `S_HOLE_*`. Malformed numerics are silently ignored
+  so an env typo never blocks startup.
+- **R6 upstream health tracking** — `upstreamTracker` remembers the
+  last failure timestamp per upstream. `forward` (now
+  `forwardWith` taking an injectable tracker for tests) skips
+  upstreams in cooldown (30 s) on the first sweep, then retries them
+  on a second sweep if every non-cooldown upstream also failed.
+  Eliminates the "every query waits 3 s on the dead primary" failure
+  mode.
+- **R24 ASCII banner fallback** — `printNetworkHint` emits ASCII
+  box-drawing when `S_HOLE_LOG_FORMAT=json` or `S_HOLE_ASCII_BANNER=1`
+  is set. Avoids mojibake on the legacy Windows console.
+
+### Files changed
+
+```
+internal/api/api.go                    — CacheStatser field; /healthz + /metrics routes
+internal/api/metrics.go                — new: handleHealth + handleMetrics
+internal/config/config.go              — applyEnvOverrides()
+internal/dnsserver/upstream.go         — upstreamTracker + forwardWith
+main.go                                — apiServer.New takes dnsCache;
+                                         useASCIIBanner / printNetworkHint fallback
+internal/api/api_test.go               — fakeCacheStats wiring updated
+```
+
+---
+
+## CL 14 — s-hole: docs + tests + CI
+
+**Bug:** R21, R22, R23, R25, R26, R27, R28
+
+### Description
+
+Closing-out polish CL for the staff-review slice.
+
+**Docs**
+
+- `CHANGELOG.md` (R21) — operator-facing Keep-a-Changelog summary.
+  CL.md remains the development-internal CL record.
+- README gains a Testing section, an env-var override table, and a
+  `go install github.com/laszlo/s-hole@latest` line (R22).
+- `config.yaml` documents the new `query_db_retention_days` field and
+  the changed `api_listen` default.
+- Architecture diagram in DESIGN updated to show the periodic refresh
+  ticker, the response-cache atomic counters, EDNS0 pass-through, and
+  the new `/healthz` / `/metrics` endpoints (R25).
+- New "Observability and Logging" section in DESIGN.
+
+**Tests** — every new piece of behaviour added in CL 11–13 has direct
+test coverage:
+
+- `blocklist.ValidDomain` table tests (R14)
+- atomic cache write: leaves no `.tmp` file behind on success (R9)
+- `stats.pruneBottomHalf` keeps the high-frequency entries; top-N maps
+  remain bounded under high cardinality (R19)
+- `config.applyEnvOverrides` round-trips for string and integer
+  fields; malformed numerics fall through to defaults (R5)
+- `querylog.DBLogger.prune` deletes rows older than retentionDays
+  (R16)
+- `dnsserver.forwardWith` happy path, failover from a dead upstream
+  to a healthy one, second-call cooldown skip, all-fail error path,
+  cooldown expiry, and recordSuccess clearing the cooldown (R6, R28)
+- `dnsserver.Handler` mirrors EDNS0 OPT on sinkhole replies (R12)
+- `api` `/healthz` returns 200 with `ok` body; `/metrics` returns
+  Prometheus exposition with the expected counter lines, and includes
+  cache metrics when a `CacheStatser` is wired (R3, R4)
+- benchmark for `blocklist.Store.IsBlocked` on a 100 000-entry store
+  (R27)
+
+**CI** — `.github/workflows/ci.yml` (R26). Two jobs:
+
+- `test`: build, vet, `go test -race`, single-iteration benchmarks.
+- `cross-compile`: linux/amd64, linux/arm64, linux/arm v7,
+  windows/amd64 with `CGO_ENABLED=0`.
+
+**Other**
+
+- Dead `Documentation=https://github.com/laszlo/s-hole` URL removed
+  from `deploy/s-hole.service` and the embedded heredoc in
+  `deploy/install-linux.sh` (R23).
+
+### Files changed
+
+```
+CHANGELOG.md                           — new (R21)
+README.md                              — Testing, env-vars, go install (R22)
+DESIGN.md                              — architecture diagram + observability (R25)
+config.yaml                            — retention field; api_listen default
+deploy/s-hole.service                  — drop dead Documentation URL (R23)
+deploy/install-linux.sh                — drop dead Documentation URL (R23)
+.github/workflows/ci.yml               — new CI workflow (R26)
+internal/blocklist/store_test.go       — IsBlocked benchmark (R27)
+internal/blocklist/loader_test.go      — ValidDomain + atomic-rename tests
+internal/stats/stats_test.go           — top-N cap + pruneBottomHalf tests
+internal/config/config_test.go         — env-var override tests
+internal/querylog/db_test.go           — retention prune test
+internal/dnsserver/upstream_test.go    — new: forwardWith + tracker tests (R28)
+internal/dnsserver/handler_test.go     — EDNS0 pass-through test (R12)
+internal/api/api_test.go               — /healthz + /metrics tests (R3, R4)
+CL.md                                  — this entry
+```
+
+### Testing
+
+```
+$ go test ./...
+ok    github.com/laszlo/s-hole/internal/api
+ok    github.com/laszlo/s-hole/internal/blocklist
+ok    github.com/laszlo/s-hole/internal/cache
+ok    github.com/laszlo/s-hole/internal/config
+ok    github.com/laszlo/s-hole/internal/dnsserver
+ok    github.com/laszlo/s-hole/internal/querylog
+ok    github.com/laszlo/s-hole/internal/stats
+```

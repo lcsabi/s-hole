@@ -11,10 +11,12 @@ package querylog
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"time"
 )
+
+var logger = slog.With("pkg", "querylog")
 
 // FileLogger writes one line per query to a flat file, or to stdout when
 // the configured path is empty. The format is fixed for easy parsing by
@@ -34,7 +36,7 @@ func NewFileLogger(path, logQueries string) *FileLogger {
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		log.Printf("[querylog] cannot open %s, falling back to stdout: %v", path, err)
+		logger.Warn("cannot open file log, falling back to stdout", "path", path, "err", err)
 		return &FileLogger{f: os.Stdout, logQueries: logQueries}
 	}
 	return &FileLogger{f: f, logQueries: logQueries}

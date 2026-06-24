@@ -29,10 +29,18 @@ s-hole is intentionally small: a single binary, a single YAML config file, no ru
 - Go 1.25 or later (for building from source)
 - Port 53 available (requires Administrator on Windows, root or `CAP_NET_BIND_SERVICE` on Linux)
 
+### Install via the Go toolchain
+
+If your `$GOBIN` is on `PATH`, the latest commit can be fetched with:
+
+```bash
+go install github.com/laszlo/s-hole@latest
+```
+
 ### Run interactively
 
 ```bash
-# Build
+# Build from a local clone
 go build -o s-hole .
 
 # Run (requires elevated privileges for port 53)
@@ -79,8 +87,9 @@ All configuration lives in `config.yaml`. Every field has a safe default; an emp
 | `db_flush_interval` | `30s` | How often buffered queries are committed to SQLite |
 | `cache_size` | `2000` | Maximum DNS responses held in the in-memory cache (0 to disable) |
 | `stats_interval` | `5m` | How often stats are printed to stdout |
-| `api_listen` | `0.0.0.0:8080` | Address for the admin web UI and REST API |
+| `api_listen` | `127.0.0.1:8080` | Address for the admin web UI and REST API. Set to `0.0.0.0:8080` to expose to the LAN. |
 | `cache_dir` | `.` | Directory for cached blocklist files |
+| `query_db_retention_days` | `0` (forever) | Delete query-log rows older than this many days. `0` disables the prune. |
 
 ### Minimal config example
 
@@ -91,6 +100,28 @@ whitelist:
   - "api.example.com"
 log_queries: blocked
 ```
+
+### Environment variable overrides
+
+For container deployments where editing `config.yaml` requires a re-bind-mount, every commonly-tuned field can be overridden by an `S_HOLE_*` environment variable. The override is applied after the YAML is parsed:
+
+| Variable | Equivalent YAML field |
+|---|---|
+| `S_HOLE_LISTEN` | `listen` |
+| `S_HOLE_API_LISTEN` | `api_listen` |
+| `S_HOLE_LOG_FILE` | `log_file` |
+| `S_HOLE_LOG_QUERIES` | `log_queries` |
+| `S_HOLE_QUERY_DB` | `query_db` |
+| `S_HOLE_CACHE_DIR` | `cache_dir` |
+| `S_HOLE_BLOCK_MODE` | `block_mode` |
+| `S_HOLE_REFRESH_INTERVAL` | `refresh_interval` |
+| `S_HOLE_STATS_INTERVAL` | `stats_interval` |
+| `S_HOLE_DB_FLUSH_INTERVAL` | `db_flush_interval` |
+| `S_HOLE_CACHE_SIZE` | `cache_size` (integer) |
+| `S_HOLE_BLOCK_TTL` | `block_ttl` (integer) |
+| `S_HOLE_RETENTION_DAYS` | `query_db_retention_days` (integer) |
+| `S_HOLE_LOG_FORMAT` | `text` (default) or `json` — controls slog handler |
+| `S_HOLE_ASCII_BANNER` | set to `1` to use ASCII box-drawing on the startup banner |
 
 ### Recommended config for Raspberry Pi
 
@@ -114,6 +145,8 @@ The admin web UI is served at `http://<host>:8080`. All data is also available a
 | `POST` | `/api/whitelist` | Add a domain — body: `{"domain": "example.com"}` |
 | `DELETE` | `/api/whitelist?domain=…` | Remove a domain from the runtime whitelist |
 | `POST` | `/api/reload` | Trigger an immediate blocklist refresh — de-duplicated via single-flight mutex (returns `"reload already in progress"` if one is running) |
+| `GET`  | `/healthz` | Liveness probe — always 200 OK while the HTTP server is responsive |
+| `GET`  | `/metrics` | Prometheus text exposition: `shole_queries_total`, `shole_blocked_total`, `shole_cache_hits_total`, `shole_cache_misses_total`, `shole_cache_size`, `shole_blocklist_size`, `shole_whitelist_size` |
 
 Runtime whitelist changes take effect immediately but do not persist across restarts. To make a whitelist entry permanent, add it to `config.yaml`.
 

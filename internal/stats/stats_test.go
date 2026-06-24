@@ -80,6 +80,53 @@ func TestCounter_TopNLimit(t *testing.T) {
 	}
 }
 
+func TestCounter_TopNMapsAreBounded(t *testing.T) {
+	// R19: a long-running process must not accumulate every unique key
+	// forever. Push topNMaxEntries+1 unique domain/client entries and
+	// verify the map is pruned back below the cap.
+	c := New()
+	for i := 0; i < topNMaxEntries+10; i++ {
+		c.RecordQuery(itoa(i)+".client.", "ads"+itoa(i)+".example.com.", true)
+	}
+	c.mu.Lock()
+	domSize := len(c.topDomains)
+	cliSize := len(c.topClients)
+	c.mu.Unlock()
+	if domSize > topNMaxEntries {
+		t.Errorf("topDomains len = %d, want <= %d", domSize, topNMaxEntries)
+	}
+	if cliSize > topNMaxEntries {
+		t.Errorf("topClients len = %d, want <= %d", cliSize, topNMaxEntries)
+	}
+}
+
+func TestPruneBottomHalf_KeepsHighFrequency(t *testing.T) {
+	m := map[string]int64{"hot": 100, "warm": 50, "cool": 5, "cold": 1}
+	out := pruneBottomHalf(m)
+	if _, ok := out["hot"]; !ok {
+		t.Error("hot entry was dropped")
+	}
+	if len(out) >= len(m) {
+		t.Errorf("prune did not reduce size: %d → %d", len(m), len(out))
+	}
+}
+
+// itoa is a minimal integer→string helper to avoid pulling strconv into
+// the hot test loop.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
+}
+
 func TestCounter_BlockRateNeverExceeds100UnderLoad(t *testing.T) {
 	// Regression for b/021. Hammer RecordQuery from many goroutines while
 	// repeatedly calling Snapshot from one goroutine; assert

@@ -1,4 +1,4 @@
-package dns
+package dnsserver
 
 import (
 	"fmt"
@@ -29,7 +29,7 @@ func (s *Server) Start() error {
 
 	for _, srv := range []*dns.Server{s.udp, s.tcp} {
 		go func(srv *dns.Server) {
-			fmt.Printf("[dns] listening on %s (%s)\n", srv.Addr, srv.Net)
+			logger.Info("dns listener started", "addr", srv.Addr, "net", srv.Net)
 			errs <- srv.ListenAndServe()
 		}(srv)
 	}
@@ -40,7 +40,7 @@ func (s *Server) Start() error {
 		// log it if it also failed so the error is not silently lost.
 		go func() {
 			if err2 := <-errs; err2 != nil {
-				fmt.Printf("[dns] secondary server error: %v\n", err2)
+				logger.Error("secondary dns server failed", "err", err2)
 			}
 		}()
 		return fmt.Errorf("dns: %w", err)

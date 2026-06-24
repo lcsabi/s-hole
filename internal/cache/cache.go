@@ -5,6 +5,7 @@ package cache
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
@@ -19,14 +20,17 @@ type entry struct {
 // Cache is a thread-safe, size-bounded DNS response cache.
 // Entries expire after their DNS TTL elapses.
 // When the cache is full, new entries are silently dropped.
+//
+// hits and misses are atomic so Get and Stats do not contend on the
+// entries mutex; the entries map itself stays RWMutex-guarded.
 type Cache struct {
 	mu      sync.RWMutex
 	entries map[string]*entry
 	maxSize int
 	stop    chan struct{}
 
-	hits   uint64
-	misses uint64
+	hits   atomic.Uint64
+	misses atomic.Uint64
 }
 
 // New returns a Cache holding at most maxSize entries and starts the
@@ -56,19 +60,14 @@ func (c *Cache) Get(q dns.Question) (*dns.Msg, bool) {
 	c.mu.RUnlock()
 
 	if !ok || time.Since(e.cached) >= time.Duration(e.minTTL)*time.Second {
-		c.mu.Lock()
-		c.misses++
-		c.mu.Unlock()
+		c.misses.Add(1)
 		return nil, false
 	}
 
 	msg := e.msg.Copy()
 	decrementTTLs(msg, uint32(time.Since(e.cached).Seconds()))
 
-	c.mu.Lock()
-	c.hits++
-	c.mu.Unlock()
-
+	c.hits.Add(1)
 	return msg, true
 }
 
@@ -99,8 +98,9 @@ func (c *Cache) Set(q dns.Question, msg *dns.Msg) {
 // Stats returns (hits, misses, current size).
 func (c *Cache) Stats() (hits, misses uint64, size int) {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.hits, c.misses, len(c.entries)
+	size = len(c.entries)
+	c.mu.RUnlock()
+	return c.hits.Load(), c.misses.Load(), size
 }
 
 func (c *Cache) runCleanup() {

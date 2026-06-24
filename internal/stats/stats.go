@@ -13,9 +13,19 @@ import (
 	"time"
 )
 
+// topNMaxEntries caps the per-domain and per-client tally maps so a
+// long-running process does not accumulate every unique key forever.
+// When a map exceeds this, prune() drops the least-frequent half —
+// preserving high-traffic entries that operators care about. The chosen
+// size is comfortably above any home-network domain diversity (~80 B
+// per key × 4 096 ≈ 320 KiB per map) while bounded against pathological
+// scenarios such as a misconfigured DNS scanner.
+const topNMaxEntries = 4096
+
 // Counter aggregates query statistics across the lifetime of the process.
 // Total, blocked, and cache-hit counts are atomic; per-domain and per-client
-// tallies are mutex-protected maps used for top-N reporting.
+// tallies are mutex-protected maps used for top-N reporting (capped at
+// topNMaxEntries).
 type Counter struct {
 	total    atomic.Int64
 	blocked  atomic.Int64
@@ -71,7 +81,44 @@ func (c *Counter) RecordQuery(clientIP, domain string, blocked bool) {
 		c.blocked.Add(1)
 		c.topDomains[domain]++
 	}
+	// Cap the maps so a long-running process does not accumulate every
+	// unique key forever. We prune lazily — only when a map exceeds the
+	// cap — so the steady-state hot path stays at one map[++].
+	if len(c.topClients) > topNMaxEntries {
+		c.topClients = pruneBottomHalf(c.topClients)
+	}
+	if len(c.topDomains) > topNMaxEntries {
+		c.topDomains = pruneBottomHalf(c.topDomains)
+	}
 	c.mu.Unlock()
+}
+
+// pruneBottomHalf returns a new map containing the upper-half of m by
+// count value. Ties are broken arbitrarily (map iteration order); the
+// dropped entries are exactly the low-frequency ones top-N is least
+// interested in.
+//
+// We sort key/value pairs and keep the top len/2 rather than thresholding
+// by value: when every count is equal (the pathological "every key seen
+// once" case) thresholding would keep every entry and leave the map
+// unbounded — see the regression test
+// TestCounter_TopNMapsAreBounded.
+func pruneBottomHalf(m map[string]int64) map[string]int64 {
+	type kv struct {
+		k string
+		v int64
+	}
+	entries := make([]kv, 0, len(m))
+	for k, v := range m {
+		entries = append(entries, kv{k, v})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].v > entries[j].v })
+	keep := len(entries) / 2
+	out := make(map[string]int64, keep)
+	for i := 0; i < keep; i++ {
+		out[entries[i].k] = entries[i].v
+	}
+	return out
 }
 
 // RecordCacheHit increments the cache-hit counter. Called from the DNS

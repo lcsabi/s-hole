@@ -4,12 +4,15 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
+
+var logger = slog.With("pkg", "blocklist")
 
 const cacheMaxAge = 24 * time.Hour
 
@@ -32,20 +35,20 @@ func Update(store *Store, urls []string, cacheDir string) error {
 		domains, err := fetchList(u, cacheDir)
 		if err != nil {
 			lastErr = err
-			fmt.Printf("[blocklist] warning: failed to load %s: %v\n", u, err)
+			logger.Warn("failed to load", "url", u, "err", err)
 			continue
 		}
 		ok++
 		all = append(all, domains...)
-		fmt.Printf("[blocklist] loaded %d domains from %s\n", len(domains), u)
+		logger.Info("loaded", "url", u, "domains", len(domains))
 	}
 	if ok == 0 && len(urls) > 0 {
-		fmt.Printf("[blocklist] all %d sources failed; keeping existing block set (%d domains)\n",
-			len(urls), store.Len())
+		logger.Error("all sources failed; keeping existing block set",
+			"sources", len(urls), "current", store.Len())
 		return fmt.Errorf("all blocklists failed: %w", lastErr)
 	}
 	store.Replace(all)
-	fmt.Printf("[blocklist] total blocked domains: %d\n", store.Len())
+	logger.Info("blocklist updated", "total", store.Len())
 	return nil
 }
 
@@ -62,7 +65,7 @@ func fetchList(url, cacheDir string) ([]string, error) {
 	if err != nil {
 		// Fall back to stale cache if download fails.
 		if _, statErr := os.Stat(cachePath); statErr == nil {
-			fmt.Printf("[blocklist] download failed, using stale cache for %s\n", url)
+			logger.Warn("download failed, using stale cache", "url", url, "err", err)
 			return loadFromFile(cachePath)
 		}
 		return nil, err
@@ -72,20 +75,38 @@ func fetchList(url, cacheDir string) ([]string, error) {
 	if resp.StatusCode != http.StatusOK {
 		// Do not write the error-page body to the cache file.
 		if _, statErr := os.Stat(cachePath); statErr == nil {
-			fmt.Printf("[blocklist] HTTP %d for %s, using stale cache\n", resp.StatusCode, url)
+			logger.Warn("non-200 response, using stale cache", "url", url, "status", resp.StatusCode)
 			return loadFromFile(cachePath)
 		}
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	f, err := os.Create(cachePath)
+	// Atomic write: stream to a sibling .tmp file, then os.Rename on success.
+	// A connection drop or process kill mid-download leaves only the .tmp
+	// behind; the previous cachePath stays usable (and its mtime stays old
+	// so the next start re-attempts the download).
+	tmpPath := cachePath + ".tmp"
+	f, err := os.Create(tmpPath)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
 
 	tee := io.TeeReader(io.LimitReader(resp.Body, maxBodyBytes), f)
-	return parseHostsFormat(tee)
+	domains, parseErr := parseHostsFormat(tee)
+	closeErr := f.Close()
+	if parseErr != nil {
+		os.Remove(tmpPath)
+		return nil, parseErr
+	}
+	if closeErr != nil {
+		os.Remove(tmpPath)
+		return nil, closeErr
+	}
+	if err := os.Rename(tmpPath, cachePath); err != nil {
+		os.Remove(tmpPath)
+		return nil, err
+	}
+	return domains, nil
 }
 
 func loadFromFile(path string) ([]string, error) {
@@ -98,7 +119,9 @@ func loadFromFile(path string) ([]string, error) {
 }
 
 // parseHostsFormat handles both hosts-file format ("0.0.0.0 domain.com")
-// and plain domain-per-line format.
+// and plain domain-per-line format. Tokens that fail ValidDomain are
+// silently dropped to keep one malformed list line from polluting the
+// store — see R14.
 func parseHostsFormat(r io.Reader) ([]string, error) {
 	var domains []string
 	scanner := bufio.NewScanner(r)
@@ -110,13 +133,15 @@ func parseHostsFormat(r io.Reader) ([]string, error) {
 		fields := strings.Fields(line)
 		switch len(fields) {
 		case 1:
-			domains = append(domains, fields[0])
+			if ValidDomain(fields[0]) {
+				domains = append(domains, fields[0])
+			}
 		default:
 			// hosts format: first field is IP, second is domain
 			ip := fields[0]
 			if ip == "0.0.0.0" || ip == "127.0.0.1" || ip == "::" {
 				domain := fields[1]
-				if domain != "localhost" && domain != "0.0.0.0" {
+				if domain != "localhost" && domain != "0.0.0.0" && ValidDomain(domain) {
 					domains = append(domains, domain)
 				}
 			}
@@ -125,8 +150,48 @@ func parseHostsFormat(r io.Reader) ([]string, error) {
 	return domains, scanner.Err()
 }
 
+// ValidDomain rejects obvious garbage: empty strings, anything over
+// the 253-character DNS name limit, names without a dot (we don't block
+// bare TLDs), and names with characters that cannot legally appear in a
+// DNS label (whitespace, control chars, slashes, etc.). It is deliberately
+// lenient: IDN punycode and underscore-prefixed service labels pass.
+//
+// Exported so the api package can validate user-supplied whitelist
+// entries with the same rules the loader applies to blocklist files.
+func ValidDomain(s string) bool {
+	if s == "" || len(s) > 253 {
+		return false
+	}
+	if !strings.Contains(s, ".") {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '.' || r == '-' || r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // cacheFilename converts a URL to a safe filename.
+//
+// Colon escapes are important: a bare ":" in the URL (e.g. an embedded
+// port like "127.0.0.1:8080") is a path-separator character on Windows
+// and would make the file impossible to rename across NTFS streams.
 func cacheFilename(url string) string {
-	r := strings.NewReplacer("://", "_", "/", "_", ".", "_", "?", "_", "&", "_", "=", "_")
+	r := strings.NewReplacer(
+		"://", "_",
+		"/", "_",
+		".", "_",
+		"?", "_",
+		"&", "_",
+		"=", "_",
+		":", "_",
+	)
 	return "blocklist_" + r.Replace(url) + ".txt"
 }

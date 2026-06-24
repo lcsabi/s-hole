@@ -200,6 +200,57 @@ func TestCacheFilename_Deterministic(t *testing.T) {
 	}
 }
 
+func TestValidDomain(t *testing.T) {
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{"example.com", true},
+		{"sub.example.com", true},
+		{"a-b.example.com", true},
+		{"_dmarc.example.com", true},
+		{"", false},
+		{"example", false}, // no dot — bare TLD
+		{"has space.com", false},
+		{"slash/path.com", false},
+		{"control\x00char.com", false},
+		{strings.Repeat("a", 250) + ".com", false}, // > 253 chars
+	}
+	for _, tc := range tests {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := ValidDomain(tc.in); got != tc.want {
+				t.Errorf("ValidDomain(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFetchList_AtomicRename(t *testing.T) {
+	// R9: a successful download writes via .tmp + os.Rename. A naive
+	// torn-write would leave the cache with a partial body and a fresh
+	// mtime; the rename approach guarantees readers see either the old
+	// content or the full new content.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("0.0.0.0 fresh.example.com\n"))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	domains, err := fetchList(srv.URL, dir)
+	if err != nil {
+		t.Fatalf("fetchList: %v", err)
+	}
+	if len(domains) != 1 || domains[0] != "fresh.example.com" {
+		t.Errorf("domains = %v, want [fresh.example.com]", domains)
+	}
+
+	// No .tmp left over after a successful download.
+	tmpPath := filepath.Join(dir, cacheFilename(srv.URL)+".tmp")
+	if _, err := os.Stat(tmpPath); err == nil {
+		t.Errorf(".tmp file leaked: %s", tmpPath)
+	}
+}
+
 func equalSlices(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

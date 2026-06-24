@@ -27,7 +27,7 @@ func newTestServer(t *testing.T, reloadFn func() bool) (*Server, *httptest.Serve
 	if reloadFn == nil {
 		reloadFn = func() bool { return true }
 	}
-	s := New(counter, nil, store, reloadFn)
+	s := New(counter, nil, store, nil, reloadFn)
 	httpSrv := httptest.NewServer(s.handler())
 	t.Cleanup(httpSrv.Close)
 	return s, httpSrv
@@ -40,6 +40,82 @@ func decode[T any](t *testing.T, body io.Reader) T {
 		t.Fatalf("decode: %v", err)
 	}
 	return v
+}
+
+func TestHealthEndpoint(t *testing.T) {
+	_, srv := newTestServer(t, nil)
+	resp, err := http.Get(srv.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "ok") {
+		t.Errorf("body = %q, want it to contain 'ok'", body)
+	}
+}
+
+func TestMetricsEndpoint(t *testing.T) {
+	s, srv := newTestServer(t, nil)
+	s.counter.RecordQuery("1.1.1.1", "ads.com.", true)
+	s.counter.RecordQuery("1.1.1.1", "google.com.", false)
+	s.counter.RecordCacheHit()
+
+	resp, err := http.Get(srv.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.Contains(got, "text/plain") {
+		t.Errorf("Content-Type = %q, want text/plain", got)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	want := []string{
+		"shole_queries_total 2",
+		"shole_blocked_total 1",
+		"shole_cache_hits_total 1",
+		"shole_blocklist_size",
+		"# HELP shole_queries_total",
+		"# TYPE shole_queries_total counter",
+	}
+	for _, w := range want {
+		if !strings.Contains(string(body), w) {
+			t.Errorf("metrics body missing %q\nfull body:\n%s", w, body)
+		}
+	}
+}
+
+// fakeCacheStats lets us verify /metrics surfaces cache metrics when a
+// CacheStatser is wired up.
+type fakeCacheStats struct{ h, m uint64; s int }
+
+func (f fakeCacheStats) Stats() (uint64, uint64, int) { return f.h, f.m, f.s }
+
+func TestMetricsEndpoint_IncludesCacheStatsWhenWired(t *testing.T) {
+	store := blocklist.NewStore()
+	counter := stats.New()
+	s := New(counter, nil, store, fakeCacheStats{h: 7, m: 3, s: 42}, func() bool { return true })
+	srv := httptest.NewServer(s.handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "shole_cache_misses_total 3") {
+		t.Errorf("expected cache_misses_total=3 in body:\n%s", body)
+	}
+	if !strings.Contains(string(body), "shole_cache_size 42") {
+		t.Errorf("expected cache_size=42 in body:\n%s", body)
+	}
 }
 
 func TestStatsEndpoint_ReturnsSummary(t *testing.T) {

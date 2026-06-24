@@ -6,7 +6,9 @@
 // Both backends respect the log_queries config setting ("all", "blocked",
 // or "none") and never block the calling DNS goroutine: the SQLite logger
 // buffers entries in a channel and drops on overflow rather than applying
-// back-pressure to query handling.
+// back-pressure to query handling. Drops are counted in DBLogger.dropped
+// and exposed as shole_query_log_dropped_total via /metrics so operators
+// see when flush_interval is too long for the query volume.
 //
 // The SQLite logger supports a TTL-based retention prune: when
 // query_db_retention_days is set, a goroutine deletes rows older than

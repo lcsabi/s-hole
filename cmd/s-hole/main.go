@@ -9,7 +9,8 @@
 //   - construct the blocklist store, stats counter, query loggers, DNS
 //     response cache, DNS handler, and DNS server
 //   - construct the single-flight reload closure and the admin API server
-//     (which exposes /healthz and /metrics alongside the REST API)
+//     (which exposes /healthz, /readyz, /metrics, and — opt-in via
+//     enable_pprof — /debug/pprof/* alongside the REST API)
 //   - launch background tickers for stats printing and blocklist refresh,
 //     both panic-recovered
 //   - either enter the Windows SCM event loop (service mode) or block on

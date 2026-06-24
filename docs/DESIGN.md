@@ -1,6 +1,6 @@
 # s-hole: Network-Level DNS Sinkhole
 
-**Authors:** Laszlo  
+**Authors:** Laszlo (@lcsabi)  
 **Created:** 2026-06-23  
 **Last Updated:** 2026-06-24  
 **Status:** Implementation Complete
@@ -69,7 +69,9 @@ Client devices (DNS server learned via DHCP from router)
 │                                                                    │
 │  ┌──────────────────────────────────────────────────────────┐     │
 │  │       Admin HTTP Server (default 127.0.0.1:8080)          │     │
-│  │   REST API  +  embedded web UI  +  /healthz  +  /metrics  │     │
+│  │   REST API  +  embedded web UI                            │     │
+│  │   /healthz  +  /readyz  +  /metrics                       │     │
+│  │   /debug/pprof/* (opt-in via enable_pprof)                │     │
 │  └──────────────────────────────────────────────────────────┘     │
 │                                                                    │
 │  ┌─────────────────────┐  ┌──────────────────────────────────┐    │
@@ -226,7 +228,9 @@ Blocklist refresh is single-flighted via a `sync.Mutex` held in `cmd/s-hole/main
 | `/api/whitelist` | DELETE | Remove domain: `?domain=...` |
 | `/api/reload` | POST | Trigger immediate blocklist refresh (de-duplicated via single-flight mutex) |
 | `/healthz` | GET | Liveness probe — returns 200 OK while the HTTP server is responsive |
-| `/metrics` | GET | Prometheus text exposition: `shole_queries_total`, `shole_blocked_total`, `shole_cache_hits_total`, `shole_cache_misses_total`, `shole_cache_size`, `shole_blocklist_size`, `shole_whitelist_size` |
+| `/readyz` | GET | Readiness probe — 200 OK once the blocklist has loaded at least one entry; 503 otherwise. Used by container orchestrators to route traffic away while the initial download is in flight. |
+| `/metrics` | GET | Prometheus text exposition: `shole_queries_total`, `shole_blocked_total`, `shole_cache_hits_total`, `shole_cache_misses_total`, `shole_cache_size`, `shole_blocklist_size`, `shole_whitelist_size`, `shole_query_log_dropped_total` |
+| `/debug/pprof/*` | GET | Standard Go pprof handlers. **Only registered when `enable_pprof: true`** (or `S_HOLE_ENABLE_PPROF=1`). Off by default; intended for incident response on a localhost-bound admin server. |
 
 ### Observability and Logging
 
@@ -235,7 +239,9 @@ Logging is structured via `log/slog`. Each package binds a child logger with a `
 Operational diagnostics ship over two surfaces:
 
 - **`/healthz`** — a tiny endpoint that returns 200 as long as the HTTP server is responsive. Liveness only — it deliberately makes no downstream call so a flaky upstream cannot cause the container orchestrator to restart the process.
-- **`/metrics`** — Prometheus text exposition (format `0.0.4`) for the in-process counters: query totals, block counts, cache hits/misses, cache size, blocklist size, whitelist size. We hand-roll the exposition rather than pulling in `prometheus/client_golang` to keep the dependency graph small.
+- **`/readyz`** — a readiness probe that returns 200 once `store.Len() > 0` (the blocklist has loaded at least one entry) and 503 otherwise. Pairs with `/healthz` to give a Kubernetes-style probe split: don't restart, but do route traffic away while the initial blocklist download is in flight.
+- **`/metrics`** — Prometheus text exposition (format `0.0.4`) for the in-process counters: query totals, block counts, cache hits/misses, cache size, blocklist size, whitelist size, and `shole_query_log_dropped_total` (entries dropped because the writer channel was full — a sustained non-zero rate means `db_flush_interval` is too long for the query volume). We hand-roll the exposition rather than pulling in `prometheus/client_golang` to keep the dependency graph small.
+- **`/debug/pprof/*`** — the six standard `net/http/pprof` handlers (index, cmdline, profile, symbol, trace, plus the typed profiles under the index). Registered only when `enable_pprof: true` is set in config (or `S_HOLE_ENABLE_PPROF=1`). Off by default; required for live CPU/heap profiling during incident response. A WARN log fires at startup when enabled, recommending a localhost-bound `api_listen`.
 
 Periodic `runTicker` goroutines (stats print, blocklist refresh) are wrapped in `recover()`. A panic inside the ticker function is logged and the next tick still fires — a transient parser failure no longer silently freezes the refresh loop.
 
@@ -304,7 +310,8 @@ LRU eviction would make better use of cache capacity by removing the least-recen
 - **SQLite file permissions:** The query log database is created with mode `0644`. On a shared machine, other local users can read query history. Operators requiring confidentiality should use filesystem-level access controls.
 - **Port 53 binding:** Binding to port 53 requires elevated privileges (root / Administrator) or `CAP_NET_BIND_SERVICE`. The systemd unit grants the capability without running as root. On Windows, the binary runs as the LocalSystem account when installed as a service.
 - **Admin UI:** The HTTP server has no authentication. As of CL 12 the default `api_listen` is `127.0.0.1:8080` — operators who want LAN access must opt in by setting `0.0.0.0:8080` (or a specific LAN interface). The HTTP server enforces conservative timeouts (`ReadHeaderTimeout=5s`, `ReadTimeout=15s`, `WriteTimeout=30s`, `IdleTimeout=60s`) and a 64 KiB body cap on POST endpoints to defend against slowloris and memory-exhaustion attacks from LAN peers.
-- **`/healthz` and `/metrics`** are unauthenticated alongside the rest of the API. They are intended for local Prometheus / probe access; do not expose to the public internet.
+- **`/healthz`, `/readyz`, and `/metrics`** are unauthenticated alongside the rest of the API. They are intended for local Prometheus / probe access; do not expose to the public internet.
+- **`/debug/pprof/*`** when enabled (`enable_pprof: true`) reveals goroutine stacks, heap layouts, and binary symbols — useful for incident response, dangerous if exposed to the LAN. The startup log fires a WARN when it is on; operators should pair it with `api_listen: "127.0.0.1:8080"`.
 
 ## Privacy Considerations
 
@@ -314,9 +321,11 @@ The query log records client IP addresses and all queried domain names. On a hom
 
 ## Testing Strategy
 
-- **Unit tests:** Every implementation package under `internal/` ships a `*_test.go` file. Line coverage by package: `stats` and `config` 100 %; `cache` 94.8 %; `api` 91.9 %; `blocklist` 89.3 %; `dnsserver` 87.0 %; `querylog` 85.4 %. The main package is at 26.8 % — the rest is the `main()` bootstrap and signal-dispatch goroutine, which require running the binary. Module-wide coverage is 71.3 %. Coverage includes `blocklist.Store` lookup, whitelist precedence, atomic `Replace`, `parseHostsFormat` against both formats, `Update` preserving the store on full-failure refresh, `ValidDomain` rejecting garbage, atomic cache file write; `cache.Cache` TTL decrement, drop-on-full, Qclass-aware keying, `cleanupExpired` sweep, `Close` shutdown; `config.Load` with empty/partial/invalid YAML, `Validate` rejecting bogus enums, every duration-parser error path, every `S_HOLE_*` env override; `stats.Counter` concurrent invariants (block rate never exceeds 100 % under parallel writers), top-N map cap, `Print` output; `querylog.FileLogger` filtering modes + fallback paths, `DBLogger` round-trip, final-flush-on-Close, retention prune; `dnsserver.Handler` sinkhole (zero + nxdomain), cache-hit, cache-miss-forward, whitelist override, empty-question, EDNS0 pass-through, write-error branches; `dnsserver.Server` full Start→query→Shutdown lifecycle on a real UDP port; the upstream health tracker (cooldown, failover, second-sweep retry); the `api` HTTP handlers including reload single-flight, the 64 KiB body cap, `ListenAndServe`/`Shutdown` lifecycle, `/healthz`, `/metrics`, malformed-input rejection, encoder-error branch. Many tests are regression tests for specific bug numbers (b/005, b/007, b/010, b/017, b/018, b/021, b/022, b/024, b/026, b/028) or staff-review IDs (R3, R4, R5, R6, R8, R9, R12, R13, R14, R15, R16, R17, R18, R19, R26, R27).
+- **Unit tests:** Every implementation package under `internal/` ships a `*_test.go` file. Line coverage by package: `stats` and `config` 100 %; `cache` 94.8 %; `api` 91.9 %; `blocklist` 89.3 %; `dnsserver` 87.0 %; `querylog` 85.4 %. The main package is at 26.8 % — the rest is the `main()` bootstrap and signal-dispatch goroutine, which require running the binary. Module-wide coverage is 71.3 %. Coverage includes `blocklist.Store` lookup, whitelist precedence, atomic `Replace`, `parseHostsFormat` against both formats, `Update` preserving the store on full-failure refresh, `ValidDomain` rejecting garbage, atomic cache file write; `cache.Cache` TTL decrement, drop-on-full, Qclass-aware keying, `cleanupExpired` sweep, `Close` shutdown; `config.Load` with empty/partial/invalid YAML, `Validate` rejecting bogus enums, every duration-parser error path, every `S_HOLE_*` env override; `stats.Counter` concurrent invariants (block rate never exceeds 100 % under parallel writers), top-N map cap, `Print` output; `querylog.FileLogger` filtering modes + fallback paths, `DBLogger` round-trip, final-flush-on-Close, retention prune; `dnsserver.Handler` sinkhole (zero + nxdomain), cache-hit, cache-miss-forward, whitelist override, empty-question, EDNS0 pass-through, write-error branches; `dnsserver.Server` full Start→query→Shutdown lifecycle on a real UDP port; the upstream health tracker (cooldown, failover, second-sweep retry); the `api` HTTP handlers including reload single-flight, the 64 KiB body cap, `ListenAndServe`/`Shutdown` lifecycle, `/healthz`, `/metrics`, malformed-input rejection, encoder-error branch. Many tests are regression tests for specific bug numbers (b/005, b/007, b/010, b/017, b/018, b/021, b/022, b/024, b/026, b/028) or staff-review IDs (R3, R4, R5, R6, R8, R9, R12, R13, R14, R15, R16, R17, R18, R19, R26, R27, R31, R32, R33, R34, R35, R36, R37, R38).
 - **DNS handler unit tests** use a `fakeWriter` implementing `dns.ResponseWriter`; the cache-hit path is exercised by pre-populating the in-memory cache, bypassing the upstream resolver entirely. The forwarder tests use a real in-process miekg/dns server on `127.0.0.1:0` so the production code path (including `dns.Client.ExchangeContext`) is exercised end-to-end.
 - **Server lifecycle test** binds the production `dnsserver.Server` to a free port (UDP + TCP), confirms a real `dns.Client.Exchange` round-trips through the handler, and verifies `Shutdown` causes `Start` to return — the only test that touches the bind+listen path.
+- **Fuzz tests:** `internal/blocklist/fuzz_test.go` fuzzes `ValidDomain`, `parseHostsFormat`, and `cacheFilename`. The parser fuzz asserts every emitted domain itself passes `ValidDomain`; the filename fuzz asserts the result is platform-safe (no `/`, `\`, or `:`). Run with `go test -fuzz=FuzzValidDomain -fuzztime=30s ./internal/blocklist/`.
+- **Integration test:** `internal/dnsserver/integration_test.go` wires the full stack — `blocklist.Store` + `cache.Cache` + `querylog.DBLogger` on a real SQLite file + `dnsserver.Handler` + `dnsserver.Server` on a free UDP port + a mock upstream — and exercises three real DNS queries (blocked, forwarded-and-cached, cache-hit). Catches wiring bugs (constructor arg order, nil dependencies, fan-out misconfig) that unit tests miss.
 - **Benchmark:** `BenchmarkStore_IsBlocked` against a 100 000-entry store guards the hot DNS path against accidental O(n) regressions.
 - **CI:** `.github/workflows/ci.yml` runs `go vet`, `go test -race`, single-iteration benchmarks, and a cross-compile matrix (linux/amd64, linux/arm64, linux/armv7, windows/amd64) on every push and PR.
 - **Manual smoke test:** Configure a single device's DNS to the running instance; browse to an ad-heavy site; verify blocked domains return `0.0.0.0` in `nslookup` and ads do not render. Check admin UI reflects live query counts. On Linux, verify `kill -HUP $(pidof s-hole)` triggers a refresh.

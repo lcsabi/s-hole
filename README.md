@@ -390,7 +390,9 @@ A full end-to-end integration test (`internal/dnsserver/integration_test.go`) wi
      │                                                      │
      │   ┌──────────────────────────────────────────────┐   │
      │   │  Admin HTTP server (default localhost:8080)  │   │
-     │   │    /api/*   /healthz   /metrics   web UI     │   │
+     │   │   /api/* + web UI                            │   │
+     │   │   /healthz   /readyz   /metrics              │   │
+     │   │   /debug/pprof/* (opt-in)                    │   │
      │   └──────────────────────────────────────────────┘   │
      │                                                      │
      │   Signals: SIGINT/SIGTERM → shutdown                 │

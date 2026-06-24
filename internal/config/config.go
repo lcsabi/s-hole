@@ -106,6 +106,7 @@ func Load(path string) (*Config, error) {
 //	S_HOLE_CACHE_SIZE          → cache_size (integer)
 //	S_HOLE_BLOCK_TTL           → block_ttl  (integer)
 //	S_HOLE_RETENTION_DAYS      → query_db_retention_days (integer)
+//	S_HOLE_ENABLE_PPROF        → enable_pprof (1/true/yes turns it on)
 func (c *Config) applyEnvOverrides() {
 	if v, ok := os.LookupEnv("S_HOLE_LISTEN"); ok {
 		c.Listen = v

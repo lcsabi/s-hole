@@ -1,10 +1,21 @@
 // Package stats tracks per-process query counters and top-N domain/client
-// tallies. Counters are atomic; top-N maps are protected by a mutex and
-// capped at topNMaxEntries — when exceeded, the bottom half is pruned so
-// memory stays bounded under long-running operation. The package is safe
-// for concurrent use and produces a JSON-serialisable Summary via
-// Snapshot, consumed both by the periodic stdout printer (Counter.Print)
-// and the REST API (/api/stats).
+// tallies.
+//
+// total and cacheHit are atomic and updated lock-free on the hot path.
+// blocked is mutex-guarded because RecordQuery's critical section
+// already takes the lock to update the top-domain tally — promoting it
+// to atomic would be redundant and misleading. Snapshot reads blocked
+// inside the same mutex and reads total/cacheHit lock-free.
+//
+// Top-N maps are protected by the mutex and capped at topNMaxEntries —
+// when exceeded, the bottom half is pruned so memory stays bounded
+// under long-running operation. The map *pointers* are read inside the
+// lock by topN so a concurrent reassignment in RecordQuery does not
+// race against Snapshot (R31).
+//
+// The package is safe for concurrent use and produces a
+// JSON-serialisable Summary via Snapshot, consumed both by the periodic
+// stdout printer (Counter.Print) and the REST API (/api/stats).
 package stats
 
 import (

@@ -184,6 +184,15 @@ sudo systemctl enable s-hole     # re-enable autostart
 journalctl -u s-hole -f          # follow logs live
 ```
 
+To trigger an immediate blocklist refresh without restarting (Linux/macOS):
+
+```bash
+sudo systemctl kill -s HUP s-hole       # via systemd
+sudo kill -HUP "$(pidof s-hole)"        # or directly
+```
+
+SIGHUP is honored on every non-Windows platform; it runs the same single-flight refresh as `POST /api/reload`.
+
 The systemd unit runs with `CAP_NET_BIND_SERVICE` so it can bind port 53 without running as root. `ProtectSystem=strict` and `NoNewPrivileges` are set for defence in depth.
 
 ### Docker

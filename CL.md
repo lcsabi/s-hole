@@ -1001,3 +1001,75 @@ ok    github.com/laszlo/s-hole/internal/dnsserver
 ok    github.com/laszlo/s-hole/internal/querylog
 ok    github.com/laszlo/s-hole/internal/stats
 ```
+
+---
+
+## CL 15 — s-hole: re-enable SIGHUP reload on Unix; correct platform framing
+
+**Bug:** —
+
+### Description
+
+Reverses a stale architectural decision and corrects the documentation
+that justified it.
+
+DESIGN.md previously claimed s-hole "targets Windows as a first-class
+platform" and used that to justify dropping the `SIGHUP` reload
+handler. The framing was wrong: Linux is the actual primary deployment
+target — the entire `deploy/` directory, the hardened systemd unit,
+the Raspberry Pi optimisations, and the Docker image are all
+Linux-first. Windows is a *supported* second platform via the SCM
+integration, not the design's centre of gravity. With that corrected,
+there is no reason to deny Unix operators the conventional
+`kill -HUP $(pidof s-hole)` gesture for "reload config."
+
+Implementation uses two tiny build-tagged files so `main.go` itself
+contains no platform conditionals:
+
+- `signals_unix.go` (`//go:build !windows`) — `reloadSignals()`
+  returns `[]os.Signal{syscall.SIGHUP}`; `isReloadSignal(sig)` matches
+  SIGHUP.
+- `signals_windows.go` (`//go:build windows`) — both functions are
+  no-op stubs.
+
+The signal handler in `main.go` is restructured into a `for sig := range sigs`
+loop. SIGHUP fires `reloadFn()` (the same single-flight closure shared
+with the periodic timer and `POST /api/reload`); SIGINT/SIGTERM fall
+through to `doStop`. SIGHUP delivery thus collapses onto the existing
+gate — concurrent SIGHUPs do not stack into duplicate downloads, and
+a SIGHUP that arrives mid-shutdown does not extend the shutdown
+window.
+
+The Windows code path is unchanged: SCM stop is still the canonical
+lifecycle gesture, and `POST /api/reload` remains the on-demand refresh
+trigger on that platform.
+
+### Files changed
+
+```
+signals_unix.go            — new: SIGHUP wiring (build !windows)
+signals_windows.go         — new: no-op stubs   (build windows)
+signals_unix_test.go       — new: reloadSignals + isReloadSignal tests
+signals_windows_test.go    — new: Windows stub tests
+main.go                    — for-range loop dispatches reload vs shutdown
+DESIGN.md                  — rewrite "In-process blocklist update via a signal":
+                             Linux is primary; SIGHUP is wired on non-Windows
+README.md                  — Linux systemctl section gains a SIGHUP recipe
+CL.md                      — this entry
+CHANGELOG.md               — SIGHUP entry under Unreleased
+```
+
+### Testing
+
+```
+$ go test -count=1 ./...
+ok    github.com/laszlo/s-hole               # signal predicates
+ok    github.com/laszlo/s-hole/internal/...
+$ GOOS=linux   go build ./...   # build green
+$ GOOS=windows go build ./...   # build green
+$ GOOS=darwin  go build ./...   # build green
+```
+
+Manual smoke (Linux): start interactively, `kill -HUP $(pidof s-hole)`,
+observe the "reload signal received" log line followed by the
+existing "refreshing blocklists" output.

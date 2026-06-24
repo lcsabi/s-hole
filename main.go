@@ -229,9 +229,25 @@ func main() {
 	}
 
 	// Signal handler for interactive (non-service) use.
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	go func() { <-quit; fmt.Println(); doStop() }()
+	//
+	// SIGINT/SIGTERM trigger a clean shutdown; SIGHUP (Unix only) triggers
+	// a blocklist refresh — the conventional "reload config" gesture for
+	// long-running daemons. Operators expect `kill -HUP $(pidof s-hole)`
+	// to work without needing the admin API enabled.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, append([]os.Signal{syscall.SIGINT, syscall.SIGTERM}, reloadSignals()...)...)
+	go func() {
+		for sig := range sigs {
+			if isReloadSignal(sig) {
+				mainLog.Info("reload signal received", "signal", sig.String())
+				reloadFn()
+				continue
+			}
+			fmt.Println()
+			doStop()
+			return
+		}
+	}()
 
 	// When launched by the Windows SCM, enter the service event loop instead
 	// of blocking directly on the DNS server.

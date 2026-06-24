@@ -9,6 +9,11 @@ operator-facing summary.
 ## [Unreleased]
 
 ### Added
+- `SIGHUP` triggers a blocklist refresh on every non-Windows build.
+  Operators can run `kill -HUP $(pidof s-hole)` or
+  `systemctl kill -s HUP s-hole` to refresh without enabling the
+  admin API. SIGHUP shares the single-flight gate with the timer and
+  `POST /api/reload`.
 - `/healthz` liveness endpoint (R4).
 - `/metrics` Prometheus exposition with counters for queries, blocks,
   cache hits/misses, cache size, blocklist size, whitelist size (R3).
@@ -43,6 +48,9 @@ operator-facing summary.
   R28, plus coverage for everything new in this release).
 
 ### Changed
+- DESIGN's "Alternatives Considered" no longer claims Windows is the
+  first-class platform. Linux is the primary deployment target; the
+  Windows SCM path is the secondary supported platform.
 - Default `api_listen` is now `127.0.0.1:8080` — operators who want
   LAN access must opt in explicitly (R18). Pre-existing configs that
   set `api_listen: "0.0.0.0:8080"` are unaffected.

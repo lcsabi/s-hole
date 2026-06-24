@@ -281,7 +281,9 @@ CoreDNS is production-grade and has a plugin ecosystem. The `ads` plugin does DN
 
 ### In-process blocklist update via a signal
 
-On Unix, `SIGHUP` is the convention for "reload config." We initially included a `SIGHUP` handler but removed it because the code targets Windows as a first-class platform and `SIGHUP` is not available there. Blocklist refresh on a configurable timer covers the primary use case; the REST API `POST /api/reload` covers on-demand refreshes.
+Linux is the primary deployment target — the Raspberry Pi optimisations, the hardened systemd unit, and the Docker image are all built around it; Windows is supported (`-service install` and SCM integration) but is not the design's centre of gravity. Accordingly, `SIGHUP` is wired up as the conventional "reload config" gesture on every non-Windows build: `kill -HUP $(pidof s-hole)` triggers the same single-flight refresh as `POST /api/reload`. Operators get the muscle-memory behaviour even when the admin API is disabled or firewalled.
+
+The implementation lives in two tiny build-tagged files (`signals_unix.go` and `signals_windows.go`) so `main.go` itself contains no platform-specific code. On Windows, `reloadSignals()` returns nil and the only signals notified are SIGINT/SIGTERM — the SCM is the canonical lifecycle control there, and POST /api/reload remains available for on-demand refresh.
 
 ### LRU eviction for the DNS cache
 

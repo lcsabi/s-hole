@@ -21,9 +21,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/laszlo/s-hole/blocklist"
-	"github.com/laszlo/s-hole/querylog"
-	"github.com/laszlo/s-hole/stats"
+	"github.com/laszlo/s-hole/internal/blocklist"
+	"github.com/laszlo/s-hole/internal/querylog"
+	"github.com/laszlo/s-hole/internal/stats"
 )
 
 //go:embed static

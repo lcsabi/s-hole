@@ -305,16 +305,18 @@ Client devices (DNS via DHCP)
 
 ### Package layout
 
+All implementation packages live under `internal/` so they cannot be imported by external modules.
+
 | Package | Responsibility |
 |---|---|
-| `blocklist` | Download, parse, cache, and serve the domain block set |
-| `cache` | TTL-based in-memory DNS response cache |
-| `dns` | UDP/TCP server, per-query handler, upstream forwarding |
-| `querylog` | Async file and SQLite query loggers |
-| `stats` | Atomic counters; top-N domain/client tracking |
-| `api` | HTTP handlers and embedded web UI |
-| `config` | YAML loading with defaults and validation |
-| `service` | Windows Service integration (build-tagged) |
+| `internal/blocklist` | Download, parse, cache, and serve the domain block set |
+| `internal/cache` | TTL-based in-memory DNS response cache |
+| `internal/dns` | UDP/TCP server, per-query handler, upstream forwarding |
+| `internal/querylog` | Async file and SQLite query loggers |
+| `internal/stats` | Atomic counters; top-N domain/client tracking |
+| `internal/api` | HTTP handlers and embedded web UI |
+| `internal/config` | YAML loading with defaults and validation |
+| `internal/service` | Windows Service integration (build-tagged) |
 
 ---
 
@@ -324,3 +326,9 @@ Client devices (DNS via DHCP)
 - The SQLite query log and flat log file contain full browsing history for all devices. Treat them as sensitive data. Use `log_queries: none` if you do not need query history.
 - The admin UI has no authentication. Set `api_listen: "127.0.0.1:8080"` to restrict it to localhost, or use a firewall rule to limit access. The HTTP server enforces read/write/idle timeouts and a 64 KiB request body limit to defend against slowloris-style attacks from LAN peers, but these are no substitute for proper access control on a multi-user network.
 - Blocklist URLs are operator-controlled. Use HTTPS URLs from sources you trust.
+
+---
+
+## License
+
+[MIT](LICENSE) — see the `LICENSE` file for the full text.

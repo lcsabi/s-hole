@@ -9,9 +9,9 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/laszlo/s-hole/blocklist"
-	"github.com/laszlo/s-hole/cache"
-	"github.com/laszlo/s-hole/stats"
+	"github.com/laszlo/s-hole/internal/blocklist"
+	"github.com/laszlo/s-hole/internal/cache"
+	"github.com/laszlo/s-hole/internal/stats"
 	"github.com/miekg/dns"
 )
 

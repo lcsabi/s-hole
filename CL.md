@@ -606,3 +606,60 @@ CL.md                  — this entry
 Verified full build (`go build ./...`) and `go vet ./...` pass cleanly
 after all changes. Manual trace of the new reload-mutex flow confirms
 that timer-fired and API-fired refreshes collapse onto the same gate.
+
+---
+
+## CL 9 — s-hole: project structure cleanup and LICENSE
+
+**Bug:** —
+
+### Description
+
+Brings the repo layout in line with the modern Go convention for
+application-binary projects.
+
+**Move implementation packages under `internal/`** — Every Go package
+other than `main` (`api`, `blocklist`, `cache`, `config`, `dns`,
+`querylog`, `service`, `stats`) is relocated under `internal/`.
+Go's compiler enforces that packages beneath `internal/` are only
+importable from the owning module, which matches the project's actual
+intent: s-hole is an application, not a library. The module path stays
+`github.com/laszlo/s-hole`; only the per-package import paths change.
+
+**Add MIT LICENSE** — A top-level `LICENSE` file establishes the legal
+status of the code. Without it the source was technically all-rights-
+reserved despite being on a public repo. The README gains a brief License
+section pointing at the file.
+
+**Delete stale binaries from the working tree** — `s-hole.exe` and
+`s-hole-linux-arm64` were left over from development. They are gitignored
+so they were not tracked, but they cluttered the working directory and
+were inconsistent across machines. The Makefile and Dockerfile rebuild
+them on demand.
+
+### Files changed
+
+```
+internal/api/                  ← moved from api/
+internal/blocklist/            ← moved from blocklist/
+internal/cache/                ← moved from cache/
+internal/config/               ← moved from config/
+internal/dns/                  ← moved from dns/
+internal/querylog/             ← moved from querylog/
+internal/service/              ← moved from service/
+internal/stats/                ← moved from stats/
+main.go                        — updated import paths
+internal/api/api.go            — updated import paths
+internal/dns/handler.go        — updated import paths
+LICENSE                        — new: MIT License
+README.md                      — package table updated; License section added
+DESIGN.md                      — package directory headings updated to internal/
+CL.md                          — this entry
+s-hole.exe, s-hole-linux-arm64 — deleted from working tree
+```
+
+### Testing
+
+Verified `go build ./...` and `go vet ./...` pass cleanly after the
+import-path rewrite. The packaged binary has identical behaviour; only
+the source tree layout changed.

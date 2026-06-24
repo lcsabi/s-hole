@@ -28,14 +28,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/laszlo/s-hole/api"
-	"github.com/laszlo/s-hole/blocklist"
-	"github.com/laszlo/s-hole/cache"
-	"github.com/laszlo/s-hole/config"
-	dnsserver "github.com/laszlo/s-hole/dns"
-	"github.com/laszlo/s-hole/querylog"
-	"github.com/laszlo/s-hole/service"
-	"github.com/laszlo/s-hole/stats"
+	"github.com/laszlo/s-hole/internal/api"
+	"github.com/laszlo/s-hole/internal/blocklist"
+	"github.com/laszlo/s-hole/internal/cache"
+	"github.com/laszlo/s-hole/internal/config"
+	dnsserver "github.com/laszlo/s-hole/internal/dns"
+	"github.com/laszlo/s-hole/internal/querylog"
+	"github.com/laszlo/s-hole/internal/service"
+	"github.com/laszlo/s-hole/internal/stats"
 )
 
 func main() {

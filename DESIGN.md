@@ -75,7 +75,7 @@ Client devices (DNS server learned via DHCP from router)
   Upstream DNS (1.1.1.1:53, 8.8.8.8:53, …)
 ```
 
-### DNS Server (`dns/`)
+### DNS Server (`internal/dns/`)
 
 We use `github.com/miekg/dns` rather than the standard library's `net` package because it provides a complete RFC-compliant DNS message codec, a `ServeMux`-style handler interface, and handles both UDP and TCP transports. Rolling our own DNS codec would be a source of subtle correctness bugs.
 
@@ -91,7 +91,7 @@ The `Handler` struct is the core routing point. For each query:
 
 Upstream forwarding uses a 3-second per-upstream timeout. Upstreams are tried in order; the first successful response wins.
 
-### Blocklist Store (`blocklist/`)
+### Blocklist Store (`internal/blocklist/`)
 
 The store is an in-memory `map[string]struct{}` (hash set) keyed on normalised domain names (lowercase, no trailing dot). Lookup is O(1).
 
@@ -105,7 +105,7 @@ A whitelist (exact domain names) is checked before the blocklist. A whitelisted 
 
 Blocklist replacement is atomic from the perspective of DNS handlers: `Store.Replace` swaps the internal map pointer under a write lock, so handlers either see the old list or the new list — never a partial update.
 
-### DNS Response Cache (`cache/`)
+### DNS Response Cache (`internal/cache/`)
 
 The cache is a size-bounded, TTL-respecting in-memory store for upstream DNS responses. Its purpose is to avoid redundant upstream round-trips for frequently queried domains, which is especially valuable on low-power hardware where upstream latency is comparatively high.
 
@@ -132,7 +132,7 @@ Two modes are supported via `block_mode` in config:
 
 The TTL on sinkhole replies is configurable (`block_ttl`, default 300 seconds). A short TTL means a whitelisted domain becomes reachable within TTL seconds after being added to the whitelist, without requiring a client cache flush.
 
-### Query Logging (`querylog/`)
+### Query Logging (`internal/querylog/`)
 
 Query logging is split into two independent backends behind a `Multi` fan-out:
 
@@ -170,7 +170,7 @@ CREATE TABLE queries (
 
 `log_queries` controls verbosity: `all` (default), `blocked`-only, or `none`. Both backends respect this setting independently.
 
-### Statistics (`stats/`)
+### Statistics (`internal/stats/`)
 
 `Counter` maintains atomic int64 counters for total queries, blocked queries, and cache hits. Per-domain block counts and per-client query counts are tracked in mutex-protected maps. Top-N extraction sorts a snapshot of those maps; the sort runs on a copy taken outside the lock to minimise contention.
 
@@ -178,7 +178,7 @@ CREATE TABLE queries (
 
 `Snapshot` loads `blocked` *before* `total`. This load order matters: `RecordQuery` increments `total` atomically *before* taking the mutex and incrementing `blocked`, so reading `total` first allows concurrent queries to inflate `blocked` past the snapshotted `total` and yield a block percentage greater than 100. Reading `blocked` first guarantees the invariant `blocked ≤ total` because every `blocked.Add(1)` is preceded by a `total.Add(1)`.
 
-### Admin Interface (`api/`)
+### Admin Interface (`internal/api/`)
 
 An HTTP server (default `:8080`) serves two things:
 
@@ -206,17 +206,17 @@ Blocklist refresh is single-flighted via a `sync.Mutex` held in `main.go` and sh
 
 On startup, `main.go` calls `printNetworkHint`, which enumerates local interface addresses via `net.InterfaceAddrs()`, filters out loopback and link-local addresses, and prints a bordered box listing the DNS server address and Admin UI URL for each LAN-facing IPv4 address. This removes the need for the operator to manually discover the machine's IP when configuring the router's DHCP DNS field. The same information is printed by `deploy/install-linux.sh` at the end of installation using `hostname -I`.
 
-### Configuration (`config/`)
+### Configuration (`internal/config/`)
 
 All configuration lives in a single YAML file. The struct uses `yaml` tags and applies safe defaults in `applyDefaults()` so the minimal valid config is an empty file. Duration fields are stored as strings and parsed at startup; invalid durations are fatal errors rather than silently ignored.
 
 A `Validate()` method runs after `Load()` and rejects unrecognised values for the enumerated fields (`block_mode`, `log_queries`). A typo such as `block_mode: "NXDOMAIN"` is now a fatal startup error instead of a silent fallback to the default — operator misconfiguration is surfaced immediately at the source.
 
-### Packaging and Deployment (`service/`, `deploy/`, `Dockerfile`)
+### Packaging and Deployment (`internal/service/`, `deploy/`, `Dockerfile`)
 
 Three deployment targets are supported:
 
-**Windows Service** — `service/svc_windows.go` (build tag `windows`) integrates with the Windows Service Control Manager via `golang.org/x/sys/windows/svc`. The binary accepts `-service install|uninstall|start|stop` flags. When launched by the SCM, `svc.IsWindowsService()` is detected and the process enters the SCM event loop; a stop control from the SCM calls the same `doStop` function as a Ctrl+C in interactive mode. `service/svc_other.go` (build tag `!windows`) provides no-op stubs with the same function signatures so `main.go` requires no build tags.
+**Windows Service** — `internal/service/svc_windows.go` (build tag `windows`) integrates with the Windows Service Control Manager via `golang.org/x/sys/windows/svc`. The binary accepts `-service install|uninstall|start|stop` flags. When launched by the SCM, `svc.IsWindowsService()` is detected and the process enters the SCM event loop; a stop control from the SCM calls the same `doStop` function as a Ctrl+C in interactive mode. `internal/service/svc_other.go` (build tag `!windows`) provides no-op stubs with the same function signatures so `main.go` requires no build tags.
 
 **Linux systemd** — `deploy/s-hole.service` runs as a dedicated `s-hole` system user. `AmbientCapabilities=CAP_NET_BIND_SERVICE` allows binding port 53 without root. `ProtectSystem=strict` and `NoNewPrivileges` limit the blast radius of any exploit. `deploy/install-linux.sh` automates the full installation; the systemd unit is embedded as a heredoc inside the script, so only the script itself (plus the binary and config) needs to be copied to the target machine.
 

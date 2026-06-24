@@ -1,18 +1,30 @@
 // Command s-hole is the network-level DNS sinkhole entry point.
 //
 // Lifecycle:
+//   - install the default slog handler (text on a TTY, JSON when
+//     S_HOLE_LOG_FORMAT=json)
 //   - parse flags; if -service is set, perform the SCM action and exit
-//   - load and validate config; bail on any duration/enum failure
+//   - load and validate config (YAML + S_HOLE_* env-var overrides); bail
+//     on any duration/enum failure
 //   - construct the blocklist store, stats counter, query loggers, DNS
 //     response cache, DNS handler, and DNS server
 //   - construct the single-flight reload closure and the admin API server
-//   - launch background tickers for stats printing and blocklist refresh
+//     (which exposes /healthz and /metrics alongside the REST API)
+//   - launch background tickers for stats printing and blocklist refresh,
+//     both panic-recovered
 //   - either enter the Windows SCM event loop (service mode) or block on
 //     the DNS server (interactive mode)
 //
+// Signals: SIGINT and SIGTERM trigger a clean shutdown. On non-Windows
+// builds, SIGHUP triggers a blocklist refresh through the same
+// single-flight closure used by the periodic timer and POST /api/reload —
+// see signals_unix.go.
+//
 // Shutdown is funnelled through a single doStop closure used by both the
-// Ctrl+C path (SIGINT/SIGTERM) and the Windows SCM stop control; this
-// keeps the cleanup order consistent across the two entry points.
+// signal handler and the Windows SCM stop control; this keeps the
+// cleanup order consistent across the two entry points. An in-flight
+// blocklist refresh is waited on (with a 5 s deadline) so the atomic
+// rename can complete before the process exits.
 package main
 
 import (

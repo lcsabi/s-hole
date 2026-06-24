@@ -1,6 +1,12 @@
 // Package cache provides a TTL-based in-memory DNS response cache.
 // It is the primary latency and upstream-load optimisation for low-power
 // deployments (Raspberry Pi, etc.) where upstream round-trips are expensive.
+//
+// Keys are (qname, qtype, qclass) so cross-class queries (e.g. ClassCHAOS
+// version.bind TXT) cannot collide with the dominant ClassINET traffic.
+// Hit/miss counters are atomic so reads do not contend on the entries
+// mutex on the hot path. A background goroutine sweeps expired entries
+// once a minute (cleanupExpired); Close stops it cleanly.
 package cache
 
 import (

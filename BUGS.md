@@ -207,7 +207,8 @@ the same name and type. Near-zero real-world impact, but technically incorrect.
 
 ### Root Cause
 
-`key(q dns.Question)` in `cache/cache.go` does not include `q.Qclass`.
+`key(q dns.Question)` in `internal/cache/cache.go` (formerly `cache/cache.go`)
+does not include `q.Qclass`.
 
 ### Fix
 
@@ -278,7 +279,8 @@ Suppress `http.ErrServerClosed` inside `ListenAndServe` so the goroutine in
 
 ### Description
 
-All four `w.WriteMsg(...)` call sites in `dns/handler.go` discard the returned
+All four `w.WriteMsg(...)` call sites in `internal/dnsserver/handler.go`
+(formerly `dns/handler.go`) discard the returned
 error. For TCP connections, a write failure indicates the client disconnected or
 the send buffer is exhausted. Silently ignoring it makes network errors
 undiagnosable from logs.
@@ -303,7 +305,8 @@ Check each `w.WriteMsg` return value and log non-nil errors at the `[dns]` prefi
 
 ### Description
 
-`blocklist/store.go` contains a private `toLower` function that manually iterates
+`internal/blocklist/store.go` (formerly `blocklist/store.go`) contains a
+private `toLower` function that manually iterates
 bytes and converts A–Z to lowercase. Domain names are ASCII-only by spec so this
 is functionally correct, but the function is non-idiomatic and adds cognitive
 overhead for reviewers.
@@ -400,7 +403,8 @@ for {
 
 `applyDefaults()` sets `BlockMode` to `"zero"` only when the field is empty.
 Any other non-empty invalid value (e.g. `"NXDOMAIN"` or `"nullroute"`) is
-passed through. In `dns/handler.go`, the guard is `if h.blockMode == "nxdomain"`,
+passed through. In `internal/dnsserver/handler.go` (formerly `dns/handler.go`),
+the guard is `if h.blockMode == "nxdomain"`,
 so a typo silently falls back to `zero` with no diagnostic. Similarly,
 `log_queries` accepts any string, and typos result in all queries being logged
 regardless of operator intent.
@@ -499,7 +503,8 @@ introduced.
 ### Fix
 
 Define `type Logger interface { Log(clientIP, domain string, blocked bool) }` in
-`querylog/logger.go`. Change `Multi.loggers` to `[]Logger`. Add compile-time
+`internal/querylog/logger.go` (formerly `querylog/logger.go`). Change
+`Multi.loggers` to `[]Logger`. Add compile-time
 interface assertions for `FileLogger`, `DBLogger`, and `Multi`.
 
 ---

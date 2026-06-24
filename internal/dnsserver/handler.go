@@ -4,6 +4,15 @@
 // reply back to the client. UDP and TCP listeners run in parallel; clients
 // fall back to TCP automatically when a UDP reply is truncated.
 //
+// The handler mirrors the client's EDNS0 OPT pseudo-record on sinkhole
+// replies so clients that advertise EDNS0 do not fall back to legacy DNS.
+//
+// Upstream forwarding is context-aware (per-query 10 s deadline,
+// per-upstream 3 s timeout) and health-tracked: an upstream that failed
+// in the last 30 s is skipped on the first sweep, then retried on a
+// second sweep if every non-cooldown upstream also failed. See upstream.go
+// for the tracker.
+//
 // The package is named dnsserver to avoid colliding with github.com/miekg/dns,
 // which we import as `dns` for its message-codec types.
 package dnsserver

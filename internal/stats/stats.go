@@ -1,8 +1,10 @@
 // Package stats tracks per-process query counters and top-N domain/client
-// tallies. Counters are atomic; top-N maps are protected by a mutex.
-// The package is safe for concurrent use and produces a JSON-serialisable
-// Summary via Snapshot, consumed both by the periodic stdout printer and
-// the REST API.
+// tallies. Counters are atomic; top-N maps are protected by a mutex and
+// capped at topNMaxEntries — when exceeded, the bottom half is pruned so
+// memory stays bounded under long-running operation. The package is safe
+// for concurrent use and produces a JSON-serialisable Summary via
+// Snapshot, consumed both by the periodic stdout printer (Counter.Print)
+// and the REST API (/api/stats).
 package stats
 
 import (

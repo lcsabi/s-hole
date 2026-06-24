@@ -7,6 +7,13 @@
 // or "none") and never block the calling DNS goroutine: the SQLite logger
 // buffers entries in a channel and drops on overflow rather than applying
 // back-pressure to query handling.
+//
+// The SQLite logger supports a TTL-based retention prune: when
+// query_db_retention_days is set, a goroutine deletes rows older than
+// the cutoff every pruneTickPeriod.
+//
+// Recent and TopBlocked accept a context.Context so HTTP handlers can
+// propagate client cancellation into the underlying QueryContext call.
 package querylog
 
 import (

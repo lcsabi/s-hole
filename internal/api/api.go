@@ -1,11 +1,25 @@
 // Package api implements the admin REST API and serves the embedded web UI.
 //
 // The HTTP server runs on a separate port from the DNS server (default
-// :8080) and exposes JSON endpoints backed by the stats, querylog, and
-// blocklist subsystems. It is unauthenticated and intended for LAN-only
-// deployment; conservative HTTP server timeouts and a per-request body
-// size cap defend against slowloris and memory-exhaustion attacks but
-// are not a substitute for proper access control on a multi-user network.
+// 127.0.0.1:8080 — localhost only; set api_listen to "0.0.0.0:8080" to
+// expose to the LAN) and exposes JSON endpoints backed by the stats,
+// querylog, and blocklist subsystems. The server is unauthenticated and
+// intended for LAN-only deployment; conservative HTTP server timeouts
+// and a per-request body size cap defend against slowloris and
+// memory-exhaustion attacks but are not a substitute for proper access
+// control on a multi-user network.
+//
+// Routes:
+//
+//	GET    /api/stats            JSON Snapshot
+//	GET    /api/queries          recent rows from SQLite (?limit=N)
+//	GET    /api/whitelist        runtime whitelist
+//	POST   /api/whitelist        add a domain (ValidDomain-gated, 64 KiB cap)
+//	DELETE /api/whitelist        remove a domain
+//	POST   /api/reload           trigger blocklist refresh (single-flight)
+//	GET    /healthz              liveness probe
+//	GET    /metrics              Prometheus text exposition
+//	GET    /                     embedded SPA from internal/api/static/
 package api
 
 import (

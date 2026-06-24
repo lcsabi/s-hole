@@ -85,7 +85,7 @@ Client devices (DNS server learned via DHCP from router)
   Upstream DNS (1.1.1.1:53, 8.8.8.8:53, …)
 ```
 
-### DNS Server (`internal/dns/`)
+### DNS Server (`internal/dnsserver/`)
 
 We use `github.com/miekg/dns` rather than the standard library's `net` package because it provides a complete RFC-compliant DNS message codec, a `ServeMux`-style handler interface, and handles both UDP and TCP transports. Rolling our own DNS codec would be a source of subtle correctness bugs.
 
@@ -301,7 +301,8 @@ LRU eviction would make better use of cache capacity by removing the least-recen
 - **Blocklist URLs:** URLs come from operator-controlled config, not from user input. The downloader follows HTTP redirects without restriction; operators should use HTTPS URLs from trusted sources.
 - **SQLite file permissions:** The query log database is created with mode `0644`. On a shared machine, other local users can read query history. Operators requiring confidentiality should use filesystem-level access controls.
 - **Port 53 binding:** Binding to port 53 requires elevated privileges (root / Administrator) or `CAP_NET_BIND_SERVICE`. The systemd unit grants the capability without running as root. On Windows, the binary runs as the LocalSystem account when installed as a service.
-- **Admin UI:** The HTTP server has no authentication. It should be firewalled or restricted to `127.0.0.1` on multi-user machines.
+- **Admin UI:** The HTTP server has no authentication. As of CL 12 the default `api_listen` is `127.0.0.1:8080` — operators who want LAN access must opt in by setting `0.0.0.0:8080` (or a specific LAN interface). The HTTP server enforces conservative timeouts (`ReadHeaderTimeout=5s`, `ReadTimeout=15s`, `WriteTimeout=30s`, `IdleTimeout=60s`) and a 64 KiB body cap on POST endpoints to defend against slowloris and memory-exhaustion attacks from LAN peers.
+- **`/healthz` and `/metrics`** are unauthenticated alongside the rest of the API. They are intended for local Prometheus / probe access; do not expose to the public internet.
 
 ## Privacy Considerations
 
@@ -311,10 +312,12 @@ The query log records client IP addresses and all queried domain names. On a hom
 
 ## Testing Strategy
 
-- **Unit tests:** Every implementation package under `internal/` ships a `*_test.go` file. Coverage includes `blocklist.Store` lookup and whitelist precedence, `blocklist.parseHostsFormat` against both hosts-file and plain-domain inputs, `blocklist.Update` preserving the store on full-failure refresh, `cache.Cache` TTL decrement / drop-on-full / Qclass-aware keying / Close shutdown, `config.Load` with empty/partial/invalid YAML plus `Validate` rejecting bogus enums, `stats.Counter` concurrent invariants (block rate never exceeds 100% under parallel writers), `querylog.FileLogger` filtering modes, `querylog.DBLogger` round-trip and final-flush-on-Close, `dns.Handler` sinkhole / cache-hit / whitelist / empty-question paths, and the `api` HTTP handlers including reload single-flight and the 64 KiB body cap. Several tests are regression tests for specific bug numbers (b/005, b/007, b/010, b/017, b/018, b/021, b/022, b/024, b/026, b/028).
-- **DNS handler tests** use a `fakeWriter` implementing `dns.ResponseWriter`; the cache-hit path is exercised by pre-populating the in-memory cache with a known response, bypassing the upstream resolver entirely.
-- **Integration test (planned):** Spin up an in-process `dns.Server` on a random port; send A/AAAA queries via the network. The component-level coverage above already exercises the same handler code paths without binding a port.
-- **Manual smoke test:** Configure a single device's DNS to the running instance; browse to an ad-heavy site; verify blocked domains return `0.0.0.0` in `nslookup` and ads do not render. Check admin UI reflects live query counts.
+- **Unit tests:** Every implementation package under `internal/` ships a `*_test.go` file. Line coverage by package: `stats` and `config` 100 %; `cache` 94.8 %; `api` 91.9 %; `blocklist` 89.3 %; `dnsserver` 87.0 %; `querylog` 85.4 %. The main package is at 26.8 % — the rest is the `main()` bootstrap and signal-dispatch goroutine, which require running the binary. Module-wide coverage is 71.3 %. Coverage includes `blocklist.Store` lookup, whitelist precedence, atomic `Replace`, `parseHostsFormat` against both formats, `Update` preserving the store on full-failure refresh, `ValidDomain` rejecting garbage, atomic cache file write; `cache.Cache` TTL decrement, drop-on-full, Qclass-aware keying, `cleanupExpired` sweep, `Close` shutdown; `config.Load` with empty/partial/invalid YAML, `Validate` rejecting bogus enums, every duration-parser error path, every `S_HOLE_*` env override; `stats.Counter` concurrent invariants (block rate never exceeds 100 % under parallel writers), top-N map cap, `Print` output; `querylog.FileLogger` filtering modes + fallback paths, `DBLogger` round-trip, final-flush-on-Close, retention prune; `dnsserver.Handler` sinkhole (zero + nxdomain), cache-hit, cache-miss-forward, whitelist override, empty-question, EDNS0 pass-through, write-error branches; `dnsserver.Server` full Start→query→Shutdown lifecycle on a real UDP port; the upstream health tracker (cooldown, failover, second-sweep retry); the `api` HTTP handlers including reload single-flight, the 64 KiB body cap, `ListenAndServe`/`Shutdown` lifecycle, `/healthz`, `/metrics`, malformed-input rejection, encoder-error branch. Many tests are regression tests for specific bug numbers (b/005, b/007, b/010, b/017, b/018, b/021, b/022, b/024, b/026, b/028) or staff-review IDs (R3, R4, R5, R6, R8, R9, R12, R13, R14, R15, R16, R17, R18, R19, R26, R27).
+- **DNS handler unit tests** use a `fakeWriter` implementing `dns.ResponseWriter`; the cache-hit path is exercised by pre-populating the in-memory cache, bypassing the upstream resolver entirely. The forwarder tests use a real in-process miekg/dns server on `127.0.0.1:0` so the production code path (including `dns.Client.ExchangeContext`) is exercised end-to-end.
+- **Server lifecycle test** binds the production `dnsserver.Server` to a free port (UDP + TCP), confirms a real `dns.Client.Exchange` round-trips through the handler, and verifies `Shutdown` causes `Start` to return — the only test that touches the bind+listen path.
+- **Benchmark:** `BenchmarkStore_IsBlocked` against a 100 000-entry store guards the hot DNS path against accidental O(n) regressions.
+- **CI:** `.github/workflows/ci.yml` runs `go vet`, `go test -race`, single-iteration benchmarks, and a cross-compile matrix (linux/amd64, linux/arm64, linux/armv7, windows/amd64) on every push and PR.
+- **Manual smoke test:** Configure a single device's DNS to the running instance; browse to an ad-heavy site; verify blocked domains return `0.0.0.0` in `nslookup` and ads do not render. Check admin UI reflects live query counts. On Linux, verify `kill -HUP $(pidof s-hole)` triggers a refresh.
 
 ---
 
@@ -324,7 +327,8 @@ The query log records client IP addresses and all queried domain names. On a hom
 |---|----------|-------|--------|
 | 1 | Should we support DNS-over-HTTPS upstream forwarding? Some ISPs intercept plain DNS on port 53. | — | Open |
 | 2 | Is there a use case for per-client whitelists (e.g., unblocking streaming services for one device)? | — | Open |
-| 3 | Should the SQLite DB have a max-size or TTL-based retention policy to prevent unbounded growth? | — | Open |
+| 3 | Should the SQLite DB have a max-size or TTL-based retention policy to prevent unbounded growth? | — | **Resolved** — TTL-based prune via `query_db_retention_days` (CL 12, R16) |
 | 4 | Should the binary register itself as a Windows Service via `golang.org/x/sys/windows/svc`? | — | **Resolved** — implemented in Phase 6 |
 | 5 | Should the DNS cache use LRU eviction instead of drop-on-full? | — | Open — see Alternatives Considered |
-| 6 | Should the admin UI require authentication (e.g., a configurable API key)? | — | Open |
+| 6 | Should the admin UI require authentication (e.g., a configurable API key)? | — | Open — partially mitigated by the localhost-by-default `api_listen` (CL 12, R18) |
+| 7 | Should we support DoH/DoT for blocklist downloads as well as upstream forwarding? Operator-controlled URLs over HTTPS already cover most threat models. | — | Open |

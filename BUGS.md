@@ -713,3 +713,31 @@ Imprecise terminology in the design doc.
 
 Replace "idempotent if already running" with "de-duplicated via
 single-flight mutex" or equivalent phrasing in `DESIGN.md`.
+
+---
+
+## b/028 — config: Load returns io.EOF on an empty config file
+
+**Priority:** P3
+**Component:** config
+**Status:** Fixed in CL 10
+**Filed:** 2026-06-24
+
+### Description
+
+`README.md` and the `config` package doc state "an empty config file is
+valid" because every field has a safe default. In practice, `config.Load`
+returned `io.EOF` when handed an empty file, refusing to start the
+process. The bug was discovered by `TestLoad_EmptyAppliesDefaults` while
+writing the unit test suite.
+
+### Root Cause
+
+`yaml.NewDecoder(f).Decode(&cfg)` returns `io.EOF` on a stream that
+contains no YAML document. `Load` returned the error verbatim instead of
+treating EOF as "no overrides" and falling through to `applyDefaults`.
+
+### Fix
+
+Wrap the decode error: `if err != nil && !errors.Is(err, io.EOF)`. Empty
+files now load successfully and produce a Config with all defaults applied.

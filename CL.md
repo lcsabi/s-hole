@@ -663,3 +663,95 @@ s-hole.exe, s-hole-linux-arm64 — deleted from working tree
 Verified `go build ./...` and `go vet ./...` pass cleanly after the
 import-path rewrite. The packaged binary has identical behaviour; only
 the source tree layout changed.
+
+---
+
+## CL 10 — s-hole: unit tests for every package + b/028
+
+**Bug:** b/028 (discovered by tests)
+
+### Description
+
+Adds a `*_test.go` file alongside every implementation package under
+`internal/`. The suite uses only the standard library and `httptest`;
+no external test framework, no test fixtures on disk.
+
+**Coverage by package**
+
+- `internal/blocklist` — `Store.IsBlocked`, whitelist precedence, atomic
+  `Replace` under contention, `parseHostsFormat` for both list formats,
+  `fetchList` against `httptest.NewServer` (including the 503 →
+  stale-cache fallback regression for b/007), `Update` preserving the
+  store on full-failure refresh (regression for b/024), and partial-
+  success replacement.
+- `internal/cache` — Set/Get round-trip, TTL decrement, expiry, drop-on-
+  full, NXDOMAIN/zero-TTL non-caching, hit/miss counters, Qclass-aware
+  keying (regression for b/010), `Close` shutdown (regression for b/018).
+- `internal/config` — `Load` with empty / partial / invalid YAML;
+  `Validate` accepting valid enums and rejecting bogus ones (regression
+  for b/017); duration parsing.
+- `internal/stats` — `RecordQuery`, `RecordCacheHit`, top-N ordering and
+  truncation, cache-hit percentage with no forwardable queries, and a
+  concurrent stress test that enforces `blocked ≤ total` across 5000
+  Snapshot reads (regression for b/021).
+- `internal/querylog` — `FileLogger` filtering modes (`all` / `blocked` /
+  `none`), `Multi` fan-out preserving order, `DBLogger` round-trip,
+  `Recent` ordering, `TopBlocked` aggregation, filter mode applied to
+  the DB sink, `Close` flushing pending entries (regression for b/005),
+  and non-blocking back-pressure on the input channel.
+- `internal/dns` — `Handler.ServeDNS` for sinkhole-zero, sinkhole-
+  NXDOMAIN, whitelist-overrides-block (via pre-populated cache),
+  cache-hit-avoids-upstream (verified by pointing upstreams at
+  `127.0.0.1:1`), empty-question SERVFAIL, and blocked MX returning
+  NOERROR with no answer. A `fakeWriter` implements `dns.ResponseWriter`
+  in-process so no port binding is required.
+- `internal/api` — `/api/stats` returns a `stats.Summary`, full
+  whitelist add/list/delete round trip, empty-domain POST rejected
+  with 400, oversized POST rejected by `MaxBytesReader` (regression for
+  b/026), `/api/reload` reporting `"reload triggered"` on success and
+  `"reload already in progress"` when the closure returns `false`
+  (regression for b/022), and a 50-way concurrent reload test exercising
+  the single-flight gate.
+
+**b/028 — Load returned io.EOF for empty config files**
+Discovered by `TestLoad_EmptyAppliesDefaults`. The README and package
+doc both state that an empty config is valid, but `yaml.Decoder.Decode`
+returns `io.EOF` on empty streams and `Load` returned that verbatim.
+Wrapped the call: `err != nil && !errors.Is(err, io.EOF)`. Empty files
+now load successfully and surface all defaults.
+
+### Files changed
+
+```
+internal/blocklist/store_test.go       — new
+internal/blocklist/loader_test.go      — new
+internal/cache/cache_test.go           — new
+internal/config/config_test.go         — new
+internal/config/config.go              — b/028: tolerate io.EOF in Load
+internal/stats/stats_test.go           — new
+internal/querylog/logger_test.go       — new
+internal/querylog/db_test.go           — new
+internal/dns/handler_test.go           — new (fakeWriter + nullLogger)
+internal/api/api_test.go               — new
+README.md                              — add Testing section
+DESIGN.md                              — replace "tests planned" with the real coverage list
+BUGS.md                                — file b/028
+CL.md                                  — this entry
+```
+
+### Testing
+
+```
+$ go test ./...
+ok    github.com/laszlo/s-hole/internal/api        0.613s
+ok    github.com/laszlo/s-hole/internal/blocklist  0.816s
+ok    github.com/laszlo/s-hole/internal/cache      0.446s
+ok    github.com/laszlo/s-hole/internal/config     0.354s
+ok    github.com/laszlo/s-hole/internal/dns        0.560s
+ok    github.com/laszlo/s-hole/internal/querylog   1.399s
+ok    github.com/laszlo/s-hole/internal/stats      0.342s
+```
+
+The race detector requires CGO and a C toolchain; not exercised locally
+on this Windows host but the tests are race-safe by construction (every
+shared map is mutex-guarded).

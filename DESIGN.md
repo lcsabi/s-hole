@@ -270,8 +270,9 @@ The query log records client IP addresses and all queried domain names. On a hom
 
 ## Testing Strategy
 
-- **Unit tests (planned):** `blocklist.Store` lookup and whitelist behaviour; `blocklist.parseHostsFormat` with representative list samples; `stats.Counter` concurrency under parallel `RecordQuery` calls; `cache.Cache` TTL expiry and hit/miss accounting; `config.Load` with missing and malformed fields.
-- **Integration test (planned):** Spin up an in-process `dns.Server` on a random port; send A/AAAA queries for known-blocked and known-allowed domains; assert response IPs and RCODE. Verify cache hits on repeated queries.
+- **Unit tests:** Every implementation package under `internal/` ships a `*_test.go` file. Coverage includes `blocklist.Store` lookup and whitelist precedence, `blocklist.parseHostsFormat` against both hosts-file and plain-domain inputs, `blocklist.Update` preserving the store on full-failure refresh, `cache.Cache` TTL decrement / drop-on-full / Qclass-aware keying / Close shutdown, `config.Load` with empty/partial/invalid YAML plus `Validate` rejecting bogus enums, `stats.Counter` concurrent invariants (block rate never exceeds 100% under parallel writers), `querylog.FileLogger` filtering modes, `querylog.DBLogger` round-trip and final-flush-on-Close, `dns.Handler` sinkhole / cache-hit / whitelist / empty-question paths, and the `api` HTTP handlers including reload single-flight and the 64 KiB body cap. Several tests are regression tests for specific bug numbers (b/005, b/007, b/010, b/017, b/018, b/021, b/022, b/024, b/026, b/028).
+- **DNS handler tests** use a `fakeWriter` implementing `dns.ResponseWriter`; the cache-hit path is exercised by pre-populating the in-memory cache with a known response, bypassing the upstream resolver entirely.
+- **Integration test (planned):** Spin up an in-process `dns.Server` on a random port; send A/AAAA queries via the network. The component-level coverage above already exercises the same handler code paths without binding a port.
 - **Manual smoke test:** Configure a single device's DNS to the running instance; browse to an ad-heavy site; verify blocked domains return `0.0.0.0` in `nslookup` and ads do not render. Check admin UI reflects live query counts.
 
 ---

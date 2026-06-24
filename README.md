@@ -271,6 +271,18 @@ $env:GOOS=""; $env:GOARCH=""
 
 ---
 
+## Testing
+
+Every implementation package under `internal/` has a `*_test.go` file. To run the full suite:
+
+```bash
+go test ./...
+```
+
+Add `-v` for verbose output, `-race` to enable the race detector (requires CGO and a C toolchain on the host), or `-cover` to see line coverage. Tests use only the standard library and `httptest` — no external test runner or fixtures are required.
+
+---
+
 ## Architecture
 
 ```

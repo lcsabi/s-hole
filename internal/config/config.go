@@ -6,7 +6,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -54,7 +56,10 @@ func Load(path string) (*Config, error) {
 	defer f.Close()
 
 	cfg := &Config{}
-	if err := yaml.NewDecoder(f).Decode(cfg); err != nil {
+	// An empty file decodes to io.EOF; we treat that as "no overrides" and
+	// fall through to applyDefaults — the README states an empty config is
+	// valid.
+	if err := yaml.NewDecoder(f).Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
 	cfg.applyDefaults()

@@ -211,11 +211,11 @@ An HTTP server (default `:8080`) serves two things:
 
 The web UI has no external dependencies (no CDN, no framework). It is pure HTML/CSS/JS and works without an internet connection.
 
-The HTTP server is held as an `*http.Server` so it can be gracefully shut down. `doStop` in `main.go` calls `apiServer.Shutdown(ctx)` with a 5-second context before terminating the process, which drains in-flight admin requests. `http.ErrServerClosed` is suppressed inside `ListenAndServe` so a clean shutdown does not log a spurious error.
+The HTTP server is held as an `*http.Server` so it can be gracefully shut down. `doStop` in `cmd/s-hole/main.go` calls `apiServer.Shutdown(ctx)` with a 5-second context before terminating the process, which drains in-flight admin requests. `http.ErrServerClosed` is suppressed inside `ListenAndServe` so a clean shutdown does not log a spurious error.
 
 Explicit timeouts are configured on the server (`ReadHeaderTimeout=5s`, `ReadTimeout=15s`, `WriteTimeout=30s`, `IdleTimeout=60s`) to defend the unauthenticated LAN-facing endpoint from slowloris-style attacks. POST handlers that accept JSON bodies wrap `r.Body` in `http.MaxBytesReader` (64 KiB) so an attacker cannot exhaust memory by streaming an unbounded payload.
 
-Blocklist refresh is single-flighted via a `sync.Mutex` held in `main.go` and shared between the periodic refresh timer and the API. The reload closure tries to acquire the lock and returns `true` synchronously if it took it (work proceeds asynchronously in a goroutine) or `false` if a refresh is already running. `POST /api/reload` surfaces the boolean as `"reload triggered"` vs `"reload already in progress"`. Centralising the lock in the closure rather than in `api.Server` ensures the periodic timer cannot bypass the gate.
+Blocklist refresh is single-flighted via a `sync.Mutex` held in `cmd/s-hole/main.go` and shared between the periodic refresh timer and the API. The reload closure tries to acquire the lock and returns `true` synchronously if it took it (work proceeds asynchronously in a goroutine) or `false` if a refresh is already running. `POST /api/reload` surfaces the boolean as `"reload triggered"` vs `"reload already in progress"`. Centralising the lock in the closure rather than in `api.Server` ensures the periodic timer cannot bypass the gate.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -241,7 +241,7 @@ Periodic `runTicker` goroutines (stats print, blocklist refresh) are wrapped in 
 
 ### Startup Network Hint
 
-On startup, `main.go` calls `printNetworkHint`, which enumerates local interface addresses via `net.InterfaceAddrs()`, filters out loopback and link-local addresses, and prints a bordered box listing the DNS server address and Admin UI URL for each LAN-facing IPv4 address. This removes the need for the operator to manually discover the machine's IP when configuring the router's DHCP DNS field. The same information is printed by `deploy/install-linux.sh` at the end of installation using `hostname -I`.
+On startup, `cmd/s-hole/main.go` calls `printNetworkHint`, which enumerates local interface addresses via `net.InterfaceAddrs()`, filters out loopback and link-local addresses, and prints a bordered box listing the DNS server address and Admin UI URL for each LAN-facing IPv4 address. This removes the need for the operator to manually discover the machine's IP when configuring the router's DHCP DNS field. The same information is printed by `deploy/install-linux.sh` at the end of installation using `hostname -I`.
 
 ### Configuration (`internal/config/`)
 
@@ -249,13 +249,13 @@ All configuration lives in a single YAML file. The struct uses `yaml` tags and a
 
 A `Validate()` method runs after `Load()` and rejects unrecognised values for the enumerated fields (`block_mode`, `log_queries`). A typo such as `block_mode: "NXDOMAIN"` is now a fatal startup error instead of a silent fallback to the default — operator misconfiguration is surfaced immediately at the source.
 
-`applyEnvOverrides()` runs after `applyDefaults()` and lets a container deployment override any commonly-tuned field via an `S_HOLE_*` environment variable without rebuilding a bind-mounted YAML file. The full list is in `README.md`. Malformed numeric values are silently ignored so a typo in an env var never blocks startup.
+`applyEnvOverrides()` runs after `applyDefaults()` and lets a container deployment override any commonly-tuned field via an `S_HOLE_*` environment variable without rebuilding a bind-mounted YAML file. The full list is in `../README.md`. Malformed numeric values are silently ignored so a typo in an env var never blocks startup.
 
 ### Packaging and Deployment (`internal/service/`, `deploy/`, `Dockerfile`)
 
 Three deployment targets are supported:
 
-**Windows Service** — `internal/service/svc_windows.go` (build tag `windows`) integrates with the Windows Service Control Manager via `golang.org/x/sys/windows/svc`. The binary accepts `-service install|uninstall|start|stop` flags. When launched by the SCM, `svc.IsWindowsService()` is detected and the process enters the SCM event loop; a stop control from the SCM calls the same `doStop` function as a Ctrl+C in interactive mode. `internal/service/svc_other.go` (build tag `!windows`) provides no-op stubs with the same function signatures so `main.go` requires no build tags.
+**Windows Service** — `internal/service/svc_windows.go` (build tag `windows`) integrates with the Windows Service Control Manager via `golang.org/x/sys/windows/svc`. The binary accepts `-service install|uninstall|start|stop` flags. When launched by the SCM, `svc.IsWindowsService()` is detected and the process enters the SCM event loop; a stop control from the SCM calls the same `doStop` function as a Ctrl+C in interactive mode. `internal/service/svc_other.go` (build tag `!windows`) provides no-op stubs with the same function signatures so `cmd/s-hole/main.go` requires no platform conditionals of its own.
 
 **Linux systemd** — `deploy/s-hole.service` runs as a dedicated `s-hole` system user. `AmbientCapabilities=CAP_NET_BIND_SERVICE` allows binding port 53 without root. `ProtectSystem=strict` and `NoNewPrivileges` limit the blast radius of any exploit. `deploy/install-linux.sh` automates the full installation; the systemd unit is embedded as a heredoc inside the script, so only the script itself (plus the binary and config) needs to be copied to the target machine.
 
@@ -283,7 +283,7 @@ CoreDNS is production-grade and has a plugin ecosystem. The `ads` plugin does DN
 
 Linux is the primary deployment target — the Raspberry Pi optimisations, the hardened systemd unit, and the Docker image are all built around it; Windows is supported (`-service install` and SCM integration) but is not the design's centre of gravity. Accordingly, `SIGHUP` is wired up as the conventional "reload config" gesture on every non-Windows build: `kill -HUP $(pidof s-hole)` triggers the same single-flight refresh as `POST /api/reload`. Operators get the muscle-memory behaviour even when the admin API is disabled or firewalled.
 
-The implementation lives in two tiny build-tagged files (`signals_unix.go` and `signals_windows.go`) so `main.go` itself contains no platform-specific code. On Windows, `reloadSignals()` returns nil and the only signals notified are SIGINT/SIGTERM — the SCM is the canonical lifecycle control there, and POST /api/reload remains available for on-demand refresh.
+The implementation lives in two tiny build-tagged files (`cmd/s-hole/signals_unix.go` and `cmd/s-hole/signals_windows.go`) so `cmd/s-hole/main.go` itself contains no platform-specific code. On Windows, `reloadSignals()` returns nil and the only signals notified are SIGINT/SIGTERM — the SCM is the canonical lifecycle control there, and POST /api/reload remains available for on-demand refresh.
 
 ### LRU eviction for the DNS cache
 

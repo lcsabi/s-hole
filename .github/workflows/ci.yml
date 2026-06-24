@@ -56,4 +56,4 @@ jobs:
           GOARCH: ${{ matrix.target.goarch }}
           GOARM: ${{ matrix.target.goarm }}
           CGO_ENABLED: "0"
-        run: go build -ldflags="-s -w" -o /tmp/s-hole .
+        run: go build -ldflags="-s -w" -o /tmp/s-hole ./cmd/s-hole

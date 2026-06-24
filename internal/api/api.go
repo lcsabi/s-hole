@@ -66,7 +66,7 @@ type Server struct {
 
 // New constructs a Server. db and dnsCache may be nil to disable the
 // corresponding metric/endpoint surfaces. reloadFn must be the
-// single-flight blocklist refresh closure owned by main.go; see the
+// single-flight blocklist refresh closure owned by cmd/s-hole/main.go; see the
 // reloadFn field for the contract.
 func New(counter *stats.Counter, db *querylog.DBLogger, store *blocklist.Store, dnsCache CacheStatser, reloadFn func() bool) *Server {
 	return &Server{counter: counter, db: db, store: store, dnsCache: dnsCache, reloadFn: reloadFn}

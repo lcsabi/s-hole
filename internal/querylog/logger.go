@@ -85,7 +85,7 @@ var _ Logger = (*DBLogger)(nil)
 var _ Logger = (*Multi)(nil)
 
 // Multi fans out a single Log call to all wrapped loggers in order.
-// It is the composition primitive used by main.go to combine the file
+// It is the composition primitive used by cmd/s-hole/main.go to combine the file
 // and SQLite backends.
 type Multi struct {
 	loggers []Logger

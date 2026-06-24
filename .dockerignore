@@ -1,7 +1,11 @@
 .claude/
+.git/
+.github/
 *.exe
 *.db
 blocklist_*.txt
-CL.md
-DESIGN.md
+docs/
 deploy/
+BUGS.md
+CHANGELOG.md
+SECURITY.md

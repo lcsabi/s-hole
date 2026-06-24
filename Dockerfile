@@ -14,7 +14,7 @@ COPY . .
 
 # CGO_ENABLED=0: modernc.org/sqlite is pure Go — no C toolchain needed.
 # -ldflags="-s -w": strip debug info to reduce binary size (~40%).
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o s-hole .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o s-hole ./cmd/s-hole
 
 # ── Runtime stage ─────────────────────────────────────────────
 FROM alpine:3.21

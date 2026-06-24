@@ -38,7 +38,7 @@ var logger = slog.With("pkg", "dns")
 const queryDeadline = 10 * time.Second
 
 // Logger is the minimal log sink used by the DNS handler. Both the file
-// and SQLite query loggers satisfy it; main.go fans out to multiple via
+// and SQLite query loggers satisfy it; cmd/s-hole/main.go fans out to multiple via
 // querylog.Multi.
 type Logger interface {
 	Log(clientIP, domain string, blocked bool)

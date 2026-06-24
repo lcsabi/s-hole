@@ -730,7 +730,7 @@ single-flight mutex" or equivalent phrasing in `DESIGN.md`.
 
 ### Description
 
-`README.md` and the `config` package doc state "an empty config file is
+`../README.md` and the `config` package doc state "an empty config file is
 valid" because every field has a safe default. In practice, `config.Load`
 returned `io.EOF` when handed an empty file, refusing to start the
 process. The bug was discovered by `TestLoad_EmptyAppliesDefaults` while

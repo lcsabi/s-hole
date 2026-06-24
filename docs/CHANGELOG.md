@@ -9,6 +9,11 @@ operator-facing summary.
 ## [Unreleased]
 
 ### Added
+- Production-grade project layout: the `main` package now lives under
+  `cmd/s-hole/`; `DESIGN.md`, `CL.md`, `BUGS.md`, and `CHANGELOG.md`
+  live under `docs/`. The `go install` path is now
+  `github.com/laszlo/s-hole/cmd/s-hole@latest`.
+- `SECURITY.md` security-disclosure policy at the repo root.
 - Comprehensive test coverage round: every implementation package now
   at ≥ 85 % line coverage (`config` and `stats` at 100 %). Module-wide
   coverage went from 60.8 % to 71.3 %, with the residual being the

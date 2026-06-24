@@ -1,6 +1,6 @@
 //go:build !windows
 
-// Non-Windows stubs for the service package. They allow main.go to call
+// Non-Windows stubs for the service package. They allow cmd/s-hole/main.go to call
 // into service unconditionally; the install/start/stop subcommands return
 // a not-supported error pointing operators at systemd instead.
 

@@ -178,7 +178,7 @@ func (c *Counter) topN(m map[string]int64, n int) []Entry {
 }
 
 // Print writes a human-readable one-line summary plus the top-5 blocked
-// domains and top-5 clients to stdout. Called periodically by main.go
+// domains and top-5 clients to stdout. Called periodically by cmd/s-hole/main.go
 // (stats_interval) and once at shutdown.
 func (c *Counter) Print() {
 	s := c.Snapshot(5)

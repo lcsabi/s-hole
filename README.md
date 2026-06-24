@@ -34,14 +34,14 @@ s-hole is intentionally small: a single binary, a single YAML config file, no ru
 If your `$GOBIN` is on `PATH`, the latest commit can be fetched with:
 
 ```bash
-go install github.com/laszlo/s-hole@latest
+go install github.com/laszlo/s-hole/cmd/s-hole@latest
 ```
 
 ### Run interactively
 
 ```bash
 # Build from a local clone
-go build -o s-hole .
+go build -o s-hole ./cmd/s-hole
 
 # Run (requires elevated privileges for port 53)
 sudo ./s-hole -config config.yaml          # Linux / macOS
@@ -307,7 +307,7 @@ On Windows without `make`, use PowerShell:
 
 ```powershell
 $env:GOOS="linux"; $env:GOARCH="arm64"
-go build -ldflags="-s -w" -o s-hole-linux-arm64 .
+go build -ldflags="-s -w" -o s-hole-linux-arm64 ./cmd/s-hole
 $env:GOOS=""; $env:GOARCH=""
 ```
 
@@ -328,40 +328,56 @@ Add `-v` for verbose output, `-race` to enable the race detector (requires CGO a
 ## Architecture
 
 ```
-Client devices (DNS via DHCP)
-        │ UDP/TCP :53
-        ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                         s-hole process                           │
-│                                                                  │
-│  ┌──────────┐  blocked?   ┌──────────────────────────────────┐  │
-│  │ Handler  │────────────▶│ Sinkhole reply                    │  │
-│  │          │             │ (0.0.0.0 / :: or NXDOMAIN)        │  │
-│  │          │             │ EDNS0 OPT mirrored from request   │  │
-│  │          │  cache hit? └──────────────────────────────────┘  │
-│  │          │────────────▶ DNS Response Cache  (atomic counters)│
-│  │          │  miss → upstream forward (health-tracked, ctx)    │
-│  └────┬─────┘                                                   │
-│       │ every query                                             │
-│  ┌────▼──────┐  ┌──────────────┐  ┌────────────────────────┐    │
-│  │ Blocklist │  │    Stats     │  │   Query Logger          │   │
-│  │   Store   │  │   Counter    │  │  (file + SQLite WAL)    │   │
-│  │ (atomic   │  │ (top-N maps  │  │  ctx-aware reads;       │   │
-│  │  Replace) │  │  bounded)    │  │  optional retention)    │   │
-│  └───────────┘  └──────────────┘  └────────────────────────┘    │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  Admin HTTP Server (default 127.0.0.1:8080)               │   │
-│  │  REST API + embedded web UI + /healthz + /metrics         │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                                                                  │
-│  Periodic refresh ticker — shares single-flight gate with        │
-│  POST /api/reload and SIGHUP (Unix). Stats ticker, both           │
-│  panic-recovered. Structured logging via log/slog (JSON opt-in). │
-└─────────────────────────────────────────────────────────────────┘
-        │ cache miss; ctx-bounded; per-upstream 3 s + 30 s cooldown
-        ▼
-  Upstream DNS (1.1.1.1:53, 8.8.8.8:53, …)
+                   Client devices (DNS via DHCP)
+                                │
+                                │ UDP/TCP :53
+                                ▼
+     ┌──────────────────────────────────────────────────────┐
+     │                   s-hole process                     │
+     │                                                      │
+     │   ┌──────────────────────────────────────────────┐   │
+     │   │  DNS Handler  (per query)                    │   │
+     │   │    1. blocklist  → sinkhole reply            │   │
+     │   │    2. cache hit  → cached reply              │   │
+     │   │    3. cache miss → upstream forward + cache  │   │
+     │   └──────────────────────────────────────────────┘   │
+     │                                                      │
+     │   ┌───────────┐   ┌──────────┐   ┌───────────┐       │
+     │   │ Blocklist │   │  Stats   │   │ Querylog  │       │
+     │   │   Store   │   │ Counter  │   │ file + DB │       │
+     │   └───────────┘   └──────────┘   └───────────┘       │
+     │                                                      │
+     │   ┌──────────────────────────────────────────────┐   │
+     │   │  Admin HTTP server (default localhost:8080)  │   │
+     │   │    /api/*   /healthz   /metrics   web UI     │   │
+     │   └──────────────────────────────────────────────┘   │
+     │                                                      │
+     │   Signals: SIGINT/SIGTERM → shutdown                 │
+     │            SIGHUP (Unix)  → blocklist refresh        │
+     │   Timers : periodic refresh; periodic stats print    │
+     └──────────────────────────────────────────────────────┘
+                                │  on cache miss
+                                │  ctx-bounded; 3 s per upstream
+                                │  + 30 s health cooldown
+                                ▼
+                    Upstream DNS (1.1.1.1, 8.8.8.8)
+```
+
+### Repository layout
+
+```
+.
+├── cmd/s-hole/        application entry point (main package)
+├── internal/          implementation packages (not importable externally)
+├── deploy/            systemd unit + Linux install script
+├── docs/              DESIGN, CHANGELOG, CL log, BUGS
+├── .github/           CI workflows
+├── config.yaml        default configuration
+├── Dockerfile         multi-stage container build
+├── Makefile           cross-compile targets
+├── LICENSE            MIT
+├── README.md          you are here
+└── SECURITY.md        security disclosure policy
 ```
 
 ### Package layout

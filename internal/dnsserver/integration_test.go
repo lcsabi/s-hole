@@ -3,7 +3,6 @@ package dnsserver
 import (
 	"net"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -131,18 +130,27 @@ func TestIntegration_FullPipeline(t *testing.T) {
 		t.Errorf("CacheHits = %d, want 1", snap.CacheHits)
 	}
 
-	// --- Querylog flush + reload, then assert all three rows landed ---
-	// We can't query the live DBLogger reads across goroutines, so we
-	// wait long enough for the 30 ms flush tick to fire.
-	time.Sleep(150 * time.Millisecond)
-
-	rows, err := db.Recent(t.Context(), 10)
+	// --- Querylog flush, then assert all four rows landed ---
+	// Poll rather than sleep a hardcoded interval: the writer goroutine
+	// flushes every 30 ms in this test, but a CI runner under contention
+	// can stretch that to hundreds of milliseconds. We try for up to 2 s
+	// before giving up — healthy runners finish in well under 50 ms.
+	var rows []querylog.QueryRow
+	const wantRows = 4 // 1 probe + 3 test queries
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rows, err = db.Recent(t.Context(), 10)
+		if err == nil && len(rows) >= wantRows {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if err != nil {
 		t.Fatalf("Recent: %v", err)
 	}
-	// 1 probe + 3 test queries = 4 rows expected.
-	if len(rows) != 4 {
-		t.Fatalf("got %d query log rows, want 4 (3 test + 1 probe)", len(rows))
+	if len(rows) != wantRows {
+		t.Fatalf("got %d query log rows after 2 s, want %d (3 test + 1 probe)",
+			len(rows), wantRows)
 	}
 
 	// Sort-check by scanning: count test domain occurrences.
@@ -167,5 +175,4 @@ func TestIntegration_FullPipeline(t *testing.T) {
 	if goodCount != 2 {
 		t.Errorf("good.example.com row count = %d, want 2 (forwarded + cached)", goodCount)
 	}
-	_ = atomic.LoadInt64 // keep atomic import alive even if test changes
 }

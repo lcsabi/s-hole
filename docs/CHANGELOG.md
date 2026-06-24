@@ -9,6 +9,21 @@ operator-facing summary.
 ## [Unreleased]
 
 ### Added
+- `runTicker` now honors a context for clean shutdown — background
+  tickers (stats print, blocklist refresh) exit when `doStop` cancels
+  the application-wide context instead of being implicitly reclaimed
+  by `os.Exit`. New `TestRunTicker_StopsOnContextCancel` regression.
+- `internal/version.Info` struct + `Short()` now returns it. The
+  startup-log line uses it, and the API has a real caller instead of
+  being dead exported code.
+- `CONTRIBUTING.md` at the repo root documents the Makefile entry
+  points, fuzz-run instructions, project layout, ID conventions
+  (`b/NNN`, `R NN`), coverage targets, and the doc-sync rule.
+- New tests close coverage gaps the fifth review found: `Dropped()`
+  actually increments under overflow + stays 0 under healthy load
+  (S5); `/debug/pprof/*` is 404 by default and 200 only when
+  `EnablePprof(true)` (S6); the panic-recovery log line includes the
+  goroutine stack (S7 / R45 regression).
 - `/readyz` readiness endpoint (200 once the blocklist has loaded; 503
   otherwise). Pairs with `/healthz` for Kubernetes-style probes.
 - `/debug/pprof/*` endpoints behind `enable_pprof: true` (or
@@ -104,6 +119,12 @@ operator-facing summary.
   `/metrics` endpoint can surface cache statistics.
 
 ### Fixed
+- Integration test no longer relies on a hardcoded 150 ms sleep to
+  wait for the SQLite flush tick — it polls for up to 2 s. Fast on
+  healthy CI, robust under load.
+- `reloadFn` defer order collapsed into a single closure so the
+  mutex is released before the WaitGroup signals done, matching
+  reader expectations.
 - Counter.Snapshot data race: `topN` now reads the map pointer under
   the same mutex that protects the prune-and-reassign in
   `RecordQuery`. The race detector previously fired when prune and

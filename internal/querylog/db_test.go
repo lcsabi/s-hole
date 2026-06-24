@@ -193,20 +193,23 @@ func TestDBLogger_RetentionPruneDeletesOldRows(t *testing.T) {
 }
 
 func TestDBLogger_DroppedOnChannelOverflow(t *testing.T) {
-	// With a tiny channel and a slow flush (1h interval), the buffer
+	// With a tiny channel and a slow flush (1h interval) the buffer
 	// fills up quickly. The logger must drop entries silently rather
-	// than block the caller — this would deadlock the DNS hot path
-	// otherwise.
-	db, _ := newDB(t, "all")
+	// than block the caller — that would deadlock the DNS hot path —
+	// and it must *count* the drops so /metrics can surface back-pressure.
+	path := filepath.Join(t.TempDir(), "queries.db")
+	db, err := NewDBLogger(path, "all", 1*time.Hour, 0) // long flush → no draining
+	if err != nil {
+		t.Fatalf("NewDBLogger: %v", err)
+	}
 	defer db.Close()
 
-	// Push more than the channel capacity (1000) so the default-arm
-	// branch in Log() fires. This test just confirms Log() returns
-	// promptly under back-pressure — it does not assert how many are
-	// dropped.
+	// Push >> queryQueueSize (1000) so the default-arm branch in Log()
+	// definitely fires.
+	const pushed = 5000
 	done := make(chan struct{})
 	go func() {
-		for i := 0; i < 5000; i++ {
+		for i := 0; i < pushed; i++ {
 			db.Log("1.1.1.1", "ads.com.", true)
 		}
 		close(done)
@@ -215,5 +218,28 @@ func TestDBLogger_DroppedOnChannelOverflow(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Log() blocked under back-pressure — channel must drop on full")
+	}
+
+	// Pushed 5000 entries into a 1000-slot channel that's not draining;
+	// at least the last 4000 must have been dropped. The exact count is
+	// scheduler-dependent so we assert a lower bound.
+	if got := db.Dropped(); got < 3000 {
+		t.Errorf("Dropped() = %d after pushing %d into a 1000-slot channel; "+
+			"want >= 3000 (R33 regression: dropped counter not incrementing)",
+			got, pushed)
+	}
+}
+
+func TestDBLogger_DroppedZeroUnderNormalLoad(t *testing.T) {
+	// Quiescent path: pushing a handful of entries to a logger with a
+	// short flush interval must never increment the drop counter.
+	db, _ := newDB(t, "all")
+	defer db.Close()
+	for i := 0; i < 10; i++ {
+		db.Log("1.1.1.1", "ads.com.", true)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if got := db.Dropped(); got != 0 {
+		t.Errorf("Dropped() = %d under normal load; want 0", got)
 	}
 }

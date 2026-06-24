@@ -25,14 +25,14 @@ func TestString_ContainsAllFields(t *testing.T) {
 }
 
 func TestShort_ReturnsAllThreeFields(t *testing.T) {
-	v, c, d := Short()
-	if v == "" {
+	info := Short()
+	if info.Version == "" {
 		t.Error("Short returned empty Version")
 	}
-	if c == "" {
+	if info.Commit == "" {
 		t.Error("Short returned empty Commit")
 	}
-	if d == "" {
+	if info.BuildDate == "" {
 		t.Error("Short returned empty BuildDate")
 	}
 }

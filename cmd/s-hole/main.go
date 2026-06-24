@@ -81,11 +81,12 @@ func main() {
 	}
 
 	setupLogger()
+	info := version.Short()
 	mainLog := slog.With("pkg", "main")
 	mainLog.Info("starting s-hole",
-		"version", version.Version,
-		"commit", version.Commit,
-		"built", version.BuildDate,
+		"version", info.Version,
+		"commit", info.Commit,
+		"built", info.BuildDate,
 	)
 
 	// Service management commands exit immediately after completing.
@@ -203,8 +204,17 @@ func main() {
 		}
 		reloadWG.Add(1)
 		go func() {
-			defer reloadMu.Unlock()
-			defer reloadWG.Done()
+			// Explicit, ordered cleanup: release the lock first so a
+			// subsequent reloadFn caller is not gated on us, then
+			// signal Done so doStop's reloadWG.Wait() returns only
+			// after the mutex is already free. Two separate defers
+			// would fire in LIFO order, which puts Done before Unlock
+			// and confuses readers who expect "release resources in
+			// reverse acquisition order."
+			defer func() {
+				reloadMu.Unlock()
+				reloadWG.Done()
+			}()
 			mainLog.Info("refreshing blocklists")
 			if err := blocklist.Update(store, cfg.Blocklists, cfg.CacheDir); err != nil {
 				mainLog.Warn("blocklist refresh failed", "err", err)
@@ -229,13 +239,20 @@ func main() {
 	_, apiPort, _ := net.SplitHostPort(cfg.APIListen)
 	printNetworkHint(dnsPort, apiPort)
 
-	go runTicker(statsInterval, counter.Print)
-	go runTicker(refreshInterval, func() { reloadFn() })
+	// runCtx is the application-wide lifecycle context. doStop cancels
+	// it before tearing down subsystems so the background tickers exit
+	// promptly instead of running until os.Exit.
+	runCtx, runCancel := context.WithCancel(context.Background())
+	go runTicker(runCtx, statsInterval, counter.Print)
+	go runTicker(runCtx, refreshInterval, func() { reloadFn() })
 
 	// doStop is the single shutdown path used by both the signal handler
 	// (interactive) and the Windows SCM stop event (service mode).
 	doStop := func() {
 		mainLog.Info("shutting down")
+		// Cancel the lifecycle context first so the background tickers
+		// stop scheduling new work while we drain the rest.
+		runCancel()
 		counter.Print()
 		dnsServer.Shutdown()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -368,19 +385,26 @@ func buildMultiLogger(fl *querylog.FileLogger, db *querylog.DBLogger) dnsserver.
 	return querylog.NewMulti(fl, db)
 }
 
-// runTicker invokes fn on a fixed interval until the process exits. Used
-// for the stats printer and the periodic blocklist refresh. There is no
-// stop channel: the goroutine outlives the rest of the runtime by design
-// and is reclaimed when os.Exit fires in doStop.
+// runTicker invokes fn on a fixed interval until ctx is cancelled. Used
+// for the stats printer and the periodic blocklist refresh. doStop
+// cancels the application-wide context before tearing down dependent
+// subsystems so these tickers exit cleanly — without that, the goroutines
+// would have to be reclaimed implicitly by os.Exit, which is fragile if
+// this code is ever embedded in a larger binary.
 //
 // A panic inside fn is recovered and logged so a transient failure (e.g.,
 // a malformed blocklist line that triggers an out-of-bounds read) does
 // not silently kill the ticker and freeze updates until restart.
-func runTicker(d time.Duration, fn func()) {
+func runTicker(ctx context.Context, d time.Duration, fn func()) {
 	t := time.NewTicker(d)
 	defer t.Stop()
-	for range t.C {
-		runTickerOnce(fn)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			runTickerOnce(fn)
+		}
 	}
 }
 

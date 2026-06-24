@@ -29,8 +29,20 @@ func String() string {
 		"\n  os/arch: " + runtime.GOOS + "/" + runtime.GOARCH
 }
 
-// Short returns a one-line summary suitable for log lines (`version=…
-// commit=… os=…`). It is the form embedded in the slog startup line.
-func Short() (string, string, string) {
-	return Version, Commit, BuildDate
+// Info is the structured view of the three build-time vars. Returned by
+// Short for callers that want to embed the build identity in a single
+// log/event/header without memorising the field order.
+type Info struct {
+	Version   string
+	Commit    string
+	BuildDate string
+}
+
+// Short returns the build identity as a struct. Used by cmd/s-hole/main.go
+// to attach version metadata to the startup log line in one shot and to
+// hand the metadata to any subsystem that wants to surface it (e.g. an
+// HTTP response header). Direct package-level reads (`version.Version`)
+// remain available for callers that only want one field.
+func Short() Info {
+	return Info{Version: Version, Commit: Commit, BuildDate: BuildDate}
 }

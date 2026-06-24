@@ -4,6 +4,21 @@ A lightweight, self-contained DNS sinkhole for network-wide ad and tracker block
 
 s-hole is intentionally small: a single binary, a single YAML config file, no runtime dependencies. The full codebase fits comfortably in an afternoon's reading.
 
+### Contents
+
+- [Features](#features)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration) (incl. [env-var overrides](#environment-variable-overrides))
+- [REST API](#rest-api)
+- [Deployment](#deployment): [Linux/Pi](#raspberry-pi--linux-systemd), [Docker](#docker), [Windows](#windows-system-service)
+- [Building from Source](#building-from-source)
+- [Development](#development): targets, coverage, CI, fuzz, integration test
+- [Architecture](#architecture)
+- [Security Notes](#security-notes)
+- [License](#license)
+
+For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/CL.md` (change-list index → `docs/cls/`), `docs/BUGS.md` (Buganizer-style bug tracker), `docs/CHANGELOG.md` (release notes), and `CONTRIBUTING.md`.
+
 ---
 
 ## Features

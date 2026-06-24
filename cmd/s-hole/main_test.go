@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -159,6 +160,71 @@ func TestRunTickerOnce_RecoversFromPanic(t *testing.T) {
 		t.Fatal("fn never executed")
 	}
 	// Reaching this line at all means recover() caught the panic.
+}
+
+func TestRunTickerOnce_LogsPanicWithStack(t *testing.T) {
+	// R45 regression. The panic-recovery log line must include the panic
+	// value AND a goroutine stack — without the stack, a panic in the
+	// field is undiagnosable from logs alone. We swap slog's default
+	// handler with one writing to a buffer, then assert the captured
+	// output mentions both the panic message and a stack-trace marker.
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	runTickerOnce(func() { panic("diagnostic-marker-boom") })
+
+	out := buf.String()
+	if !strings.Contains(out, "diagnostic-marker-boom") {
+		t.Errorf("recovery log missing panic value:\n%s", out)
+	}
+	if !strings.Contains(out, "stack=") {
+		t.Errorf("recovery log missing stack=… attribute (R45 regression):\n%s", out)
+	}
+	// The stack must reference the recovery site so an operator can
+	// locate the panic; runTickerOnce is the canonical marker.
+	if !strings.Contains(out, "runTickerOnce") {
+		t.Errorf("recovery stack does not reference runTickerOnce:\n%s", out)
+	}
+}
+
+func TestRunTicker_StopsOnContextCancel(t *testing.T) {
+	// S8 regression. runTicker must exit promptly when its context is
+	// cancelled — otherwise the goroutine leaks past doStop and we are
+	// back to relying on os.Exit to reclaim it.
+	calls := atomic.Int32{}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		runTicker(ctx, 5*time.Millisecond, func() {
+			calls.Add(1)
+		})
+		close(done)
+	}()
+
+	// Let a few ticks fire, then cancel.
+	time.Sleep(40 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("runTicker did not exit within 500 ms of context cancel")
+	}
+
+	if calls.Load() == 0 {
+		t.Fatal("runTicker fired no ticks before cancel — interval may be too short")
+	}
+
+	// Cancellation must stop the tick stream entirely; one more grace
+	// period should not record any further calls.
+	before := calls.Load()
+	time.Sleep(40 * time.Millisecond)
+	if calls.Load() != before {
+		t.Errorf("calls still incrementing after cancel: %d → %d", before, calls.Load())
+	}
 }
 
 func TestWaitWithDeadline_ReturnsWhenWGDone(t *testing.T) {

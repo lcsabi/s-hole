@@ -243,7 +243,7 @@ Operational diagnostics ship over two surfaces:
 - **`/metrics`** — Prometheus text exposition (format `0.0.4`) for the in-process counters: query totals, block counts, cache hits/misses, cache size, blocklist size, whitelist size, and `shole_query_log_dropped_total` (entries dropped because the writer channel was full — a sustained non-zero rate means `db_flush_interval` is too long for the query volume). We hand-roll the exposition rather than pulling in `prometheus/client_golang` to keep the dependency graph small.
 - **`/debug/pprof/*`** — the six standard `net/http/pprof` handlers (index, cmdline, profile, symbol, trace, plus the typed profiles under the index). Registered only when `enable_pprof: true` is set in config (or `S_HOLE_ENABLE_PPROF=1`). Off by default; required for live CPU/heap profiling during incident response. A WARN log fires at startup when enabled, recommending a localhost-bound `api_listen`.
 
-Periodic `runTicker` goroutines (stats print, blocklist refresh) are wrapped in `recover()`. A panic inside the ticker function is logged and the next tick still fires — a transient parser failure no longer silently freezes the refresh loop.
+Periodic `runTicker` goroutines (stats print, blocklist refresh) are wrapped in `recover()`. A panic inside the ticker function is logged with its goroutine stack and the next tick still fires — a transient parser failure no longer silently freezes the refresh loop. `runTicker` also honors an application-wide `context.Context` that `doStop` cancels first, so the tickers unwind cleanly rather than depending on `os.Exit` to reclaim them.
 
 ### Startup Network Hint
 

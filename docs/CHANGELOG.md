@@ -3,8 +3,8 @@
 All notable changes to s-hole are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project loosely
 tracks [Semantic Versioning](https://semver.org/) once the first tagged
-release ships. Detailed CL descriptions live in `CL.md`; this file is the
-operator-facing summary.
+release ships. Detailed per-CL descriptions live under `cls/`, indexed by
+`CL.md`; this file is the operator-facing summary.
 
 ## [Unreleased]
 
@@ -154,4 +154,5 @@ operator-facing summary.
 
 ## [Initial implementation]
 
-See `CL.md` for CL 1 through CL 10 — the pre-changelog development log.
+See the per-CL files under `cls/CL-01.md` through `cls/CL-10.md` for the
+pre-changelog development log. `CL.md` is the index.

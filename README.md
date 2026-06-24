@@ -428,12 +428,14 @@ A full end-to-end integration test (`internal/dnsserver/integration_test.go`) wi
 ├── cmd/s-hole/        application entry point (main package)
 ├── internal/          implementation packages (not importable externally)
 ├── deploy/            systemd unit + Linux install script
-├── docs/              DESIGN, CHANGELOG, CL log, BUGS
+├── docs/              DESIGN, CHANGELOG, BUGS, and CL.md (index)
+│   └── cls/           one file per CL (CL-01.md … CL-NN.md)
 ├── .github/           CI workflows, dependabot, CODEOWNERS, PR & issue templates
 ├── .golangci.yml      lint config
 ├── config.yaml        default configuration
 ├── Dockerfile         multi-stage container build
 ├── Makefile           build + lint + test + install targets
+├── CONTRIBUTING.md    development workflow + PR conventions
 ├── LICENSE            MIT
 ├── README.md          you are here
 └── SECURITY.md        security disclosure policy

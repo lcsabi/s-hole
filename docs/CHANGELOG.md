@@ -9,6 +9,20 @@ operator-facing summary.
 ## [Unreleased]
 
 ### Added
+- `/readyz` readiness endpoint (200 once the blocklist has loaded; 503
+  otherwise). Pairs with `/healthz` for Kubernetes-style probes.
+- `/debug/pprof/*` endpoints behind `enable_pprof: true` (or
+  `S_HOLE_ENABLE_PPROF=1`). Off by default. Required for live CPU/heap
+  profiling during incident response.
+- `shole_query_log_dropped_total` metric and `DBLogger.Dropped()` —
+  operators now see when the query log channel overflows under load.
+- `Store.WhitelistLen()` — O(1) counterpart to `Len()` for the
+  `/metrics` scrape path.
+- Full-stack integration test wiring store + cache + querylog + handler
+  + DNS server + mock upstream through three real queries.
+- Fuzz tests for `ValidDomain`, `parseHostsFormat`, and `cacheFilename`.
+- `make tools-install` installs `golangci-lint` into `$GOBIN`.
+- CI runs `go mod verify` to catch supply-chain integrity issues.
 - Build-time version identity: `internal/version` holds `Version`,
   `Commit`, and `BuildDate` vars written at link time via `-X` ldflags.
   `s-hole -version` prints the full identity; startup logs include it.
@@ -27,7 +41,7 @@ operator-facing summary.
 - Production-grade project layout: the `main` package now lives under
   `cmd/s-hole/`; `DESIGN.md`, `CL.md`, `BUGS.md`, and `CHANGELOG.md`
   live under `docs/`. The `go install` path is now
-  `github.com/laszlo/s-hole/cmd/s-hole@latest`.
+  `github.com/lcsabi/s-hole/cmd/s-hole@latest`.
 - `SECURITY.md` security-disclosure policy at the repo root.
 - Comprehensive test coverage round: every implementation package now
   at ≥ 85 % line coverage (`config` and `stats` at 100 %). Module-wide
@@ -90,6 +104,26 @@ operator-facing summary.
   `/metrics` endpoint can surface cache statistics.
 
 ### Fixed
+- Counter.Snapshot data race: `topN` now reads the map pointer under
+  the same mutex that protects the prune-and-reassign in
+  `RecordQuery`. The race detector previously fired when prune and
+  snapshot collided.
+- `querylog.DBLogger.run()` no longer uses a magic literal `100` for
+  the per-batch flush trigger — both the cap *and* the trigger now
+  reference the same `flushBatchSize` constant.
+- `panic` recovery in `runTickerOnce` now logs the full goroutine stack
+  via `debug.Stack()` so a panic in the field is diagnosable from
+  logs alone.
+- `Dockerfile` no longer installs `tzdata` (~30 MB removed). Container
+  logs default to UTC, which is what production wants.
+- `SECURITY.md` now points reporters at the GitHub Security Advisories
+  flow rather than a personal email.
+- `CODEOWNERS` and `SECURITY.md` updated for the actual GitHub handle
+  (`@lcsabi`).
+- Module path renamed to `github.com/lcsabi/s-hole` to match the
+  GitHub account. `go install` URL changed accordingly.
+- `/api/whitelist` GET now returns domains in sorted order so the UI
+  doesn't shuffle between refreshes.
 - `json.Encoder.Encode` errors in `/api/*` responses are now logged
   rather than discarded (R10).
 - `apiServer.Shutdown` errors during `doStop` are now logged (R11).

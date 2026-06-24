@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/laszlo/s-hole/internal/blocklist"
-	"github.com/laszlo/s-hole/internal/querylog"
-	"github.com/laszlo/s-hole/internal/stats"
+	"github.com/lcsabi/s-hole/internal/blocklist"
+	"github.com/lcsabi/s-hole/internal/querylog"
+	"github.com/lcsabi/s-hole/internal/stats"
 )
 
 // newTestServer builds a Server backed by a fresh stats/store and an

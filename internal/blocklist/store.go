@@ -106,6 +106,15 @@ func (s *Store) Len() int {
 	return len(s.blocked)
 }
 
+// WhitelistLen returns the number of domains in the runtime whitelist.
+// Cheap counterpart to GetWhitelist for the /metrics scrape path — see
+// R34. Lock-held read; runs in O(1).
+func (s *Store) WhitelistLen() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.whitelist)
+}
+
 // normalize strips the trailing dot that DNS uses and lowercases.
 func normalize(d string) string {
 	if len(d) > 0 && d[len(d)-1] == '.' {

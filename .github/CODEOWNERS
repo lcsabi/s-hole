@@ -1,12 +1,12 @@
 # Default owner for everything. GitHub automatically requests review
 # from these owners on every pull request.
-*       @laszlocsaba
+*       @lcsabi
 
 # Security-sensitive files: any change here should go through the same
 # owner, but we keep them explicitly listed so the intent is obvious.
-/SECURITY.md             @laszlocsaba
-/.github/                @laszlocsaba
-/deploy/                 @laszlocsaba
-/internal/api/           @laszlocsaba
-/internal/dnsserver/     @laszlocsaba
-/internal/blocklist/     @laszlocsaba
+/SECURITY.md             @lcsabi
+/.github/                @lcsabi
+/deploy/                 @lcsabi
+/internal/api/           @lcsabi
+/internal/dnsserver/     @lcsabi
+/internal/blocklist/     @lcsabi

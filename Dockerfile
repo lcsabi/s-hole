@@ -23,17 +23,20 @@ ARG BUILD_DATE=unknown
 # at runtime (use `s-hole -version`).
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-s -w \
-      -X 'github.com/laszlo/s-hole/internal/version.Version=${VERSION}' \
-      -X 'github.com/laszlo/s-hole/internal/version.Commit=${COMMIT}' \
-      -X 'github.com/laszlo/s-hole/internal/version.BuildDate=${BUILD_DATE}'" \
+      -X 'github.com/lcsabi/s-hole/internal/version.Version=${VERSION}' \
+      -X 'github.com/lcsabi/s-hole/internal/version.Commit=${COMMIT}' \
+      -X 'github.com/lcsabi/s-hole/internal/version.BuildDate=${BUILD_DATE}'" \
     -o s-hole ./cmd/s-hole
 
 # ── Runtime stage ─────────────────────────────────────────────
 FROM alpine:3.21
 
 # ca-certificates: required for HTTPS blocklist downloads.
-# tzdata: optional, allows log timestamps in local time.
-RUN apk add --no-cache ca-certificates tzdata
+# Container logs default to UTC (matches log/slog), so tzdata is not
+# pulled in — saves ~30 MB of image size. Operators who want local-time
+# timestamps in their logs can install tzdata themselves in a downstream
+# layer.
+RUN apk add --no-cache ca-certificates
 
 WORKDIR /app
 COPY --from=builder /build/s-hole .

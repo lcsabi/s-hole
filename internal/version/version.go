@@ -10,7 +10,7 @@ package version
 import "runtime"
 
 // Version is the human-readable version (e.g. "v1.0.0", "v1.0.0-dirty",
-// or "dev"). Injected via -ldflags="-X 'github.com/laszlo/s-hole/internal/version.Version=...'".
+// or "dev"). Injected via -ldflags="-X 'github.com/lcsabi/s-hole/internal/version.Version=...'".
 var Version = "dev"
 
 // Commit is the short git commit hash. Injected the same way as Version.

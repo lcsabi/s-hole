@@ -1,4 +1,4 @@
-module github.com/laszlo/s-hole
+module github.com/lcsabi/s-hole
 
 go 1.25.0
 

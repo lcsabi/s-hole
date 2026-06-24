@@ -14,6 +14,21 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintln(w, "ok")
 }
 
+// handleReady is a readiness probe. It returns 200 once the blocklist
+// has at least one domain — i.e. the process is actually filtering
+// queries — and 503 otherwise. Kubernetes routes traffic away from a
+// pod that fails this check, which is the right behaviour while the
+// initial blocklist download is still in flight.
+func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if s.store.Len() == 0 {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprintln(w, "blocklist empty")
+		return
+	}
+	fmt.Fprintln(w, "ok")
+}
+
 // handleMetrics serves the in-process counters in Prometheus text exposition
 // format. We hand-roll the format (instead of importing prometheus/client_golang)
 // to keep the dependency graph small, matching the project's "auditable in
@@ -53,5 +68,13 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 
 	fmt.Fprintln(w, "# HELP shole_whitelist_size Current number of domains in the runtime whitelist.")
 	fmt.Fprintln(w, "# TYPE shole_whitelist_size gauge")
-	fmt.Fprintf(w, "shole_whitelist_size %d\n", len(s.store.GetWhitelist()))
+	fmt.Fprintf(w, "shole_whitelist_size %d\n", s.store.WhitelistLen())
+
+	// Querylog back-pressure: non-zero means flush_interval is too long
+	// for the query volume or the database is too slow to drain the queue.
+	if s.db != nil {
+		fmt.Fprintln(w, "# HELP shole_query_log_dropped_total Query log entries dropped because the writer queue was full.")
+		fmt.Fprintln(w, "# TYPE shole_query_log_dropped_total counter")
+		fmt.Fprintf(w, "shole_query_log_dropped_total %d\n", s.db.Dropped())
+	}
 }

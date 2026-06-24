@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/laszlo/s-hole/internal/querylog"
+	"github.com/lcsabi/s-hole/internal/querylog"
 )
 
 // captureStdout redirects os.Stdout to a pipe for the duration of fn and

@@ -25,16 +25,18 @@ import (
 const topNMaxEntries = 4096
 
 // Counter aggregates query statistics across the lifetime of the process.
-// Total, blocked, and cache-hit counts are atomic; per-domain and per-client
-// tallies are mutex-protected maps used for top-N reporting (capped at
-// topNMaxEntries).
+// total and cacheHit are atomic and updated lock-free on the hot path.
+// blocked is mutex-guarded (incremented inside RecordQuery's critical
+// section alongside the top-domain map update) — making it atomic too
+// would be misleading dead optimisation. Snapshot reads it back inside
+// the same lock.
 type Counter struct {
 	total    atomic.Int64
-	blocked  atomic.Int64
 	cacheHit atomic.Int64
 	start    time.Time
 
 	mu         sync.Mutex
+	blocked    int64            // guarded by mu
 	topDomains map[string]int64 // blocked domain → block count
 	topClients map[string]int64 // client IP → total query count
 }
@@ -80,7 +82,7 @@ func (c *Counter) RecordQuery(clientIP, domain string, blocked bool) {
 	c.mu.Lock()
 	c.topClients[clientIP]++
 	if blocked {
-		c.blocked.Add(1)
+		c.blocked++
 		c.topDomains[domain]++
 	}
 	// Cap the maps so a long-running process does not accumulate every
@@ -129,14 +131,29 @@ func (c *Counter) RecordCacheHit() {
 	c.cacheHit.Add(1)
 }
 
+// topNTarget selects which of the two tally maps Snapshot/topN reads.
+// We pass an enum rather than the map pointer itself so the map header is
+// read under c.mu — see R31. Reading c.topDomains as a function argument
+// races against the c.topDomains = pruneBottomHalf(...) write that
+// RecordQuery performs while it holds the lock.
+type topNTarget int
+
+const (
+	topNDomains topNTarget = iota
+	topNClients
+)
+
 // Snapshot returns a point-in-time summary with the top-n domains and clients.
 //
-// Load order matters: blocked must be read BEFORE total. RecordQuery increments
-// total first, then increments blocked under the mutex. Reading in the opposite
-// order can observe (total=N, blocked=N+k) when more queries complete between
-// the two loads, producing a block rate >100% in the UI.
+// Load order matters: blocked must be read BEFORE total. RecordQuery
+// increments total (atomic) first, then increments blocked under the
+// mutex. Reading in the opposite order can observe (total=N,
+// blocked=N+k) when more queries complete between the two loads,
+// producing a block rate >100% in the UI.
 func (c *Counter) Snapshot(topN int) Summary {
-	blocked := c.blocked.Load()
+	c.mu.Lock()
+	blocked := c.blocked
+	c.mu.Unlock()
 	total := c.total.Load()
 	hits := c.cacheHit.Load()
 	blockPct := 0.0
@@ -155,13 +172,23 @@ func (c *Counter) Snapshot(topN int) Summary {
 		BlockedPct:   blockPct,
 		CacheHits:    hits,
 		CacheHitPct:  hitPct,
-		TopDomains:   c.topN(c.topDomains, topN),
-		TopClients:   c.topN(c.topClients, topN),
+		TopDomains:   c.topN(topNDomains, topN),
+		TopClients:   c.topN(topNClients, topN),
 	}
 }
 
-func (c *Counter) topN(m map[string]int64, n int) []Entry {
+func (c *Counter) topN(target topNTarget, n int) []Entry {
 	c.mu.Lock()
+	// Resolve the map *inside* the lock; otherwise reading c.topDomains
+	// at the call site would race against RecordQuery's pruneBottomHalf
+	// reassignment (R31 regression).
+	var m map[string]int64
+	switch target {
+	case topNDomains:
+		m = c.topDomains
+	case topNClients:
+		m = c.topClients
+	}
 	entries := make([]Entry, 0, len(m))
 	for k, v := range m {
 		entries = append(entries, Entry{Name: k, Count: v})

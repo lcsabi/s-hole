@@ -30,13 +30,14 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/laszlo/s-hole/internal/blocklist"
-	"github.com/laszlo/s-hole/internal/querylog"
-	"github.com/laszlo/s-hole/internal/stats"
+	"github.com/lcsabi/s-hole/internal/blocklist"
+	"github.com/lcsabi/s-hole/internal/querylog"
+	"github.com/lcsabi/s-hole/internal/stats"
 )
 
 var logger = slog.With("pkg", "api")
@@ -60,8 +61,9 @@ type Server struct {
 	// reloadFn is the single-flight blocklist refresh; the caller owns the
 	// mutex so the periodic timer and the API are serialised against the
 	// same gate. Returns false if a refresh is already running.
-	reloadFn   func() bool
-	httpServer *http.Server
+	reloadFn    func() bool
+	httpServer  *http.Server
+	enablePprof bool
 }
 
 // New constructs a Server. db and dnsCache may be nil to disable the
@@ -70,6 +72,13 @@ type Server struct {
 // reloadFn field for the contract.
 func New(counter *stats.Counter, db *querylog.DBLogger, store *blocklist.Store, dnsCache CacheStatser, reloadFn func() bool) *Server {
 	return &Server{counter: counter, db: db, store: store, dnsCache: dnsCache, reloadFn: reloadFn}
+}
+
+// EnablePprof toggles whether the server registers the net/http/pprof
+// handlers under /debug/pprof/. Off by default. Call before
+// ListenAndServe; toggling after the server is built has no effect.
+func (s *Server) EnablePprof(on bool) {
+	s.enablePprof = on
 }
 
 // Timeouts protect the unauthenticated admin server from slowloris-style
@@ -120,7 +129,13 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("DELETE /api/whitelist", s.handleWhitelistRemove)
 	mux.HandleFunc("POST /api/reload", s.handleReload)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("GET /readyz", s.handleReady)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
+
+	if s.enablePprof {
+		registerPprof(mux)
+		logger.Info("pprof endpoints registered", "prefix", "/debug/pprof/")
+	}
 
 	sub, err := fs.Sub(staticFiles, "static")
 	if err != nil {
@@ -175,6 +190,8 @@ func (s *Server) handleWhitelistList(w http.ResponseWriter, _ *http.Request) {
 	if domains == nil {
 		domains = []string{}
 	}
+	// R37: return a stable order so the UI doesn't shuffle on every refresh.
+	sort.Strings(domains)
 	writeJSON(w, response{Domains: domains})
 }
 

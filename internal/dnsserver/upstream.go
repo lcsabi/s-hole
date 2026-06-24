@@ -94,10 +94,17 @@ func forwardWith(ctx context.Context, req *dns.Msg, upstreams []string, tracker 
 		tracker.recordFailure(upstream, time.Now())
 	}
 
-	// Second sweep: every upstream we tried in sweep 1 failed (or was in
-	// cooldown). Try the ones we skipped, otherwise fall through to the
-	// error return. We never want a transient outage on the primary to
-	// hard-fail every query.
+	// Second sweep: every non-cooldown upstream we tried in sweep 1 has
+	// failed. Now retry the ones that were in cooldown *at function
+	// entry* — those are upstreams that failed within the last 30 s on
+	// some prior call, not the ones that just failed in sweep 1 above.
+	//
+	// We deliberately keep the entry-time `now` here rather than refreshing
+	// to time.Now(): sweep 1 just recorded fresh failures, so a refreshed
+	// `now` would mark those same upstreams as still in cooldown and we'd
+	// retry them again. Using the entry `now` means shouldSkip returns
+	// true only for upstreams that were *already* in cooldown when we
+	// arrived, which is exactly the set we haven't tried yet.
 	for _, upstream := range upstreams {
 		if err := ctx.Err(); err != nil {
 			return nil, err

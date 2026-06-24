@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -46,14 +47,20 @@ const (
 // Entries are batched and flushed on a configurable interval or when
 // flushBatchSize accumulate, whichever comes first. An optional
 // retention prune deletes rows older than retentionDays once an hour.
+//
+// dropped counts entries refused by Log because the internal channel was
+// full. Operators monitor it via shole_query_log_dropped_total on
+// /metrics; a non-zero value means the configured flush interval cannot
+// keep up with query volume.
 type DBLogger struct {
-	db             *sql.DB
-	ch             chan entry
-	done           chan struct{}
-	wg             sync.WaitGroup
-	logQueries     string
-	flushInterval  time.Duration
-	retentionDays  int // 0 = retain forever
+	db            *sql.DB
+	ch            chan entry
+	done          chan struct{}
+	wg            sync.WaitGroup
+	logQueries    string
+	flushInterval time.Duration
+	retentionDays int // 0 = retain forever
+	dropped       atomic.Uint64
 }
 
 // pragmas applied on every open. WAL + synchronous=NORMAL dramatically reduces
@@ -148,7 +155,18 @@ func (d *DBLogger) Log(clientIP, domain string, blocked bool) {
 	case d.ch <- entry{ts: time.Now(), clientIP: clientIP, domain: domain, blocked: blocked}:
 	default:
 		// Drop under extreme load rather than blocking a DNS goroutine.
+		// The counter is surfaced via /metrics so operators see when this
+		// fires; a sustained non-zero rate means flush_interval is too
+		// long for the query volume.
+		d.dropped.Add(1)
 	}
+}
+
+// Dropped returns the cumulative number of entries that Log refused
+// because the internal channel was full. Used by the /metrics endpoint
+// to surface back-pressure to operators.
+func (d *DBLogger) Dropped() uint64 {
+	return d.dropped.Load()
 }
 
 // Close signals the writer goroutine to flush remaining entries and waits for
@@ -169,7 +187,7 @@ func (d *DBLogger) run() {
 		select {
 		case e := <-d.ch:
 			batch = append(batch, e)
-			if len(batch) >= 100 {
+			if len(batch) >= flushBatchSize {
 				d.flush(batch)
 				batch = batch[:0]
 			}

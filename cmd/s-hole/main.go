@@ -36,19 +36,20 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/laszlo/s-hole/internal/api"
-	"github.com/laszlo/s-hole/internal/blocklist"
-	"github.com/laszlo/s-hole/internal/cache"
-	"github.com/laszlo/s-hole/internal/config"
-	"github.com/laszlo/s-hole/internal/dnsserver"
-	"github.com/laszlo/s-hole/internal/querylog"
-	"github.com/laszlo/s-hole/internal/service"
-	"github.com/laszlo/s-hole/internal/stats"
-	"github.com/laszlo/s-hole/internal/version"
+	"github.com/lcsabi/s-hole/internal/api"
+	"github.com/lcsabi/s-hole/internal/blocklist"
+	"github.com/lcsabi/s-hole/internal/cache"
+	"github.com/lcsabi/s-hole/internal/config"
+	"github.com/lcsabi/s-hole/internal/dnsserver"
+	"github.com/lcsabi/s-hole/internal/querylog"
+	"github.com/lcsabi/s-hole/internal/service"
+	"github.com/lcsabi/s-hole/internal/stats"
+	"github.com/lcsabi/s-hole/internal/version"
 )
 
 // setupLogger installs the default slog handler. Format is text on a TTY
@@ -212,6 +213,11 @@ func main() {
 	}
 
 	apiServer := api.New(counter, db, store, dnsCache, reloadFn)
+	if cfg.EnablePprof {
+		apiServer.EnablePprof(true)
+		mainLog.Warn("pprof endpoints enabled; bind api_listen to localhost only",
+			"api_listen", cfg.APIListen)
+	}
 	go func() {
 		if err := apiServer.ListenAndServe(cfg.APIListen); err != nil {
 			mainLog.Error("api server", "err", err)
@@ -380,7 +386,12 @@ func runTicker(d time.Duration, fn func()) {
 func runTickerOnce(fn func()) {
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Error("ticker fn panic recovered", "panic", r)
+			// Include the full stack so a panic that fires in the field
+			// is diagnosable from the log stream alone — without one,
+			// recover() swallows the only signal.
+			slog.Error("ticker fn panic recovered",
+				"panic", r,
+				"stack", string(debug.Stack()))
 		}
 	}()
 	fn()

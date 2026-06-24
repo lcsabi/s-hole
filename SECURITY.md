@@ -3,12 +3,15 @@
 ## Reporting a Vulnerability
 
 If you believe you have found a security vulnerability in s-hole, **please do
-not open a public issue**. Instead, report it privately so a fix can be
-prepared before the issue becomes public.
+not open a public issue**. Instead, report it privately via GitHub's
+coordinated-disclosure flow so a fix can be prepared before the issue
+becomes public:
 
-- **Email:** laszlo.cs4ba@gmail.com
-- **Subject:** include the string `[s-hole security]`
-- **Encryption:** optional; ask for a public key if you need one
+**[github.com/lcsabi/s-hole/security/advisories/new](https://github.com/lcsabi/s-hole/security/advisories/new)**
+
+That route gives the maintainer a private channel and the reporter an
+audit trail; it's the modern equivalent of `security@` and is more
+durable than a personal email address.
 
 Please include in your report:
 

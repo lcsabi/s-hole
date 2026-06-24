@@ -54,6 +54,12 @@ type Config struct {
 	// QueryDBRetentionDays caps how long query rows are kept in SQLite. A
 	// background prune deletes rows older than this. 0 = retain forever.
 	QueryDBRetentionDays int `yaml:"query_db_retention_days"`
+	// EnablePprof exposes net/http/pprof handlers under /debug/pprof/ on
+	// the admin HTTP server. Off by default; only enable when investigating
+	// a running incident, and only when the admin server is bound to
+	// localhost — pprof reveals enough internal state to be useful to an
+	// attacker who can reach it.
+	EnablePprof bool `yaml:"enable_pprof"`
 }
 
 // Load reads and parses the YAML config at path. Missing fields receive
@@ -145,6 +151,9 @@ func (c *Config) applyEnvOverrides() {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.QueryDBRetentionDays = n
 		}
+	}
+	if v, ok := os.LookupEnv("S_HOLE_ENABLE_PPROF"); ok {
+		c.EnablePprof = v == "1" || v == "true" || v == "yes"
 	}
 }
 

@@ -4,9 +4,9 @@ import (
 	"net"
 	"testing"
 
-	"github.com/laszlo/s-hole/internal/blocklist"
-	"github.com/laszlo/s-hole/internal/cache"
-	"github.com/laszlo/s-hole/internal/stats"
+	"github.com/lcsabi/s-hole/internal/blocklist"
+	"github.com/lcsabi/s-hole/internal/cache"
+	"github.com/lcsabi/s-hole/internal/stats"
 	"github.com/miekg/dns"
 )
 

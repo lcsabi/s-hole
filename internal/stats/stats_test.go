@@ -123,6 +123,42 @@ func TestCounter_TopNLimit(t *testing.T) {
 	}
 }
 
+func TestCounter_ConcurrentPruneAndSnapshot_NoRace(t *testing.T) {
+	// R31 regression: previously Snapshot read c.topDomains at the call
+	// site (without c.mu), which races against RecordQuery's
+	// `c.topDomains = pruneBottomHalf(...)` reassignment. Drive both
+	// branches together and the race detector — when CI runs `go test
+	// -race` — catches the regression.
+	c := New()
+
+	stop := atomic.Bool{}
+	var wg sync.WaitGroup
+
+	// Writer goroutines push enough unique keys to repeatedly trigger
+	// pruneBottomHalf inside RecordQuery.
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			i := 0
+			for !stop.Load() {
+				dom := "d" + itoa(id) + "_" + itoa(i) + ".example.com."
+				cli := "10.0." + itoa(id) + "." + itoa(i%256)
+				c.RecordQuery(cli, dom, true)
+				i++
+			}
+		}(w)
+	}
+
+	// Reader hammers Snapshot from another goroutine. Under the broken
+	// code, the race detector fires within microseconds.
+	for range 2000 {
+		_ = c.Snapshot(5)
+	}
+	stop.Store(true)
+	wg.Wait()
+}
+
 func TestCounter_TopNMapsAreBounded(t *testing.T) {
 	// R19: a long-running process must not accumulate every unique key
 	// forever. Push topNMaxEntries+1 unique domain/client entries and

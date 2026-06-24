@@ -624,7 +624,7 @@ other than `main` (`api`, `blocklist`, `cache`, `config`, `dns`,
 Go's compiler enforces that packages beneath `internal/` are only
 importable from the owning module, which matches the project's actual
 intent: s-hole is an application, not a library. The module path stays
-`github.com/laszlo/s-hole`; only the per-package import paths change.
+`github.com/lcsabi/s-hole`; only the per-package import paths change.
 
 **Add MIT LICENSE** — A top-level `LICENSE` file establishes the legal
 status of the code. Without it the source was technically all-rights-
@@ -743,13 +743,13 @@ CL.md                                  — this entry
 
 ```
 $ go test ./...
-ok    github.com/laszlo/s-hole/internal/api        0.613s
-ok    github.com/laszlo/s-hole/internal/blocklist  0.816s
-ok    github.com/laszlo/s-hole/internal/cache      0.446s
-ok    github.com/laszlo/s-hole/internal/config     0.354s
-ok    github.com/laszlo/s-hole/internal/dns        0.560s
-ok    github.com/laszlo/s-hole/internal/querylog   1.399s
-ok    github.com/laszlo/s-hole/internal/stats      0.342s
+ok    github.com/lcsabi/s-hole/internal/api        0.613s
+ok    github.com/lcsabi/s-hole/internal/blocklist  0.816s
+ok    github.com/lcsabi/s-hole/internal/cache      0.446s
+ok    github.com/lcsabi/s-hole/internal/config     0.354s
+ok    github.com/lcsabi/s-hole/internal/dns        0.560s
+ok    github.com/lcsabi/s-hole/internal/querylog   1.399s
+ok    github.com/lcsabi/s-hole/internal/stats      0.342s
 ```
 
 The race detector requires CGO and a C toolchain; not exercised locally
@@ -927,7 +927,7 @@ Closing-out polish CL for the staff-review slice.
 - `CHANGELOG.md` (R21) — operator-facing Keep-a-Changelog summary.
   CL.md remains the development-internal CL record.
 - README gains a Testing section, an env-var override table, and a
-  `go install github.com/laszlo/s-hole@latest` line (R22).
+  `go install github.com/lcsabi/s-hole@latest` line (R22).
 - `config.yaml` documents the new `query_db_retention_days` field and
   the changed `api_listen` default.
 - Architecture diagram in DESIGN updated to show the periodic refresh
@@ -964,7 +964,7 @@ test coverage:
 
 **Other**
 
-- Dead `Documentation=https://github.com/laszlo/s-hole` URL removed
+- Dead `Documentation=https://github.com/lcsabi/s-hole` URL removed
   from `deploy/s-hole.service` and the embedded heredoc in
   `deploy/install-linux.sh` (R23).
 
@@ -993,13 +993,13 @@ CL.md                                  — this entry
 
 ```
 $ go test ./...
-ok    github.com/laszlo/s-hole/internal/api
-ok    github.com/laszlo/s-hole/internal/blocklist
-ok    github.com/laszlo/s-hole/internal/cache
-ok    github.com/laszlo/s-hole/internal/config
-ok    github.com/laszlo/s-hole/internal/dnsserver
-ok    github.com/laszlo/s-hole/internal/querylog
-ok    github.com/laszlo/s-hole/internal/stats
+ok    github.com/lcsabi/s-hole/internal/api
+ok    github.com/lcsabi/s-hole/internal/blocklist
+ok    github.com/lcsabi/s-hole/internal/cache
+ok    github.com/lcsabi/s-hole/internal/config
+ok    github.com/lcsabi/s-hole/internal/dnsserver
+ok    github.com/lcsabi/s-hole/internal/querylog
+ok    github.com/lcsabi/s-hole/internal/stats
 ```
 
 ---
@@ -1063,8 +1063,8 @@ CHANGELOG.md               — SIGHUP entry under Unreleased
 
 ```
 $ go test -count=1 ./...
-ok    github.com/laszlo/s-hole               # signal predicates
-ok    github.com/laszlo/s-hole/internal/...
+ok    github.com/lcsabi/s-hole               # signal predicates
+ok    github.com/lcsabi/s-hole/internal/...
 $ GOOS=linux   go build ./...   # build green
 $ GOOS=windows go build ./...   # build green
 $ GOOS=darwin  go build ./...   # build green
@@ -1181,14 +1181,14 @@ CL.md                                   — this entry
 
 ```
 $ go test -count=1 -cover ./...
-ok    github.com/laszlo/s-hole                26.8%
-ok    github.com/laszlo/s-hole/internal/api   91.9%
-ok    github.com/laszlo/s-hole/internal/blocklist 89.3%
-ok    github.com/laszlo/s-hole/internal/cache 94.8%
-ok    github.com/laszlo/s-hole/internal/config 100%
-ok    github.com/laszlo/s-hole/internal/dnsserver 87.0%
-ok    github.com/laszlo/s-hole/internal/querylog 85.4%
-ok    github.com/laszlo/s-hole/internal/stats 100%
+ok    github.com/lcsabi/s-hole                26.8%
+ok    github.com/lcsabi/s-hole/internal/api   91.9%
+ok    github.com/lcsabi/s-hole/internal/blocklist 89.3%
+ok    github.com/lcsabi/s-hole/internal/cache 94.8%
+ok    github.com/lcsabi/s-hole/internal/config 100%
+ok    github.com/lcsabi/s-hole/internal/dnsserver 87.0%
+ok    github.com/lcsabi/s-hole/internal/querylog 85.4%
+ok    github.com/lcsabi/s-hole/internal/stats 100%
 ```
 
 ---
@@ -1291,8 +1291,8 @@ used by mature Go applications.
 - **`cmd/s-hole/`** — the `main` package and its companions
   (`signals_unix.go`, `signals_windows.go`, plus their tests and the
   shared `main_test.go`) move out of the repo root. The
-  `go install`-able URL changes from `github.com/laszlo/s-hole@latest`
-  to `github.com/laszlo/s-hole/cmd/s-hole@latest`. Makefile,
+  `go install`-able URL changes from `github.com/lcsabi/s-hole@latest`
+  to `github.com/lcsabi/s-hole/cmd/s-hole@latest`. Makefile,
   Dockerfile, and the GitHub Actions cross-compile matrix are all
   updated to build `./cmd/s-hole`.
 - **`docs/`** — `DESIGN.md`, `CL.md`, `BUGS.md`, and `CHANGELOG.md`
@@ -1365,17 +1365,17 @@ s-hole.exe                               — deleted (gitignored stray build art
 
 ```
 $ go build ./... && go vet ./... && go test -count=1 ./...
-ok    github.com/laszlo/s-hole/cmd/s-hole
-ok    github.com/laszlo/s-hole/internal/api
-ok    github.com/laszlo/s-hole/internal/blocklist
-ok    github.com/laszlo/s-hole/internal/cache
-ok    github.com/laszlo/s-hole/internal/config
-ok    github.com/laszlo/s-hole/internal/dnsserver
-ok    github.com/laszlo/s-hole/internal/querylog
-ok    github.com/laszlo/s-hole/internal/stats
+ok    github.com/lcsabi/s-hole/cmd/s-hole
+ok    github.com/lcsabi/s-hole/internal/api
+ok    github.com/lcsabi/s-hole/internal/blocklist
+ok    github.com/lcsabi/s-hole/internal/cache
+ok    github.com/lcsabi/s-hole/internal/config
+ok    github.com/lcsabi/s-hole/internal/dnsserver
+ok    github.com/lcsabi/s-hole/internal/querylog
+ok    github.com/lcsabi/s-hole/internal/stats
 ```
 
-The new module path is `github.com/laszlo/s-hole/cmd/s-hole`; the rest of
+The new module path is `github.com/lcsabi/s-hole/cmd/s-hole`; the rest of
 the package paths are unchanged.
 
 ---
@@ -1481,15 +1481,15 @@ docs/CL.md                         — this entry
 
 ```
 $ go build ./... && go vet ./... && go test -count=1 ./...
-ok    github.com/laszlo/s-hole/cmd/s-hole
-ok    github.com/laszlo/s-hole/internal/api
-ok    github.com/laszlo/s-hole/internal/blocklist
-ok    github.com/laszlo/s-hole/internal/cache
-ok    github.com/laszlo/s-hole/internal/config
-ok    github.com/laszlo/s-hole/internal/dnsserver
-ok    github.com/laszlo/s-hole/internal/querylog
-ok    github.com/laszlo/s-hole/internal/stats
-ok    github.com/laszlo/s-hole/internal/version
+ok    github.com/lcsabi/s-hole/cmd/s-hole
+ok    github.com/lcsabi/s-hole/internal/api
+ok    github.com/lcsabi/s-hole/internal/blocklist
+ok    github.com/lcsabi/s-hole/internal/cache
+ok    github.com/lcsabi/s-hole/internal/config
+ok    github.com/lcsabi/s-hole/internal/dnsserver
+ok    github.com/lcsabi/s-hole/internal/querylog
+ok    github.com/lcsabi/s-hole/internal/stats
+ok    github.com/lcsabi/s-hole/internal/version
 ```
 
 Verified `-version` output round-trips both injected and placeholder
@@ -1510,4 +1510,114 @@ s-hole dev
   commit:  unknown
   built:   unknown
   ...
+```
+
+---
+
+## CL 20 — s-hole: act on fourth staff review (R31–R48)
+
+**Bug:** —
+
+### Description
+
+Acts on every finding from the fourth independent staff review.
+Module path renamed from `github.com/laszlo/s-hole` to
+`github.com/lcsabi/s-hole` to match the actual GitHub account.
+
+**Critical / high**
+
+- **R31 data race** — `Counter.Snapshot` previously read `c.topDomains`
+  / `c.topClients` at the call site, racing against the
+  `c.topDomains = pruneBottomHalf(...)` reassignment in `RecordQuery`.
+  Refactored `topN` to take an enum (`topNDomains`/`topNClients`) and
+  resolve the map inside the lock. New regression test
+  `TestCounter_ConcurrentPruneAndSnapshot_NoRace` drives the prune
+  and snapshot branches concurrently.
+- **R32 magic 100** — `querylog/db.go:172` used a literal `100` for
+  the per-batch flush trigger while the file already defined
+  `flushBatchSize = 100`. Replaced with the named constant.
+
+**Medium**
+
+- **R33** — `DBLogger.dropped` (atomic) + `Dropped()` accessor;
+  new metric `shole_query_log_dropped_total` exposes channel
+  back-pressure.
+- **R34** — `Store.WhitelistLen()` O(1) read; `/metrics` no longer
+  allocates the full whitelist slice per scrape.
+- **R35** — `internal/api/pprof.go` registers the six standard
+  `net/http/pprof` handlers under `/debug/pprof/`. Behind
+  `enable_pprof: true` (`S_HOLE_ENABLE_PPROF=1`). Off by default; WARN
+  log fires at startup when enabled.
+- **R36** — `Counter.blocked` was both `atomic.Int64` and updated
+  under the mutex. Demoted to a plain `int64` field guarded by `c.mu`;
+  removes the misleading dual-protection.
+
+**Low / polish**
+
+- R37 `/api/whitelist` GET returns sorted domains.
+- R38 new `/readyz` (200 once `store.Len() > 0`; 503 otherwise).
+- R39 CI runs `go mod verify`.
+- R40 Dockerfile drops `tzdata` (~30 MB image-size reduction).
+- R41 `CODEOWNERS` → `@lcsabi`.
+- R42 `SECURITY.md` rewritten to point at GitHub Security Advisories.
+- R43 `forwardWith` second-sweep semantics documented.
+- R44 README REST API intro leads with the localhost default.
+- R45 `runTickerOnce` panic recovery includes `debug.Stack()`.
+- R46 new `make tools-install` target installs `golangci-lint`.
+
+**Tests**
+
+- R47 fuzz tests for `ValidDomain`, `parseHostsFormat`, `cacheFilename`.
+- R48 full-stack integration test wires store + cache + querylog +
+  handler + DNS server + mock UDP upstream through three real queries
+  (blocked, forwarded-and-cached, cache-hit). Asserts upstream call
+  counts, stats deltas, and SQLite rows.
+
+### Files changed
+
+```
+go.mod + every Go file              — module rename → github.com/lcsabi/s-hole
+internal/stats/stats.go             — R31 topN refactor; R36 blocked demoted to int64
+internal/stats/stats_test.go        — R31 regression test
+internal/querylog/db.go             — R32 named const; R33 Dropped counter
+internal/blocklist/store.go         — R34 WhitelistLen
+internal/api/api.go                 — R35 EnablePprof; R37 sort whitelist
+internal/api/pprof.go               — new (R35)
+internal/api/metrics.go             — R33/R34 metrics; R38 /readyz
+internal/config/config.go           — R35 EnablePprof + env override
+config.yaml                         — R35 enable_pprof default
+cmd/s-hole/main.go                  — wire EnablePprof; R45 debug.Stack()
+internal/dnsserver/upstream.go      — R43 second-sweep comment
+internal/blocklist/fuzz_test.go     — new (R47)
+internal/dnsserver/integration_test.go  — new (R48)
+.github/workflows/ci.yml            — R39 go mod verify
+.github/CODEOWNERS                  — R41 @lcsabi
+Dockerfile                          — R40 drop tzdata
+Makefile                            — R46 tools-install
+SECURITY.md                         — R42 GitHub Security Advisories
+README.md                           — /readyz, pprof, env vars, test notes
+docs/CHANGELOG.md / docs/CL.md      — this entry
+```
+
+### Testing
+
+```
+$ go build ./... && go vet ./... && go test -count=1 ./...
+ok    github.com/lcsabi/s-hole/cmd/s-hole
+ok    github.com/lcsabi/s-hole/internal/api
+ok    github.com/lcsabi/s-hole/internal/blocklist
+ok    github.com/lcsabi/s-hole/internal/cache
+ok    github.com/lcsabi/s-hole/internal/config
+ok    github.com/lcsabi/s-hole/internal/dnsserver
+ok    github.com/lcsabi/s-hole/internal/querylog
+ok    github.com/lcsabi/s-hole/internal/stats
+ok    github.com/lcsabi/s-hole/internal/version
+```
+
+Fuzz smoke:
+
+```
+$ go test -fuzz=FuzzValidDomain -fuzztime=3s ./internal/blocklist/
+fuzz: elapsed: 3s, execs: 184368 (61388/sec), new interesting: 32
+PASS
 ```

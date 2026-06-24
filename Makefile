@@ -4,7 +4,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
-VERSION_PKG = github.com/laszlo/s-hole/internal/version
+VERSION_PKG = github.com/lcsabi/s-hole/internal/version
 LDFLAGS     = -ldflags="-s -w \
                 -X '$(VERSION_PKG).Version=$(VERSION)' \
                 -X '$(VERSION_PKG).Commit=$(COMMIT)' \
@@ -13,7 +13,7 @@ LDFLAGS     = -ldflags="-s -w \
 # On Windows use: $env:GOOS="linux"; $env:GOARCH="arm64"; go build ...
 # or run these targets from WSL / Git Bash.
 
-.PHONY: all pi pi32 linux clean test test-race bench fmt vet lint check install help version
+.PHONY: all pi pi32 linux clean test test-race bench fmt vet lint check install help version tools-install
 
 ## help: show this help text (default target)
 help:
@@ -60,9 +60,14 @@ fmt:
 vet:
 	go vet ./...
 
-## lint: run golangci-lint (install: see https://golangci-lint.run/)
+## lint: run golangci-lint (install via `make tools-install` if missing)
 lint:
 	golangci-lint run ./...
+
+## tools-install: install developer tools (golangci-lint) into $GOBIN
+tools-install:
+	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+	@echo "tools installed; ensure \$$(go env GOBIN) (or \$$GOPATH/bin) is on \$$PATH"
 
 ## check: fmt + vet + lint + test — what CI does
 check: fmt vet lint test

@@ -34,7 +34,7 @@ s-hole is intentionally small: a single binary, a single YAML config file, no ru
 If your `$GOBIN` is on `PATH`, the latest commit can be fetched with:
 
 ```bash
-go install github.com/laszlo/s-hole/cmd/s-hole@latest
+go install github.com/lcsabi/s-hole/cmd/s-hole@latest
 ```
 
 ### Run interactively
@@ -90,6 +90,7 @@ All configuration lives in `config.yaml`. Every field has a safe default; an emp
 | `api_listen` | `127.0.0.1:8080` | Address for the admin web UI and REST API. Set to `0.0.0.0:8080` to expose to the LAN. |
 | `cache_dir` | `.` | Directory for cached blocklist files |
 | `query_db_retention_days` | `0` (forever) | Delete query-log rows older than this many days. `0` disables the prune. |
+| `enable_pprof` | `false` | Expose `/debug/pprof/*` on the admin server. Localhost-only deployment recommended. |
 
 ### Minimal config example
 
@@ -120,6 +121,7 @@ For container deployments where editing `config.yaml` requires a re-bind-mount, 
 | `S_HOLE_CACHE_SIZE` | `cache_size` (integer) |
 | `S_HOLE_BLOCK_TTL` | `block_ttl` (integer) |
 | `S_HOLE_RETENTION_DAYS` | `query_db_retention_days` (integer) |
+| `S_HOLE_ENABLE_PPROF` | `enable_pprof` (`1`/`true`/`yes` enable) |
 | `S_HOLE_LOG_FORMAT` | `text` (default) or `json` — controls slog handler |
 | `S_HOLE_ASCII_BANNER` | set to `1` to use ASCII box-drawing on the startup banner |
 
@@ -135,7 +137,7 @@ log_queries: blocked        # skip logging allowed queries to save writes
 
 ## REST API
 
-The admin web UI is served at `http://<host>:8080` (default binds to `127.0.0.1`; set `api_listen` to `0.0.0.0:8080` to expose it to the LAN). All data is also available as JSON.
+The admin web UI is served at **`http://127.0.0.1:8080`** by default — localhost only, so a fresh install is not reachable from the LAN. Set `api_listen: "0.0.0.0:8080"` in `config.yaml` (or `S_HOLE_API_LISTEN=...`) to expose it. All data is also available as JSON.
 
 | Method | Endpoint | Description |
 |---|---|---|
@@ -146,7 +148,9 @@ The admin web UI is served at `http://<host>:8080` (default binds to `127.0.0.1`
 | `DELETE` | `/api/whitelist?domain=…` | Remove a domain from the runtime whitelist |
 | `POST` | `/api/reload` | Trigger an immediate blocklist refresh — de-duplicated via single-flight mutex (returns `"reload already in progress"` if one is running) |
 | `GET`  | `/healthz` | Liveness probe — always 200 OK while the HTTP server is responsive |
-| `GET`  | `/metrics` | Prometheus text exposition: `shole_queries_total`, `shole_blocked_total`, `shole_cache_hits_total`, `shole_cache_misses_total`, `shole_cache_size`, `shole_blocklist_size`, `shole_whitelist_size` |
+| `GET`  | `/readyz` | Readiness probe — 200 OK once the blocklist has loaded at least one entry; 503 otherwise |
+| `GET`  | `/metrics` | Prometheus text exposition: `shole_queries_total`, `shole_blocked_total`, `shole_cache_hits_total`, `shole_cache_misses_total`, `shole_cache_size`, `shole_blocklist_size`, `shole_whitelist_size`, `shole_query_log_dropped_total` |
+| `GET`  | `/debug/pprof/*` | Standard Go pprof endpoints — registered **only** when `enable_pprof: true` is set in config (or `S_HOLE_ENABLE_PPROF=1`). Pair with `api_listen: "127.0.0.1:8080"`. |
 
 Runtime whitelist changes take effect immediately but do not persist across restarts. To make a whitelist entry permanent, add it to `config.yaml`.
 
@@ -354,7 +358,11 @@ s-hole v1.0.0
   os/arch: linux/amd64
 ```
 
-CI runs lint + race-enabled tests + cross-compile for `linux/{amd64,arm64,armv7}` and `windows/amd64` on every push and PR — see `.github/workflows/ci.yml`. Dependabot keeps Go modules, GitHub Actions, and the Docker base image up to date.
+CI runs lint + `go mod verify` + race-enabled tests + cross-compile for `linux/{amd64,arm64,armv7}` and `windows/amd64` on every push and PR — see `.github/workflows/ci.yml`. Dependabot keeps Go modules, GitHub Actions, and the Docker base image up to date.
+
+Fuzz tests live alongside the unit tests for `blocklist.ValidDomain`, `blocklist.parseHostsFormat`, and `blocklist.cacheFilename`. Run them ad-hoc with `go test -fuzz=FuzzValidDomain -fuzztime=30s ./internal/blocklist/`.
+
+A full end-to-end integration test (`internal/dnsserver/integration_test.go`) wires the store + cache + querylog + handler + DNS server + a mock UDP upstream together and exercises three real DNS queries through it — catching wiring bugs that unit tests miss.
 
 ---
 

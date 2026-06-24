@@ -36,6 +36,8 @@ jobs:
           key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
           restore-keys: |
             ${{ runner.os }}-go-
+      - name: Verify module integrity
+        run: go mod verify
       - name: Build
         run: go build ./...
       - name: Vet
@@ -77,7 +79,7 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           go build -ldflags="-s -w \
-            -X 'github.com/laszlo/s-hole/internal/version.Version=${{ steps.meta.outputs.version }}' \
-            -X 'github.com/laszlo/s-hole/internal/version.Commit=${{ steps.meta.outputs.commit }}' \
-            -X 'github.com/laszlo/s-hole/internal/version.BuildDate=${{ steps.meta.outputs.date }}'" \
+            -X 'github.com/lcsabi/s-hole/internal/version.Version=${{ steps.meta.outputs.version }}' \
+            -X 'github.com/lcsabi/s-hole/internal/version.Commit=${{ steps.meta.outputs.commit }}' \
+            -X 'github.com/lcsabi/s-hole/internal/version.BuildDate=${{ steps.meta.outputs.date }}'" \
             -o /tmp/s-hole ./cmd/s-hole

@@ -50,6 +50,11 @@ PRAGMA cache_size=-8000;
 PRAGMA temp_store=MEMORY;
 `
 
+// NewDBLogger opens (creating if needed) a SQLite database at path,
+// applies the WAL pragmas, ensures the schema exists, and starts the
+// background writer goroutine. Returns an error if the database cannot
+// be opened or initialised; callers should treat the error as non-fatal
+// and continue without SQLite logging.
 func NewDBLogger(path, logQueries string, flushInterval time.Duration) (*DBLogger, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -76,6 +81,10 @@ func NewDBLogger(path, logQueries string, flushInterval time.Duration) (*DBLogge
 	return l, nil
 }
 
+// Log enqueues a single entry for asynchronous insertion. Respects the
+// logQueries filter and silently drops if the internal channel is full —
+// logging completeness is subordinate to DNS handler latency. Never
+// blocks the caller.
 func (d *DBLogger) Log(clientIP, domain string, blocked bool) {
 	if d.logQueries == "none" {
 		return
@@ -138,14 +147,17 @@ func (d *DBLogger) run() {
 }
 
 func (d *DBLogger) flush(batch []entry) {
+	// Begin/Prepare/Commit failures discard the entire batch; log the size
+	// so operators can correlate disk-full or DB-locked incidents with the
+	// number of lost rows.
 	tx, err := d.db.Begin()
 	if err != nil {
-		fmt.Printf("[querylog] db begin: %v\n", err)
+		fmt.Printf("[querylog] db begin failed, dropping %d entries: %v\n", len(batch), err)
 		return
 	}
 	stmt, err := tx.Prepare("INSERT INTO queries(ts,client_ip,domain,blocked) VALUES(?,?,?,?)")
 	if err != nil {
-		fmt.Printf("[querylog] db prepare: %v\n", err)
+		fmt.Printf("[querylog] db prepare failed, dropping %d entries: %v\n", len(batch), err)
 		tx.Rollback()
 		return
 	}
@@ -161,7 +173,7 @@ func (d *DBLogger) flush(batch []entry) {
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		fmt.Printf("[querylog] db commit: %v\n", err)
+		fmt.Printf("[querylog] db commit failed, dropping %d entries: %v\n", len(batch), err)
 	}
 }
 

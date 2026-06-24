@@ -219,7 +219,7 @@ Append `q.Qclass` (formatted via `dns.ClassToString`) to the key.
 
 **Priority:** P2
 **Component:** api
-**Status:** Fixed in CL 7
+**Status:** Fixed in CL 7; mutex relocated to main.go in CL 8 (see b/022)
 **Filed:** 2026-06-24
 
 ### Description
@@ -501,3 +501,215 @@ introduced.
 Define `type Logger interface { Log(clientIP, domain string, blocked bool) }` in
 `querylog/logger.go`. Change `Multi.loggers` to `[]Logger`. Add compile-time
 interface assertions for `FileLogger`, `DBLogger`, and `Multi`.
+
+---
+
+## b/021 — stats: Snapshot block percentage can briefly exceed 100%
+
+**Priority:** P1
+**Component:** stats
+**Status:** Fixed in CL 8
+**Filed:** 2026-06-24
+
+### Description
+
+Under sustained query load, `GET /api/stats` and the periodic `Print()` output
+can report a `blocked_pct` greater than 100. Operators observing the admin UI
+see "60% blocked" against a total query count smaller than the blocked count.
+
+### Root Cause
+
+`Counter.Snapshot()` reads `total` first and `blocked` second. `RecordQuery`
+increments `total` (atomic) *before* taking the mutex and incrementing
+`blocked`. Between the `total.Load()` and the `blocked.Load()`, more queries
+can complete — each contributing to both counters — so `blocked.Load()`
+includes increments whose corresponding `total.Load()` happened after the
+snapshot.
+
+### Fix
+
+Swap the load order: read `blocked` first, then `total`. Because every
+increment to `blocked` is preceded by an increment to `total`, the subsequent
+`total.Load()` is guaranteed to be ≥ the earlier `blocked.Load()`. The
+arithmetic invariant `blocked ≤ total` is restored.
+
+---
+
+## b/022 — main: periodic blocklist refresh races with /api/reload
+
+**Priority:** P0
+**Component:** main / api
+**Status:** Fixed in CL 8
+**Filed:** 2026-06-24
+
+### Description
+
+CL 7's b/011 fix added a `sync.Mutex` inside `api.Server` to prevent two
+concurrent `POST /api/reload` requests from racing on cache file writes. The
+periodic refresh ticker (`runTicker(refreshInterval, reloadFn)` in `main.go`)
+calls the same `reloadFn` directly, bypassing the mutex. A timer-driven
+refresh that overlaps with an API-driven refresh — or with itself, if a
+prior refresh is still running — re-creates the original race. Both
+goroutines call `os.Create` on the same cache file and the result is
+non-deterministic.
+
+### Root Cause
+
+The mutex lives in the wrong layer. It guards the API entry point but not
+the underlying operation, so any other caller of `reloadFn` is unprotected.
+
+### Fix
+
+Move the mutex into a closure in `main.go` that wraps `blocklist.Update`.
+The closure tries to acquire the lock; if it fails, it returns `false`
+synchronously. If it succeeds, it spawns a goroutine that runs the download
+and releases the lock on completion. Both the API handler and the periodic
+timer call this closure. The API handler reports
+`"reload already in progress"` when the closure returns `false`; the timer
+silently skips the tick.
+
+---
+
+## b/023 — querylog: flush() silently drops entire batch on Begin/Prepare/Commit failure
+
+**Priority:** P1
+**Component:** querylog
+**Status:** Fixed in CL 8
+**Filed:** 2026-06-24
+
+### Description
+
+`DBLogger.flush()` calls `tx.Begin`, `tx.Prepare`, and `tx.Commit` in sequence.
+A failure on any of these three is logged as a one-line message that does not
+reveal the size of the lost batch. On a disk-full event or extended lock
+contention, hundreds of query rows can vanish per flush interval with no
+indication of how much was lost.
+
+### Root Cause
+
+The error log lines (`"db begin: %v"`, `"db prepare: %v"`, `"db commit: %v"`)
+omit `len(batch)`. CL 7's b/004 fix only covered the inner `stmt.Exec` errors.
+
+### Fix
+
+Include `len(batch)` in the error log on every batch-level failure path. Use
+phrasing `"dropping N entries"` so an operator scanning logs can count total
+loss across an outage.
+
+---
+
+## b/024 — blocklist: full-failure refresh wipes the block set; Update returns nil on failure
+
+**Priority:** P0
+**Component:** blocklist
+**Status:** Fixed in CL 8
+**Filed:** 2026-06-24
+
+### Description
+
+Two related defects in `blocklist.Update`:
+
+1. If every configured URL fails (network outage, all CDN endpoints 5xx),
+   the local variable `all` is `nil` and the function calls
+   `store.Replace(nil)`. The blocked set becomes empty. Every ad is
+   unblocked until the next refresh succeeds — potentially 24 hours later
+   in the default config.
+2. The function declares a `return error` signature but always returns
+   `nil`, regardless of whether any URL was loaded. Callers cannot
+   distinguish a successful refresh from a total failure.
+
+### Root Cause
+
+The function unconditionally calls `store.Replace(all)` and unconditionally
+returns `nil`. There is no success-counting step.
+
+### Fix
+
+Track a `ok` counter and `lastErr` while iterating. If `ok == 0 &&
+len(urls) > 0`, skip `store.Replace` (preserving the prior block set) and
+return a wrapped error reporting the last failure. Log a one-line summary
+noting that the existing block set is being kept and its current size.
+
+---
+
+## b/025 — api: HTTP server has no timeouts (slowloris exposure)
+
+**Priority:** P2
+**Component:** api
+**Status:** Fixed in CL 8
+**Filed:** 2026-06-24
+
+### Description
+
+`api.Server.ListenAndServe` constructs `&http.Server{Addr, Handler}` with no
+`ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`, or `IdleTimeout`. A LAN
+peer that opens connections and sends headers at a single byte per minute
+will tie up server goroutines indefinitely. The admin server has no
+authentication and listens on `0.0.0.0:8080` by default, so any device on
+the LAN can mount this attack.
+
+### Root Cause
+
+Default `http.Server` field values are zero, which Go interprets as "no
+timeout."
+
+### Fix
+
+Set explicit timeouts on the `http.Server`:
+`ReadHeaderTimeout=5s`, `ReadTimeout=15s`, `WriteTimeout=30s`, `IdleTimeout=60s`.
+These are conservative for an admin UI that only issues short JSON requests.
+
+---
+
+## b/026 — api: /api/whitelist POST has no body size limit
+
+**Priority:** P2
+**Component:** api
+**Status:** Fixed in CL 8
+**Filed:** 2026-06-24
+
+### Description
+
+`handleWhitelistAdd` decodes `r.Body` directly via `json.NewDecoder` with no
+size cap. A LAN attacker can stream an infinite JSON payload at the
+unauthenticated server, exhausting memory. Even a 1 GB body of nested arrays
+would trigger an OOM kill on a Raspberry Pi.
+
+### Root Cause
+
+`http.Request.Body` defaults to unbounded read. The decoder allocates
+buffers proportional to input size.
+
+### Fix
+
+Wrap `r.Body` in `http.MaxBytesReader(w, r.Body, 64*1024)` before decoding.
+64 KiB is large enough for any realistic whitelist entry and small enough
+that malformed clients are rejected immediately.
+
+---
+
+## b/027 — docs: /api/reload incorrectly described as "idempotent"
+
+**Priority:** P3
+**Component:** docs
+**Status:** Fixed in CL 8
+**Filed:** 2026-06-24
+
+### Description
+
+`DESIGN.md` describes `POST /api/reload` as "idempotent if already running."
+HTTP idempotence has a specific RFC-7231 meaning: the same request produces
+the same server state regardless of the number of times it is executed.
+`/api/reload` is not idempotent in that sense — it *de-duplicates*
+concurrent requests via a single-flight mutex, which is a different
+property. The first request triggers the refresh; subsequent concurrent
+requests are no-ops.
+
+### Root Cause
+
+Imprecise terminology in the design doc.
+
+### Fix
+
+Replace "idempotent if already running" with "de-duplicated via
+single-flight mutex" or equivalent phrasing in `DESIGN.md`.

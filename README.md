@@ -113,7 +113,7 @@ The admin web UI is served at `http://<host>:8080`. All data is also available a
 | `GET` | `/api/whitelist` | List all runtime-whitelisted domains |
 | `POST` | `/api/whitelist` | Add a domain — body: `{"domain": "example.com"}` |
 | `DELETE` | `/api/whitelist?domain=…` | Remove a domain from the runtime whitelist |
-| `POST` | `/api/reload` | Trigger an immediate blocklist refresh (returns `"reload already in progress"` if one is running) |
+| `POST` | `/api/reload` | Trigger an immediate blocklist refresh — de-duplicated via single-flight mutex (returns `"reload already in progress"` if one is running) |
 
 Runtime whitelist changes take effect immediately but do not persist across restarts. To make a whitelist entry permanent, add it to `config.yaml`.
 
@@ -322,5 +322,5 @@ Client devices (DNS via DHCP)
 
 - s-hole is designed for **LAN deployment only**. Do not expose port 53 to the public internet; there is no rate limiting or source validation.
 - The SQLite query log and flat log file contain full browsing history for all devices. Treat them as sensitive data. Use `log_queries: none` if you do not need query history.
-- The admin UI has no authentication. Set `api_listen: "127.0.0.1:8080"` to restrict it to localhost, or use a firewall rule to limit access.
+- The admin UI has no authentication. Set `api_listen: "127.0.0.1:8080"` to restrict it to localhost, or use a firewall rule to limit access. The HTTP server enforces read/write/idle timeouts and a 64 KiB request body limit to defend against slowloris-style attacks from LAN peers, but these are no substitute for proper access control on a multi-user network.
 - Blocklist URLs are operator-controlled. Use HTTPS URLs from sources you trust.

@@ -516,3 +516,93 @@ main.go                — b/012: context import + apiServer.Shutdown; b/017: cf
 
 Verified full build passes (`go build ./...`) after all changes.
 Verified `go mod tidy` no longer marks direct dependencies as `// indirect`.
+
+---
+
+## CL 8 — s-hole: staff-engineer review fixes (b/021–b/027)
+
+**Bug:** b/021, b/022, b/023, b/024, b/025, b/026, b/027
+
+### Description
+
+Second-round code review found two regressions of CL 7 fixes, an
+arithmetic bug operators will notice in the admin UI, an operational
+failure mode that silently unblocks all ads, and security hardening for
+the LAN-facing admin server. All seven findings are addressed here.
+
+**b/021 — stats: block percentage can exceed 100%**
+`Counter.Snapshot` previously loaded `total` before `blocked`. Because
+`RecordQuery` atomically increments `total` *before* taking the mutex to
+increment `blocked`, queries completing between the two loads contributed
+to `blocked` but not `total`, producing `blocked > total`. Swapped the
+load order: `blocked` is read first, restoring the invariant
+`blocked ≤ total`.
+
+**b/022 — main: periodic refresh races concurrently with /api/reload**
+The mutex added in CL 7's b/011 fix lived inside `api.Server` and only
+guarded the API entry point. `runTicker(refreshInterval, reloadFn)` in
+`main.go` bypassed it, recreating the original race between the timer and
+the API (or against itself, if a prior refresh was still running).
+Relocated the mutex into a closure in `main.go` so both the timer and the
+HTTP handler share a single gate. Changed `reloadFn` to
+`func() bool` — true means "started," false means "already running" —
+and updated `api.Server.handleReload` to surface the boolean as the
+`"reload already in progress"` JSON response.
+
+**b/023 — querylog: flush() silently drops entire batch**
+CL 7's b/004 fix added error checks inside the inner `stmt.Exec` loop,
+but `tx.Begin`, `tx.Prepare`, and `tx.Commit` failures still dropped the
+whole batch silently. The error log lines now include `len(batch)` so an
+operator scanning logs can quantify loss across an outage.
+
+**b/024 — blocklist: full-failure refresh wipes the block set**
+`blocklist.Update` previously called `store.Replace(nil)` when every
+configured URL failed to download, emptying the entire blocked set and
+silently unblocking every ad for up to 24 hours. The function also
+returned `nil` regardless of outcome, despite declaring an `error`
+return. Added an `ok` success counter and `lastErr`: if no URL loaded
+successfully, the function skips `store.Replace` (preserving the prior
+block set) and returns a wrapped error containing the last failure.
+
+**b/025 — api: HTTP server has no timeouts**
+The default `&http.Server{Addr, Handler}` has no timeouts on any field.
+Combined with the unauthenticated `0.0.0.0:8080` default bind, this
+exposed s-hole to slowloris attacks from any LAN peer. Added explicit
+`ReadHeaderTimeout=5s`, `ReadTimeout=15s`, `WriteTimeout=30s`,
+`IdleTimeout=60s`. These are conservative for an admin UI that only
+issues short JSON requests.
+
+**b/026 — api: /api/whitelist POST has no body size limit**
+`handleWhitelistAdd` decoded `r.Body` directly with `json.NewDecoder`,
+with no upper bound. A LAN attacker could exhaust memory by streaming an
+arbitrarily large JSON payload. Wrapped `r.Body` in
+`http.MaxBytesReader(w, r.Body, 64*1024)` before decoding. 64 KiB is
+large enough for any realistic whitelist entry.
+
+**b/027 — docs: /api/reload was described as "idempotent"**
+HTTP idempotence (RFC 7231) means "the same request produces the same
+server state regardless of repetition." `/api/reload` is not idempotent
+in that sense; it *de-duplicates concurrent requests via a single-flight
+mutex*. Replaced the term in `DESIGN.md`.
+
+### Files changed
+
+```
+stats/stats.go         — b/021: swap blocked/total load order in Snapshot
+main.go                — b/022: relocate reloadMu; reloadFn returns bool
+api/api.go             — b/022: accept func() bool reload signature;
+                         b/025: HTTP server timeouts;
+                         b/026: MaxBytesReader on whitelist POST
+querylog/db.go         — b/023: log batch size on batch-level errors
+blocklist/loader.go    — b/024: track success count; skip Replace on total failure
+DESIGN.md              — b/027: replace "idempotent" with "de-duplicated"
+README.md              — b/027: reload row wording updated
+BUGS.md                — file b/021–b/027; cross-reference b/011 → b/022
+CL.md                  — this entry
+```
+
+### Testing
+
+Verified full build (`go build ./...`) and `go vet ./...` pass cleanly
+after all changes. Manual trace of the new reload-mutex flow confirms
+that timer-fired and API-fired refreshes collapse onto the same gate.

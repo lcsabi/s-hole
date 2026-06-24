@@ -12,6 +12,8 @@ type Server struct {
 	tcp *dns.Server
 }
 
+// NewServer constructs UDP and TCP servers bound to addr (host:port) that
+// dispatch every query through handler.
 func NewServer(addr string, handler dns.Handler) *Server {
 	return &Server{
 		udp: &dns.Server{Addr: addr, Net: "udp", Handler: handler},
@@ -48,6 +50,8 @@ func (s *Server) Start() error {
 	return <-errs
 }
 
+// Shutdown stops both listeners. After Shutdown returns, any goroutine
+// blocked in Start will observe both servers as cleanly stopped.
 func (s *Server) Shutdown() {
 	s.udp.Shutdown()
 	s.tcp.Shutdown()

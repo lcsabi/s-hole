@@ -1,3 +1,8 @@
+// Package stats tracks per-process query counters and top-N domain/client
+// tallies. Counters are atomic; top-N maps are protected by a mutex.
+// The package is safe for concurrent use and produces a JSON-serialisable
+// Summary via Snapshot, consumed both by the periodic stdout printer and
+// the REST API.
 package stats
 
 import (
@@ -8,6 +13,9 @@ import (
 	"time"
 )
 
+// Counter aggregates query statistics across the lifetime of the process.
+// Total, blocked, and cache-hit counts are atomic; per-domain and per-client
+// tallies are mutex-protected maps used for top-N reporting.
 type Counter struct {
 	total    atomic.Int64
 	blocked  atomic.Int64
@@ -19,11 +27,14 @@ type Counter struct {
 	topClients map[string]int64 // client IP → total query count
 }
 
+// Entry is a name/count pair used in top-N lists (domains and clients).
 type Entry struct {
 	Name  string `json:"name"`
 	Count int64  `json:"count"`
 }
 
+// Summary is the JSON-serialisable snapshot returned by Counter.Snapshot
+// and surfaced by the REST API at /api/stats.
 type Summary struct {
 	Uptime       string  `json:"uptime"`
 	TotalQueries int64   `json:"total_queries"`
@@ -35,6 +46,8 @@ type Summary struct {
 	TopClients   []Entry `json:"top_clients"`
 }
 
+// New returns a Counter with its start time set to now and empty top-N
+// maps.
 func New() *Counter {
 	return &Counter{
 		start:      time.Now(),
@@ -43,6 +56,13 @@ func New() *Counter {
 	}
 }
 
+// RecordQuery records one DNS query. clientIP and domain are added to the
+// top-N maps; if blocked, both the blocked counter and the top-blocked-
+// domains tally are bumped.
+//
+// Ordering note: total.Add is performed before taking the mutex, so that
+// snapshots that read blocked before total observe blocked ≤ total
+// (see Snapshot).
 func (c *Counter) RecordQuery(clientIP, domain string, blocked bool) {
 	c.total.Add(1)
 	c.mu.Lock()
@@ -54,14 +74,21 @@ func (c *Counter) RecordQuery(clientIP, domain string, blocked bool) {
 	c.mu.Unlock()
 }
 
+// RecordCacheHit increments the cache-hit counter. Called from the DNS
+// handler when a query is satisfied from the in-memory response cache.
 func (c *Counter) RecordCacheHit() {
 	c.cacheHit.Add(1)
 }
 
 // Snapshot returns a point-in-time summary with the top-n domains and clients.
+//
+// Load order matters: blocked must be read BEFORE total. RecordQuery increments
+// total first, then increments blocked under the mutex. Reading in the opposite
+// order can observe (total=N, blocked=N+k) when more queries complete between
+// the two loads, producing a block rate >100% in the UI.
 func (c *Counter) Snapshot(topN int) Summary {
-	total := c.total.Load()
 	blocked := c.blocked.Load()
+	total := c.total.Load()
 	hits := c.cacheHit.Load()
 	blockPct := 0.0
 	if total > 0 {
@@ -101,6 +128,9 @@ func (c *Counter) topN(m map[string]int64, n int) []Entry {
 	return entries
 }
 
+// Print writes a human-readable one-line summary plus the top-5 blocked
+// domains and top-5 clients to stdout. Called periodically by main.go
+// (stats_interval) and once at shutdown.
 func (c *Counter) Print() {
 	s := c.Snapshot(5)
 	fmt.Printf("[stats] uptime=%s total=%d blocked=%d (%.1f%%) cache-hits=%d (%.1f%%)\n",

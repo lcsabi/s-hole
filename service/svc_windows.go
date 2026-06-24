@@ -1,5 +1,10 @@
 //go:build windows
 
+// Package service integrates s-hole with the Windows Service Control
+// Manager (SCM). It exposes install/uninstall/start/stop subcommands and
+// the in-process SCM event loop. A no-op stub for non-Windows targets
+// lives in svc_other.go so main.go can call into the package without
+// build tags.
 package service
 
 import (

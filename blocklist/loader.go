@@ -20,16 +20,29 @@ var httpClient = &http.Client{Timeout: 60 * time.Second}
 const maxBodyBytes = 256 << 20 // 256 MB
 
 // Update downloads (or loads from cache) all lists and replaces the store.
+// If every configured URL fails (network outage, all servers down), the
+// existing block set is preserved rather than being replaced with an empty
+// slice — otherwise a transient outage would silently unblock every ad until
+// the next successful refresh.
 func Update(store *Store, urls []string, cacheDir string) error {
 	var all []string
+	var ok int
+	var lastErr error
 	for _, u := range urls {
 		domains, err := fetchList(u, cacheDir)
 		if err != nil {
+			lastErr = err
 			fmt.Printf("[blocklist] warning: failed to load %s: %v\n", u, err)
 			continue
 		}
+		ok++
 		all = append(all, domains...)
 		fmt.Printf("[blocklist] loaded %d domains from %s\n", len(domains), u)
+	}
+	if ok == 0 && len(urls) > 0 {
+		fmt.Printf("[blocklist] all %d sources failed; keeping existing block set (%d domains)\n",
+			len(urls), store.Len())
+		return fmt.Errorf("all blocklists failed: %w", lastErr)
 	}
 	store.Replace(all)
 	fmt.Printf("[blocklist] total blocked domains: %d\n", store.Len())

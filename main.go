@@ -1,3 +1,18 @@
+// Command s-hole is the network-level DNS sinkhole entry point.
+//
+// Lifecycle:
+//   - parse flags; if -service is set, perform the SCM action and exit
+//   - load and validate config; bail on any duration/enum failure
+//   - construct the blocklist store, stats counter, query loggers, DNS
+//     response cache, DNS handler, and DNS server
+//   - construct the single-flight reload closure and the admin API server
+//   - launch background tickers for stats printing and blocklist refresh
+//   - either enter the Windows SCM event loop (service mode) or block on
+//     the DNS server (interactive mode)
+//
+// Shutdown is funnelled through a single doStop closure used by both the
+// Ctrl+C path (SIGINT/SIGTERM) and the Windows SCM stop control; this
+// keeps the cleanup order consistent across the two entry points.
 package main
 
 import (
@@ -9,6 +24,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -110,9 +126,25 @@ func main() {
 	handler := dnsserver.NewHandler(store, counter, cfg.Upstreams, logger, cfg.BlockMode, cfg.BlockTTL, dnsCache)
 	dnsServer := dnsserver.NewServer(cfg.Listen, handler)
 
-	reloadFn := func() {
-		fmt.Println("[main] refreshing blocklists...")
-		blocklist.Update(store, cfg.Blocklists, cfg.CacheDir)
+	// reloadMu single-flights blocklist refreshes across both the periodic
+	// timer and POST /api/reload. Two concurrent goroutines downloading to
+	// the same cache files would race on file writes.
+	//
+	// reloadFn returns synchronously: true means the refresh started, false
+	// means a prior refresh is still running. The actual download work runs
+	// in a background goroutine so callers (including the HTTP handler)
+	// return quickly.
+	var reloadMu sync.Mutex
+	reloadFn := func() bool {
+		if !reloadMu.TryLock() {
+			return false
+		}
+		go func() {
+			defer reloadMu.Unlock()
+			fmt.Println("[main] refreshing blocklists...")
+			blocklist.Update(store, cfg.Blocklists, cfg.CacheDir)
+		}()
+		return true
 	}
 
 	apiServer := api.New(counter, db, store, reloadFn)
@@ -127,7 +159,7 @@ func main() {
 	printNetworkHint(dnsPort, apiPort)
 
 	go runTicker(statsInterval, counter.Print)
-	go runTicker(refreshInterval, reloadFn)
+	go runTicker(refreshInterval, func() { reloadFn() })
 
 	// doStop is the single shutdown path used by both the signal handler
 	// (interactive) and the Windows SCM stop event (service mode).
@@ -213,6 +245,10 @@ func buildMultiLogger(fl *querylog.FileLogger, db *querylog.DBLogger) dnsserver.
 	return querylog.NewMulti(fl, db)
 }
 
+// runTicker invokes fn on a fixed interval until the process exits. Used
+// for the stats printer and the periodic blocklist refresh. There is no
+// stop channel: the goroutine outlives the rest of the runtime by design
+// and is reclaimed when os.Exit fires in doStop.
 func runTicker(d time.Duration, fn func()) {
 	t := time.NewTicker(d)
 	defer t.Stop()

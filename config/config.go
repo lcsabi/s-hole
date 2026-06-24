@@ -1,3 +1,8 @@
+// Package config loads s-hole's YAML configuration, applies safe defaults
+// for every field (an empty config file is valid), and validates enumerated
+// values. Duration fields are stored as strings and parsed lazily via
+// ParsedXxx helpers so a malformed duration produces a precise startup
+// error.
 package config
 
 import (
@@ -8,6 +13,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Config is the in-memory representation of config.yaml. All fields have
+// safe defaults applied by applyDefaults; enumerated fields are checked
+// by Validate. See config.yaml in the repo root for documentation of each
+// field.
 type Config struct {
 	Listen          string   `yaml:"listen"`
 	Upstreams       []string `yaml:"upstreams"`
@@ -34,6 +43,9 @@ type Config struct {
 	DBFlushInterval string `yaml:"db_flush_interval"`
 }
 
+// Load reads and parses the YAML config at path. Missing fields receive
+// their default values. Callers should invoke Validate on the result
+// before constructing any runtime objects.
 func Load(path string) (*Config, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -100,6 +112,8 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// ParsedDBFlushInterval parses DBFlushInterval as a Go duration string
+// (e.g. "30s", "5m"). Returns a descriptive error on malformed input.
 func (c *Config) ParsedDBFlushInterval() (time.Duration, error) {
 	d, err := time.ParseDuration(c.DBFlushInterval)
 	if err != nil {
@@ -108,6 +122,8 @@ func (c *Config) ParsedDBFlushInterval() (time.Duration, error) {
 	return d, nil
 }
 
+// ParsedRefreshInterval parses RefreshInterval as a Go duration string
+// (e.g. "24h", "1h"). Returns a descriptive error on malformed input.
 func (c *Config) ParsedRefreshInterval() (time.Duration, error) {
 	d, err := time.ParseDuration(c.RefreshInterval)
 	if err != nil {
@@ -116,6 +132,8 @@ func (c *Config) ParsedRefreshInterval() (time.Duration, error) {
 	return d, nil
 }
 
+// ParsedStatsInterval parses StatsInterval as a Go duration string
+// (e.g. "5m", "1h"). Returns a descriptive error on malformed input.
 func (c *Config) ParsedStatsInterval() (time.Duration, error) {
 	d, err := time.ParseDuration(c.StatsInterval)
 	if err != nil {

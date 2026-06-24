@@ -7,7 +7,9 @@ import (
 	"github.com/miekg/dns"
 )
 
-// forward sends the query to the first upstream that responds.
+// forward tries each upstream in order and returns the first successful
+// reply. Each Exchange has its own 3-second timeout; if every upstream
+// errors, the caller surfaces SERVFAIL to the client via dns.HandleFailed.
 func forward(req *dns.Msg, upstreams []string) (*dns.Msg, error) {
 	client := &dns.Client{Timeout: 3 * time.Second}
 	for _, upstream := range upstreams {

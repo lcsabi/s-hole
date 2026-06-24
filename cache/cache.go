@@ -29,6 +29,9 @@ type Cache struct {
 	misses uint64
 }
 
+// New returns a Cache holding at most maxSize entries and starts the
+// background cleanup goroutine. Callers must invoke Close on shutdown to
+// stop that goroutine cleanly; otherwise it lives as long as the process.
 func New(maxSize int) *Cache {
 	c := &Cache{
 		entries: make(map[string]*entry, maxSize),

@@ -97,6 +97,8 @@ The store is an in-memory `map[string]struct{}` (hash set) keyed on normalised d
 
 Blocklists are downloaded from configurable URLs on startup and periodically thereafter (default: every 24 hours). Both the hosts-file format (`0.0.0.0 ads.example.com`) and the plain-domain-per-line format are supported. Downloaded files are cached on disk so a restart does not require a network round-trip. If a download fails or the server returns a non-200 status, the stale cache is used (the error response body is never written to disk).
 
+If every configured URL fails on a refresh (typically: total network outage), `blocklist.Update` preserves the existing block set rather than replacing it with an empty slice. This prevents a transient outage from silently unblocking every ad until the next successful refresh. The function returns a wrapped error reporting the last failure; the caller logs it but continues to run.
+
 Downloads use a dedicated `http.Client` with a 60-second timeout. The response body is wrapped in `io.LimitReader` capped at 256 MB to bound disk and memory use if a server misbehaves.
 
 A whitelist (exact domain names) is checked before the blocklist. A whitelisted domain is never blocked regardless of blocklist membership. The whitelist can be extended at runtime via the REST API; runtime additions take effect immediately but do not persist across restarts.
@@ -174,6 +176,8 @@ CREATE TABLE queries (
 
 `Snapshot(topN int)` returns a `Summary` struct with json tags, making it directly serialisable by the REST API without coupling the stats package to any HTTP library. Fields include uptime, totals, block percentage, cache hit count and percentage, and top-N entry lists.
 
+`Snapshot` loads `blocked` *before* `total`. This load order matters: `RecordQuery` increments `total` atomically *before* taking the mutex and incrementing `blocked`, so reading `total` first allows concurrent queries to inflate `blocked` past the snapshotted `total` and yield a block percentage greater than 100. Reading `blocked` first guarantees the invariant `blocked ≤ total` because every `blocked.Add(1)` is preceded by a `total.Add(1)`.
+
 ### Admin Interface (`api/`)
 
 An HTTP server (default `:8080`) serves two things:
@@ -185,7 +189,9 @@ The web UI has no external dependencies (no CDN, no framework). It is pure HTML/
 
 The HTTP server is held as an `*http.Server` so it can be gracefully shut down. `doStop` in `main.go` calls `apiServer.Shutdown(ctx)` with a 5-second context before terminating the process, which drains in-flight admin requests. `http.ErrServerClosed` is suppressed inside `ListenAndServe` so a clean shutdown does not log a spurious error.
 
-`POST /api/reload` is guarded by a `sync.Mutex.TryLock`: if a refresh is already running, a second request returns `"reload already in progress"` immediately rather than spawning a concurrent download that could race on the on-disk cache files.
+Explicit timeouts are configured on the server (`ReadHeaderTimeout=5s`, `ReadTimeout=15s`, `WriteTimeout=30s`, `IdleTimeout=60s`) to defend the unauthenticated LAN-facing endpoint from slowloris-style attacks. POST handlers that accept JSON bodies wrap `r.Body` in `http.MaxBytesReader` (64 KiB) so an attacker cannot exhaust memory by streaming an unbounded payload.
+
+Blocklist refresh is single-flighted via a `sync.Mutex` held in `main.go` and shared between the periodic refresh timer and the API. The reload closure tries to acquire the lock and returns `true` synchronously if it took it (work proceeds asynchronously in a goroutine) or `false` if a refresh is already running. `POST /api/reload` surfaces the boolean as `"reload triggered"` vs `"reload already in progress"`. Centralising the lock in the closure rather than in `api.Server` ensures the periodic timer cannot bypass the gate.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -194,7 +200,7 @@ The HTTP server is held as an `*http.Server` so it can be gracefully shut down. 
 | `/api/whitelist` | GET | List runtime-whitelisted domains |
 | `/api/whitelist` | POST | Add domain: `{"domain":"..."}` |
 | `/api/whitelist` | DELETE | Remove domain: `?domain=...` |
-| `/api/reload` | POST | Trigger immediate blocklist refresh (idempotent if already running) |
+| `/api/reload` | POST | Trigger immediate blocklist refresh (de-duplicated via single-flight mutex) |
 
 ### Startup Network Hint
 

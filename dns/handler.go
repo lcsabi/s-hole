@@ -1,3 +1,8 @@
+// Package dns implements the DNS sinkhole's listening servers and per-query
+// handler. The handler consults the blocklist, then the in-memory response
+// cache, then upstream resolvers — in that order — and routes the reply
+// back to the client. UDP and TCP listeners run in parallel; clients fall
+// back to TCP automatically when a UDP reply is truncated.
 package dns
 
 import (
@@ -10,11 +15,16 @@ import (
 	"github.com/miekg/dns"
 )
 
-// Logger is a minimal interface so callers can inject any writer.
+// Logger is the minimal log sink used by the DNS handler. Both the file
+// and SQLite query loggers satisfy it; main.go fans out to multiple via
+// querylog.Multi.
 type Logger interface {
 	Log(clientIP, domain string, blocked bool)
 }
 
+// Handler is the per-query routing logic: blocklist check → cache check
+// → upstream forward. It is safe for concurrent use; miekg/dns invokes
+// ServeDNS from a separate goroutine per request.
 type Handler struct {
 	store     *blocklist.Store
 	counter   *stats.Counter
@@ -25,6 +35,9 @@ type Handler struct {
 	cache     *cache.Cache // nil when caching is disabled
 }
 
+// NewHandler wires together all dependencies needed to answer a query.
+// c may be nil to disable response caching entirely (the handler then
+// always forwards on a cache miss).
 func NewHandler(
 	store *blocklist.Store,
 	counter *stats.Counter,
@@ -45,6 +58,9 @@ func NewHandler(
 	}
 }
 
+// ServeDNS satisfies miekg/dns.Handler. It records the query in stats and
+// loggers, returns a sinkhole reply if the domain is blocked, otherwise
+// serves from cache or forwards upstream.
 func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	if len(req.Question) == 0 {
 		dns.HandleFailed(w, req)

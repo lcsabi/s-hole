@@ -110,7 +110,8 @@ Look at `docs/cls/CL-20.md` for a recent example.
 The repo tracks two kinds of identifiers:
 
 - `b/NNN` — a Buganizer-style bug filed in `docs/BUGS.md`.
-- `R NN` — a finding from a staff-engineer review. These are tracked
+- `R NN` / `S NN` / `T NN` — findings from successive staff-engineer
+  review rounds (the letter identifies the round). These are tracked
   in CL notes only, not in `BUGS.md`.
 
 If your change fixes one of these, mention the ID in the commit message
@@ -127,9 +128,9 @@ strictly, but the per-package targets are:
 - `internal/api`, `internal/blocklist`, `internal/dnsserver`,
   `internal/querylog`: ≥ 85 %
 
-The `cmd/s-hole` package sits around 28 % because the rest is the
+The `cmd/s-hole` package sits around 32 % because the rest is the
 `main()` bootstrap and SCM glue that aren't unit-testable. Module-wide
-coverage tracks around 71 %.
+coverage tracks around 72 %.
 
 Run `go test -cover ./...` locally to see the current state before
 sending a PR; if your change drops a number, please either add the

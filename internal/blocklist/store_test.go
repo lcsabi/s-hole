@@ -1,6 +1,7 @@
 package blocklist
 
 import (
+	"strconv"
 	"sync"
 	"testing"
 )
@@ -152,8 +153,7 @@ func BenchmarkStore_IsBlocked(b *testing.B) {
 	const N = 100_000
 	dom := make([]string, 0, N)
 	for i := 0; i < N; i++ {
-		d := "x" + itoa(i) + ".example.com"
-		dom = append(dom, d)
+		dom = append(dom, "x"+strconv.Itoa(i)+".example.com")
 	}
 	s.Replace(dom)
 
@@ -164,21 +164,6 @@ func BenchmarkStore_IsBlocked(b *testing.B) {
 			b.Fatal("probe not found")
 		}
 	}
-}
-
-// itoa avoids strconv import in the benchmark hot loop.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(buf[i:])
 }
 
 func TestNormalize(t *testing.T) {

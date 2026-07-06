@@ -236,8 +236,8 @@ func main() {
 	}()
 
 	_, dnsPort, _ := net.SplitHostPort(cfg.Listen)
-	_, apiPort, _ := net.SplitHostPort(cfg.APIListen)
-	printNetworkHint(dnsPort, apiPort)
+	apiHost, apiPort, _ := net.SplitHostPort(cfg.APIListen)
+	printNetworkHint(dnsPort, apiHost, apiPort)
 
 	// runCtx is the application-wide lifecycle context. doStop cancels
 	// it before tearing down subsystems so the background tickers exit
@@ -326,7 +326,12 @@ func main() {
 // JSON logs are selected or S_HOLE_ASCII_BANNER=1 is set, so terminals
 // without a UTF-8 codepage (notably the legacy Windows console) and log
 // collectors that don't expect prose are not littered with mojibake.
-func printNetworkHint(dnsPort, apiPort string) {
+//
+// The Admin UI line honors where the API server is actually bound: with
+// the localhost-only default, advertising http://<lan-ip>:8080 would be
+// a lie — every other device gets connection-refused — so the banner
+// points at 127.0.0.1 and says so (T4).
+func printNetworkHint(dnsPort, apiHost, apiPort string) {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return
@@ -349,11 +354,20 @@ func printNetworkHint(dnsPort, apiPort string) {
 		return
 	}
 
+	adminHosts := lanIPs
+	adminNote := ""
+	if isLoopbackHost(apiHost) {
+		adminHosts = []string{"127.0.0.1"}
+		adminNote = " (this machine only)"
+	}
+
 	if useASCIIBanner() {
 		fmt.Println("[main] +-- Router setup ---------------------------------------")
 		for _, ip := range lanIPs {
 			fmt.Printf("[main] |   DNS server -> %s:%s\n", ip, dnsPort)
-			fmt.Printf("[main] |   Admin UI   -> http://%s:%s\n", ip, apiPort)
+		}
+		for _, h := range adminHosts {
+			fmt.Printf("[main] |   Admin UI   -> http://%s:%s%s\n", h, apiPort, adminNote)
 		}
 		fmt.Println("[main] +------------------------------------------------------")
 		return
@@ -362,9 +376,22 @@ func printNetworkHint(dnsPort, apiPort string) {
 	fmt.Println("[main] ┌─ Router setup ───────────────────────────────────────")
 	for _, ip := range lanIPs {
 		fmt.Printf("[main] │  DNS server → %s:%s\n", ip, dnsPort)
-		fmt.Printf("[main] │  Admin UI   → http://%s:%s\n", ip, apiPort)
+	}
+	for _, h := range adminHosts {
+		fmt.Printf("[main] │  Admin UI   → http://%s:%s%s\n", h, apiPort, adminNote)
 	}
 	fmt.Println("[main] └──────────────────────────────────────────────────────")
+}
+
+// isLoopbackHost reports whether host names a loopback address. An empty
+// host (api_listen ":8080") binds every interface and is therefore not
+// loopback.
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func useASCIIBanner() bool {

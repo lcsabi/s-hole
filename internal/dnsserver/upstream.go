@@ -73,7 +73,6 @@ func forward(ctx context.Context, req *dns.Msg, upstreams []string) (*dns.Msg, e
 }
 
 func forwardWith(ctx context.Context, req *dns.Msg, upstreams []string, tracker *upstreamTracker) (*dns.Msg, error) {
-	client := &dns.Client{Timeout: perUpstreamTimeout}
 	now := time.Now()
 
 	// First sweep: skip upstreams in cooldown.
@@ -84,9 +83,7 @@ func forwardWith(ctx context.Context, req *dns.Msg, upstreams []string, tracker 
 		if tracker.shouldSkip(upstream, now) {
 			continue
 		}
-		attemptCtx, cancel := context.WithTimeout(ctx, perUpstreamTimeout)
-		resp, _, err := client.ExchangeContext(attemptCtx, req, upstream)
-		cancel()
+		resp, err := exchange(ctx, req, upstream)
 		if err == nil {
 			tracker.recordSuccess(upstream)
 			return resp, nil
@@ -112,9 +109,7 @@ func forwardWith(ctx context.Context, req *dns.Msg, upstreams []string, tracker 
 		if !tracker.shouldSkip(upstream, now) {
 			continue // already tried in sweep 1
 		}
-		attemptCtx, cancel := context.WithTimeout(ctx, perUpstreamTimeout)
-		resp, _, err := client.ExchangeContext(attemptCtx, req, upstream)
-		cancel()
+		resp, err := exchange(ctx, req, upstream)
 		if err == nil {
 			tracker.recordSuccess(upstream)
 			return resp, nil
@@ -123,4 +118,34 @@ func forwardWith(ctx context.Context, req *dns.Msg, upstreams []string, tracker 
 	}
 
 	return nil, fmt.Errorf("all upstreams failed for %s", req.Question[0].Name)
+}
+
+// exchange performs one UDP exchange with upstream, retrying once over
+// TCP when the reply comes back truncated (TC bit set). Without the
+// retry, the truncated answer would be relayed verbatim — and because
+// queries arriving over TCP are also forwarded over UDP, the client's
+// own TCP fallback would loop straight back into the same truncated
+// reply, dead-ending the fallback chain documented in DESIGN.md (T2).
+//
+// If the TCP retry fails (e.g. 53/tcp filtered on the upstream path),
+// the truncated UDP reply is returned instead: the upstream is
+// demonstrably alive, and a TC-flagged partial answer is more useful to
+// the client than a SERVFAIL.
+func exchange(ctx context.Context, req *dns.Msg, upstream string) (*dns.Msg, error) {
+	udp := &dns.Client{Timeout: perUpstreamTimeout}
+	attemptCtx, cancel := context.WithTimeout(ctx, perUpstreamTimeout)
+	resp, _, err := udp.ExchangeContext(attemptCtx, req, upstream)
+	cancel()
+	if err != nil || !resp.Truncated {
+		return resp, err
+	}
+
+	tcp := &dns.Client{Net: "tcp", Timeout: perUpstreamTimeout}
+	attemptCtx, cancel = context.WithTimeout(ctx, perUpstreamTimeout)
+	full, _, tcpErr := tcp.ExchangeContext(attemptCtx, req, upstream)
+	cancel()
+	if tcpErr != nil {
+		return resp, nil
+	}
+	return full, nil
 }

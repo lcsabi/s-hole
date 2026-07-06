@@ -52,11 +52,12 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(w, "shole_cache_hits_total %d\n", snap.CacheHits)
 
 	if s.dnsCache != nil {
-		hits, misses, size := s.dnsCache.Stats()
+		// Hits are already exposed above from the stats counter; only
+		// misses and size come from the cache itself.
+		_, misses, size := s.dnsCache.Stats()
 		fmt.Fprintln(w, "# HELP shole_cache_misses_total DNS cache misses (forwarded to upstream).")
 		fmt.Fprintln(w, "# TYPE shole_cache_misses_total counter")
 		fmt.Fprintf(w, "shole_cache_misses_total %d\n", misses)
-		_ = hits // already exposed via shole_cache_hits_total
 		fmt.Fprintln(w, "# HELP shole_cache_size Current number of entries in the DNS response cache.")
 		fmt.Fprintln(w, "# TYPE shole_cache_size gauge")
 		fmt.Fprintf(w, "shole_cache_size %d\n", size)

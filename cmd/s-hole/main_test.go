@@ -96,7 +96,7 @@ func TestPrintNetworkHint_EmitsBanner(t *testing.T) {
 	t.Setenv("S_HOLE_LOG_FORMAT", "")
 	t.Setenv("S_HOLE_ASCII_BANNER", "")
 	out := captureStdout(t, func() {
-		printNetworkHint("53", "8080")
+		printNetworkHint("53", "0.0.0.0", "8080")
 	})
 	if !strings.Contains(out, "Router setup") {
 		t.Skipf("no LAN interface in test env; banner skipped (got: %q)", out)
@@ -109,10 +109,52 @@ func TestPrintNetworkHint_EmitsBanner(t *testing.T) {
 	}
 }
 
+func TestPrintNetworkHint_LoopbackAPIPointsAtLocalhost(t *testing.T) {
+	// T4 regression: with the localhost-only api_listen default, the
+	// banner must not advertise http://<lan-ip>:8080 — that URL is
+	// connection-refused for every other device on the LAN.
+	t.Setenv("S_HOLE_LOG_FORMAT", "")
+	t.Setenv("S_HOLE_ASCII_BANNER", "")
+	out := captureStdout(t, func() {
+		printNetworkHint("53", "127.0.0.1", "8080")
+	})
+	if !strings.Contains(out, "Router setup") {
+		t.Skipf("no LAN interface in test env; banner skipped (got: %q)", out)
+	}
+	if !strings.Contains(out, "http://127.0.0.1:8080") {
+		t.Errorf("banner missing loopback Admin UI URL:\n%s", out)
+	}
+	if !strings.Contains(out, "(this machine only)") {
+		t.Errorf("banner missing the loopback-scope note:\n%s", out)
+	}
+	if n := strings.Count(out, "Admin UI"); n != 1 {
+		t.Errorf("banner has %d Admin UI lines, want exactly 1:\n%s", n, out)
+	}
+}
+
+func TestIsLoopbackHost(t *testing.T) {
+	cases := []struct {
+		host string
+		want bool
+	}{
+		{"127.0.0.1", true},
+		{"localhost", true},
+		{"::1", true},
+		{"0.0.0.0", false},
+		{"", false}, // empty host binds every interface
+		{"192.168.1.10", false},
+	}
+	for _, tc := range cases {
+		if got := isLoopbackHost(tc.host); got != tc.want {
+			t.Errorf("isLoopbackHost(%q) = %v, want %v", tc.host, got, tc.want)
+		}
+	}
+}
+
 func TestPrintNetworkHint_ASCIIFallback(t *testing.T) {
 	t.Setenv("S_HOLE_ASCII_BANNER", "1")
 	out := captureStdout(t, func() {
-		printNetworkHint("53", "8080")
+		printNetworkHint("53", "0.0.0.0", "8080")
 	})
 	if strings.Contains(out, "─") || strings.Contains(out, "│") || strings.Contains(out, "┌") {
 		t.Errorf("ASCII fallback still emitted box-drawing characters:\n%s", out)

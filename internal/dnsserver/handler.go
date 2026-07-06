@@ -2,7 +2,10 @@
 // per-query handler. The handler consults the blocklist, then the in-memory
 // response cache, then upstream resolvers — in that order — and routes the
 // reply back to the client. UDP and TCP listeners run in parallel; clients
-// fall back to TCP automatically when a UDP reply is truncated.
+// fall back to TCP automatically when a UDP reply is truncated. On the
+// upstream side the forwarder mirrors that fallback: a truncated UDP reply
+// is retried over TCP against the same upstream before being returned —
+// see exchange in upstream.go.
 //
 // The handler mirrors the client's EDNS0 OPT pseudo-record on sinkhole
 // replies so clients that advertise EDNS0 do not fall back to legacy DNS.

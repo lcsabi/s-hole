@@ -157,6 +157,32 @@ func TestQueriesEndpoint_IgnoresBadLimit(t *testing.T) {
 	}
 }
 
+func TestParseLimit(t *testing.T) {
+	// T3: the ?limit= parameter is defaulted for absent/malformed/
+	// non-positive values and clamped so one request cannot marshal the
+	// entire history table.
+	cases := []struct {
+		query string
+		want  int
+	}{
+		{"", defaultQueriesLimit},
+		{"limit=garbage", defaultQueriesLimit},
+		{"limit=0", defaultQueriesLimit},
+		{"limit=-5", defaultQueriesLimit},
+		{"limit=25", 25},
+		{"limit=1000", maxQueriesLimit},
+		{"limit=99999999", maxQueriesLimit},
+	}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/api/queries?"+tc.query, nil)
+			if got := parseLimit(r); got != tc.want {
+				t.Errorf("parseLimit(%q) = %d, want %d", tc.query, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestWhitelistRemove_RejectsEmptyDomain(t *testing.T) {
 	_, srv := newTestServer(t, nil)
 	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/whitelist?domain=", nil)
@@ -315,7 +341,10 @@ func TestMetricsEndpoint(t *testing.T) {
 
 // fakeCacheStats lets us verify /metrics surfaces cache metrics when a
 // CacheStatser is wired up.
-type fakeCacheStats struct{ h, m uint64; s int }
+type fakeCacheStats struct {
+	h, m uint64
+	s    int
+}
 
 func (f fakeCacheStats) Stats() (uint64, uint64, int) { return f.h, f.m, f.s }
 

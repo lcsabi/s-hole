@@ -78,8 +78,11 @@ func (c *Cache) Get(q dns.Question) (*dns.Msg, bool) {
 }
 
 // Set caches msg for question q if it has a non-zero TTL and answers present.
+// Truncated messages are never cached: their answer section is incomplete,
+// and replaying one for its full TTL would pin every client on the partial
+// answer even after a TCP retry could fetch the real one.
 func (c *Cache) Set(q dns.Question, msg *dns.Msg) {
-	if msg.Rcode != dns.RcodeSuccess || len(msg.Answer) == 0 {
+	if msg.Rcode != dns.RcodeSuccess || msg.Truncated || len(msg.Answer) == 0 {
 		return
 	}
 	minTTL := minAnswerTTL(msg)
@@ -139,8 +142,13 @@ func (c *Cache) cleanupExpired(now time.Time) int {
 	return removed
 }
 
+// key builds the cache key from (qname, qtype, qclass). The Type/Class
+// String methods fall back to "TYPE1234"/"CLASS1234" for codes without a
+// mnemonic; a bare TypeToString map lookup would render every unknown
+// code as "", letting two distinct unknown qtypes collide on one key and
+// serve each other's cached answers (T6).
 func key(q dns.Question) string {
-	return q.Name + "\x00" + dns.TypeToString[q.Qtype] + "\x00" + dns.ClassToString[q.Qclass]
+	return q.Name + "\x00" + dns.Type(q.Qtype).String() + "\x00" + dns.Class(q.Qclass).String()
 }
 
 func decrementTTLs(msg *dns.Msg, elapsed uint32) {

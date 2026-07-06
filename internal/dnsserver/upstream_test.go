@@ -51,6 +51,66 @@ func startMockUpstream(t *testing.T, ip net.IP) (addr string, hits *atomic.Int64
 	return pc.LocalAddr().String(), hits
 }
 
+// startTruncatingUpstream runs a UDP server that always replies with the
+// TC bit set and an empty answer section, plus (optionally) a TCP server
+// on the same port that returns the full answer. This is the shape of a
+// real resolver handling an answer too large for the UDP buffer: UDP
+// truncates, TCP carries the payload.
+func startTruncatingUpstream(t *testing.T, ip net.IP, withTCP bool) (addr string, udpHits, tcpHits *atomic.Int64) {
+	t.Helper()
+	udpHits, tcpHits = new(atomic.Int64), new(atomic.Int64)
+
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	addr = pc.LocalAddr().String()
+
+	udpSrv := &dns.Server{
+		PacketConn: pc,
+		Handler: dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
+			udpHits.Add(1)
+			resp := new(dns.Msg)
+			resp.SetReply(req)
+			resp.Truncated = true
+			w.WriteMsg(resp)
+		}),
+	}
+	go udpSrv.ActivateAndServe()
+	t.Cleanup(func() { udpSrv.Shutdown() })
+
+	if withTCP {
+		l, err := net.Listen("tcp", addr)
+		if err != nil {
+			t.Fatalf("listen tcp on %s: %v", addr, err)
+		}
+		tcpSrv := &dns.Server{
+			Listener: l,
+			Handler: dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
+				tcpHits.Add(1)
+				resp := new(dns.Msg)
+				resp.SetReply(req)
+				resp.Answer = []dns.RR{
+					&dns.A{
+						Hdr: dns.RR_Header{
+							Name:   req.Question[0].Name,
+							Rrtype: dns.TypeA,
+							Class:  dns.ClassINET,
+							Ttl:    60,
+						},
+						A: ip,
+					},
+				}
+				w.WriteMsg(resp)
+			}),
+		}
+		go tcpSrv.ActivateAndServe()
+		t.Cleanup(func() { tcpSrv.Shutdown() })
+	}
+
+	return addr, udpHits, tcpHits
+}
+
 func TestForward_HappyPath(t *testing.T) {
 	addr, hits := startMockUpstream(t, net.IPv4(1, 2, 3, 4))
 
@@ -125,6 +185,58 @@ func TestForward_SkipsCooldownOnSecondCall(t *testing.T) {
 	}
 	if liveHits.Load() != 2 {
 		t.Errorf("live mock got %d queries across two calls, want 2", liveHits.Load())
+	}
+}
+
+func TestForward_TruncatedUDPRetriesOverTCP(t *testing.T) {
+	// T2 regression: a TC-flagged UDP reply must be retried over TCP
+	// against the same upstream, and the full TCP answer returned.
+	addr, udpHits, tcpHits := startTruncatingUpstream(t, net.IPv4(7, 7, 7, 7), true)
+
+	req := new(dns.Msg)
+	req.SetQuestion("big-answer.example.com.", dns.TypeA)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := forwardWith(ctx, req, []string{addr}, newUpstreamTracker())
+	if err != nil {
+		t.Fatalf("forwardWith: %v", err)
+	}
+	if udpHits.Load() != 1 || tcpHits.Load() != 1 {
+		t.Errorf("hits = %d UDP / %d TCP, want 1 / 1", udpHits.Load(), tcpHits.Load())
+	}
+	if resp.Truncated {
+		t.Error("response still has TC set after TCP retry")
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("answer count = %d, want 1 (the full TCP answer)", len(resp.Answer))
+	}
+	if a := resp.Answer[0].(*dns.A); !a.A.Equal(net.IPv4(7, 7, 7, 7)) {
+		t.Errorf("answer A = %v, want 7.7.7.7", a.A)
+	}
+}
+
+func TestForward_TruncatedKeptWhenTCPUnavailable(t *testing.T) {
+	// The upstream answers UDP (so it is alive) but nothing listens on
+	// 53/tcp. forward must fall back to the truncated UDP reply rather
+	// than escalating to an error: TC + partial answer is more useful to
+	// the client than SERVFAIL.
+	addr, udpHits, _ := startTruncatingUpstream(t, nil, false)
+
+	req := new(dns.Msg)
+	req.SetQuestion("big-answer.example.com.", dns.TypeA)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := forwardWith(ctx, req, []string{addr}, newUpstreamTracker())
+	if err != nil {
+		t.Fatalf("forwardWith: %v", err)
+	}
+	if udpHits.Load() != 1 {
+		t.Errorf("UDP hits = %d, want 1", udpHits.Load())
+	}
+	if !resp.Truncated {
+		t.Error("expected the truncated UDP reply to be passed through")
 	}
 }
 

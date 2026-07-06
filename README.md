@@ -95,7 +95,7 @@ All configuration lives in `config.yaml`. Every field has a safe default; an emp
 | `whitelist` | `[]` | Domains that are never blocked, regardless of blocklist membership |
 | `refresh_interval` | `24h` | How often to re-download blocklists |
 | `block_mode` | `zero` | Sinkhole reply: `zero` returns `0.0.0.0`/`::`, `nxdomain` returns NXDOMAIN |
-| `block_ttl` | `300` | TTL (seconds) advertised on blocked replies |
+| `block_ttl` | `300` | TTL (seconds) advertised on blocked replies; `0` tells clients not to cache them |
 | `log_file` | stdout | Path to the plain-text query log |
 | `log_queries` | `all` | Which queries to write to logs: `all`, `blocked`, or `none` |
 | `query_db` | `queries.db` | Path to the SQLite query log database (empty to disable) |
@@ -157,7 +157,7 @@ The admin web UI is served at **`http://127.0.0.1:8080`** by default — localho
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/stats` | Live stats: uptime, query totals, block rate, cache hit rate, top domains/clients |
-| `GET` | `/api/queries?limit=N` | Last N queries from SQLite, newest first (default: 50) |
+| `GET` | `/api/queries?limit=N` | Last N queries from SQLite, newest first (default: 50, max: 1000) |
 | `GET` | `/api/whitelist` | List all runtime-whitelisted domains |
 | `POST` | `/api/whitelist` | Add a domain — body: `{"domain": "example.com"}` |
 | `DELETE` | `/api/whitelist?domain=…` | Remove a domain from the runtime whitelist |
@@ -356,11 +356,11 @@ Coverage by package (after `go test -cover ./...`):
 | `internal/version` | 100 % |
 | `internal/cache` | 94.8 % |
 | `internal/api` | 90.8 % |
-| `internal/blocklist` | 89.5 % |
-| `internal/dnsserver` | 87.0 % |
+| `internal/blocklist` | 89.6 % |
+| `internal/dnsserver` | 87.9 % |
 | `internal/querylog` | 85.6 % |
-| `cmd/s-hole` | 27.9 % |
-| **module-wide** | **71.6 %** |
+| `cmd/s-hole` | 31.7 % |
+| **module-wide** | **72.1 %** |
 
 The uncovered region is the `main()` bootstrap and the Windows-only SCM glue — both exercised by manual smoke tests, not unit tests.
 

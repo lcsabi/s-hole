@@ -125,6 +125,12 @@ func loadFromFile(path string) ([]string, error) {
 func parseHostsFormat(r io.Reader) ([]string, error) {
 	var domains []string
 	scanner := bufio.NewScanner(r)
+	// bufio.Scanner's default 64 KiB token cap would abort the whole list
+	// with ErrTooLong on one overlong line (a mis-served binary, a
+	// minified HTML error page) even when every other line is fine. Raise
+	// the cap to 1 MiB; garbage lines are still dropped one at a time by
+	// ValidDomain (T5).
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {

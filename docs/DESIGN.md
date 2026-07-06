@@ -91,7 +91,7 @@ Client devices (DNS server learned via DHCP from router)
 
 We use `github.com/miekg/dns` rather than the standard library's `net` package because it provides a complete RFC-compliant DNS message codec, a `ServeMux`-style handler interface, and handles both UDP and TCP transports. Rolling our own DNS codec would be a source of subtle correctness bugs.
 
-Both UDP and TCP listeners are started on the same address:port. DNS clients fall back to TCP automatically when a UDP response is truncated (TC bit set), so both must be active.
+Both UDP and TCP listeners are started on the same address:port. DNS clients fall back to TCP automatically when a UDP response is truncated (TC bit set), so both must be active. The forwarder mirrors that fallback on the upstream side: it queries upstreams over UDP first and, when the reply comes back truncated, retries the same upstream over TCP before returning. Without that retry the client's own TCP fallback would dead-end — a TCP query to s-hole would still be forwarded over UDP and yield the same truncated answer. If the TCP retry itself fails, the truncated UDP reply is passed through (the upstream is demonstrably alive, and TC plus a partial answer beats SERVFAIL); truncated responses are never cached.
 
 The `Handler` struct is the core routing point. For each query:
 
@@ -135,7 +135,7 @@ Key design decisions:
 - **Value:** a cloned `dns.Msg` with the time it was cached and the minimum TTL across all answer records.
 - **TTL adjustment:** on retrieval, elapsed seconds are subtracted from each record's TTL so clients receive accurate expiry times.
 - **Eviction:** when the cache reaches `cache_size` entries, new entries are silently dropped rather than evicting existing ones. This avoids the complexity of LRU at the scale of home DNS traffic.
-- **Only NOERROR responses with at least one answer are cached.** NXDOMAIN, SERVFAIL, and empty-answer responses are not stored.
+- **Only NOERROR responses with at least one answer are cached.** NXDOMAIN, SERVFAIL, empty-answer, and truncated (TC bit) responses are not stored — a truncated message carries an incomplete answer section that would otherwise be replayed for its full TTL.
 - **Cleanup:** a background goroutine sweeps expired entries every minute. It exits cleanly on `Cache.Close()`, which is invoked from the shutdown path so the goroutine never outlives the process.
 - **Cache hit rate** is tracked in `stats.Counter` and reported in both the periodic `Print()` output and `GET /api/stats`.
 
@@ -150,7 +150,7 @@ Two modes are supported via `block_mode` in config:
 
 `zero` is the default because `NXDOMAIN` causes some clients to aggressively retry, log errors, or display alarming UI. Returning a routable-but-unroutable address fails silently at the TCP connect layer, which is the behaviour most consistent with "nothing happened."
 
-The TTL on sinkhole replies is configurable (`block_ttl`, default 300 seconds). A short TTL means a whitelisted domain becomes reachable within TTL seconds after being added to the whitelist, without requiring a client cache flush.
+The TTL on sinkhole replies is configurable (`block_ttl`, default 300 seconds). A short TTL means a whitelisted domain becomes reachable within TTL seconds after being added to the whitelist, without requiring a client cache flush. An explicit `block_ttl: 0` is honored — it tells clients not to cache sinkhole replies at all, trading query volume for instant whitelist effect.
 
 ### Query Logging (`internal/querylog/`)
 
@@ -222,7 +222,7 @@ Blocklist refresh is single-flighted via a `sync.Mutex` held in `cmd/s-hole/main
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/stats` | GET | Live stats snapshot (uptime, totals, cache rate, top domains/clients) |
-| `/api/queries` | GET | Recent queries from SQLite (`?limit=N`, default 50) |
+| `/api/queries` | GET | Recent queries from SQLite (`?limit=N`, default 50, capped at 1000) |
 | `/api/whitelist` | GET | List runtime-whitelisted domains |
 | `/api/whitelist` | POST | Add domain: `{"domain":"..."}`. 64 KiB body cap; rejects malformed domains via `blocklist.ValidDomain`. |
 | `/api/whitelist` | DELETE | Remove domain: `?domain=...` |
@@ -252,6 +252,8 @@ On startup, `cmd/s-hole/main.go` calls `printNetworkHint`, which enumerates loca
 ### Configuration (`internal/config/`)
 
 All configuration lives in a single YAML file. The struct uses `yaml` tags and applies safe defaults in `applyDefaults()` so the minimal valid config is an empty file. Duration fields are stored as strings and parsed at startup; invalid durations are fatal errors rather than silently ignored.
+
+Two fields — `cache_size` and `block_ttl` — have defaults seeded onto the struct *before* the YAML decode instead of in `applyDefaults()`. Their zero values are meaningful settings (`cache_size: 0` disables the cache; `block_ttl: 0` disables client caching of sinkhole replies), and a post-decode fixup cannot tell an explicit 0 in the file apart from an absent key.
 
 A `Validate()` method runs after `Load()` and rejects unrecognised values for the enumerated fields (`block_mode`, `log_queries`). A typo such as `block_mode: "NXDOMAIN"` is now a fatal startup error instead of a silent fallback to the default — operator misconfiguration is surfaced immediately at the source.
 
@@ -321,7 +323,7 @@ The query log records client IP addresses and all queried domain names. On a hom
 
 ## Testing Strategy
 
-- **Unit tests:** Every implementation package under `internal/` ships a `*_test.go` file. Line coverage by package: `stats`, `config`, and `version` 100 %; `cache` 94.8 %; `api` 90.8 %; `blocklist` 89.5 %; `dnsserver` 87.0 %; `querylog` 85.6 %. The `cmd/s-hole` package is at 27.9 % — the rest is the `main()` bootstrap and signal-dispatch goroutine, which require running the binary. Module-wide coverage is 71.6 %. Coverage includes `blocklist.Store` lookup, whitelist precedence, atomic `Replace`, `parseHostsFormat` against both formats, `Update` preserving the store on full-failure refresh, `ValidDomain` rejecting garbage, atomic cache file write; `cache.Cache` TTL decrement, drop-on-full, Qclass-aware keying, `cleanupExpired` sweep, `Close` shutdown; `config.Load` with empty/partial/invalid YAML, `Validate` rejecting bogus enums, every duration-parser error path, every `S_HOLE_*` env override; `stats.Counter` concurrent invariants (block rate never exceeds 100 % under parallel writers), top-N map cap, `Print` output; `querylog.FileLogger` filtering modes + fallback paths, `DBLogger` round-trip, final-flush-on-Close, retention prune; `dnsserver.Handler` sinkhole (zero + nxdomain), cache-hit, cache-miss-forward, whitelist override, empty-question, EDNS0 pass-through, write-error branches; `dnsserver.Server` full Start→query→Shutdown lifecycle on a real UDP port; the upstream health tracker (cooldown, failover, second-sweep retry); the `api` HTTP handlers including reload single-flight, the 64 KiB body cap, `ListenAndServe`/`Shutdown` lifecycle, `/healthz`, `/metrics`, malformed-input rejection, encoder-error branch. Many tests are regression tests for specific bug numbers (b/005, b/007, b/010, b/017, b/018, b/021, b/022, b/024, b/026, b/028) or staff-review IDs (R3, R4, R5, R6, R8, R9, R12, R13, R14, R15, R16, R17, R18, R19, R26, R27, R31, R32, R33, R34, R35, R36, R37, R38).
+- **Unit tests:** Every implementation package under `internal/` ships a `*_test.go` file. Line coverage by package: `stats`, `config`, and `version` 100 %; `cache` 94.8 %; `api` 90.8 %; `blocklist` 89.6 %; `dnsserver` 87.9 %; `querylog` 85.6 %. The `cmd/s-hole` package is at 31.7 % — the rest is the `main()` bootstrap and signal-dispatch goroutine, which require running the binary. Module-wide coverage is 72.1 %. Coverage includes `blocklist.Store` lookup, whitelist precedence, atomic `Replace`, `parseHostsFormat` against both formats, `Update` preserving the store on full-failure refresh, `ValidDomain` rejecting garbage, atomic cache file write; `cache.Cache` TTL decrement, drop-on-full, Qclass-aware keying, `cleanupExpired` sweep, `Close` shutdown; `config.Load` with empty/partial/invalid YAML, `Validate` rejecting bogus enums, every duration-parser error path, every `S_HOLE_*` env override; `stats.Counter` concurrent invariants (block rate never exceeds 100 % under parallel writers), top-N map cap, `Print` output; `querylog.FileLogger` filtering modes + fallback paths, `DBLogger` round-trip, final-flush-on-Close, retention prune; `dnsserver.Handler` sinkhole (zero + nxdomain), cache-hit, cache-miss-forward, whitelist override, empty-question, EDNS0 pass-through, write-error branches; `dnsserver.Server` full Start→query→Shutdown lifecycle on a real UDP port; the upstream health tracker (cooldown, failover, second-sweep retry); the `api` HTTP handlers including reload single-flight, the 64 KiB body cap, `ListenAndServe`/`Shutdown` lifecycle, `/healthz`, `/metrics`, malformed-input rejection, encoder-error branch. Many tests are regression tests for specific bug numbers (b/005, b/007, b/010, b/017, b/018, b/021, b/022, b/024, b/026, b/028) or staff-review IDs (R3, R4, R5, R6, R8, R9, R12, R13, R14, R15, R16, R17, R18, R19, R26, R27, R31, R32, R33, R34, R35, R36, R37, R38, T1–T6).
 - **DNS handler unit tests** use a `fakeWriter` implementing `dns.ResponseWriter`; the cache-hit path is exercised by pre-populating the in-memory cache, bypassing the upstream resolver entirely. The forwarder tests use a real in-process miekg/dns server on `127.0.0.1:0` so the production code path (including `dns.Client.ExchangeContext`) is exercised end-to-end.
 - **Server lifecycle test** binds the production `dnsserver.Server` to a free port (UDP + TCP), confirms a real `dns.Client.Exchange` round-trips through the handler, and verifies `Shutdown` causes `Start` to return — the only test that touches the bind+listen path.
 - **Fuzz tests:** `internal/blocklist/fuzz_test.go` fuzzes `ValidDomain`, `parseHostsFormat`, and `cacheFilename`. The parser fuzz asserts every emitted domain itself passes `ValidDomain`; the filename fuzz asserts the result is platform-safe (no `/`, `\`, or `:`). Run with `go test -fuzz=FuzzValidDomain -fuzztime=30s ./internal/blocklist/`.

@@ -12,7 +12,7 @@
 // Routes:
 //
 //	GET    /api/stats            JSON Snapshot
-//	GET    /api/queries          recent rows from SQLite (?limit=N)
+//	GET    /api/queries          recent rows from SQLite (?limit=N, default 50, max 1000)
 //	GET    /api/whitelist        runtime whitelist (sorted)
 //	POST   /api/whitelist        add a domain (ValidDomain-gated, 64 KiB cap)
 //	DELETE /api/whitelist        remove a domain
@@ -155,13 +155,28 @@ func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, s.counter.Snapshot(10))
 }
 
-func (s *Server) handleQueries(w http.ResponseWriter, r *http.Request) {
-	limit := 50
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
+// defaultQueriesLimit and maxQueriesLimit bound the ?limit= parameter on
+// /api/queries. The cap keeps a stray `?limit=10000000` from marshalling
+// the entire history table into one JSON response on the unauthenticated
+// admin port — the same defense-in-depth reasoning as maxRequestBytes.
+const (
+	defaultQueriesLimit = 50
+	maxQueriesLimit     = 1000
+)
+
+// parseLimit extracts the ?limit= query parameter, substituting the
+// default for absent, malformed, or non-positive values and clamping to
+// maxQueriesLimit.
+func parseLimit(r *http.Request) int {
+	n, err := strconv.Atoi(r.URL.Query().Get("limit"))
+	if err != nil || n <= 0 {
+		return defaultQueriesLimit
 	}
+	return min(n, maxQueriesLimit)
+}
+
+func (s *Server) handleQueries(w http.ResponseWriter, r *http.Request) {
+	limit := parseLimit(r)
 
 	type response struct {
 		Queries []querylog.QueryRow `json:"queries"`

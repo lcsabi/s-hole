@@ -104,6 +104,33 @@ func TestCache_KeyIncludesQclass(t *testing.T) {
 	}
 }
 
+func TestCache_KeyDistinguishesUnknownTypes(t *testing.T) {
+	// T6 regression: two distinct qtypes without a mnemonic in
+	// dns.TypeToString must not collide on one cache key — a bare map
+	// lookup rendered both as "" and let them serve each other's answers.
+	q1 := dns.Question{Name: "example.com.", Qtype: 64001, Qclass: dns.ClassINET}
+	q2 := dns.Question{Name: "example.com.", Qtype: 64002, Qclass: dns.ClassINET}
+	if key(q1) == key(q2) {
+		t.Errorf("key collision for unknown qtypes: both map to %q", key(q1))
+	}
+}
+
+func TestCache_RejectsTruncated(t *testing.T) {
+	// T2: a TC-flagged message carries an incomplete answer section and
+	// must never be replayed from cache.
+	c := New(10)
+	defer c.Close()
+
+	q := dns.Question{Name: "big.example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	msg := buildResponse(q, 300)
+	msg.Truncated = true
+	c.Set(q, msg)
+
+	if _, ok := c.Get(q); ok {
+		t.Error("truncated response should not be cached")
+	}
+}
+
 func TestCache_DropOnFull(t *testing.T) {
 	c := New(2)
 	defer c.Close()
@@ -159,8 +186,8 @@ func TestCache_StatsHitsAndMisses(t *testing.T) {
 	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
 	c.Set(q, buildResponse(q, 300))
 
-	c.Get(q) // hit
-	c.Get(q) // hit
+	c.Get(q)                                                                         // hit
+	c.Get(q)                                                                         // hit
 	c.Get(dns.Question{Name: "other.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}) // miss
 
 	hits, misses, _ := c.Stats()

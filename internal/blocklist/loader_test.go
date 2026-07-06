@@ -60,6 +60,23 @@ func TestParseHostsFormat(t *testing.T) {
 	}
 }
 
+func TestParseHostsFormat_LongLineDoesNotAbortList(t *testing.T) {
+	// T5 regression: a single line past bufio.Scanner's default 64 KiB
+	// token cap used to abort the entire list with ErrTooLong. The line
+	// itself is garbage (dropped by ValidDomain); the surrounding valid
+	// entries must survive.
+	input := "ads.example.com\n" +
+		strings.Repeat("x", 100*1024) + "\n" +
+		"tracker.example.net\n"
+	got, err := parseHostsFormat(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("parseHostsFormat: %v", err)
+	}
+	if !equalSlices(got, []string{"ads.example.com", "tracker.example.net"}) {
+		t.Errorf("parseHostsFormat = %v, want the two valid domains", got)
+	}
+}
+
 func TestFetchList_DownloadAndCache(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte("0.0.0.0 ads.example.com\n0.0.0.0 tracker.example.net\n"))

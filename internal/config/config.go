@@ -37,8 +37,11 @@ type Config struct {
 	RefreshInterval string   `yaml:"refresh_interval"`
 	StatsInterval   string   `yaml:"stats_interval"`
 	// BlockMode controls what blocked queries return: "zero" (0.0.0.0) or "nxdomain"
-	BlockMode  string `yaml:"block_mode"`
-	BlockTTL   uint32 `yaml:"block_ttl"`
+	BlockMode string `yaml:"block_mode"`
+	// BlockTTL is the TTL (seconds) advertised on blocked replies. An
+	// explicit 0 is honored: it tells clients not to cache the sinkhole
+	// answer at all, so whitelist changes take effect immediately.
+	BlockTTL uint32 `yaml:"block_ttl"`
 	// LogQueries controls which queries are written to the log: "all", "blocked", or "none"
 	LogQueries string `yaml:"log_queries"`
 	// QueryDB is a path to a SQLite file for persistent query logging; empty disables it
@@ -62,6 +65,17 @@ type Config struct {
 	EnablePprof bool `yaml:"enable_pprof"`
 }
 
+// Defaults for the two fields whose zero value is itself a meaningful
+// setting (cache_size 0 disables the cache; block_ttl 0 disables client
+// caching of sinkhole replies). They are seeded onto the struct before
+// the YAML decode — a post-decode fixup cannot tell an explicit 0 in the
+// file apart from an absent key, and would silently re-apply the default
+// (finding T1). All other defaults live in applyDefaults.
+const (
+	defaultCacheSize = 2000
+	defaultBlockTTL  = 300
+)
+
 // Load reads and parses the YAML config at path. Missing fields receive
 // their default values. Callers should invoke Validate on the result
 // before constructing any runtime objects.
@@ -72,7 +86,12 @@ func Load(path string) (*Config, error) {
 	}
 	defer f.Close()
 
-	cfg := &Config{}
+	// Seed zero-is-meaningful defaults before decoding; see the constant
+	// block above for why these two cannot go through applyDefaults.
+	cfg := &Config{
+		CacheSize: defaultCacheSize,
+		BlockTTL:  defaultBlockTTL,
+	}
 	// An empty file decodes to io.EOF; we treat that as "no overrides" and
 	// fall through to applyDefaults — the README states an empty config is
 	// valid.
@@ -158,6 +177,10 @@ func (c *Config) applyEnvOverrides() {
 	}
 }
 
+// applyDefaults fills every field whose zero value is NOT a meaningful
+// setting. CacheSize and BlockTTL are deliberately absent: their
+// defaults are seeded in Load before the YAML decode so an explicit 0
+// in the file is honored.
 func (c *Config) applyDefaults() {
 	if c.Listen == "" {
 		c.Listen = "0.0.0.0:53"
@@ -177,9 +200,6 @@ func (c *Config) applyDefaults() {
 	if c.BlockMode == "" {
 		c.BlockMode = "zero"
 	}
-	if c.BlockTTL == 0 {
-		c.BlockTTL = 300
-	}
 	if c.LogQueries == "" {
 		c.LogQueries = "all"
 	}
@@ -188,9 +208,6 @@ func (c *Config) applyDefaults() {
 		// exposing it to the LAN should be an opt-in. Operators who want
 		// LAN access set api_listen: "0.0.0.0:8080" explicitly.
 		c.APIListen = "127.0.0.1:8080"
-	}
-	if c.CacheSize == 0 {
-		c.CacheSize = 2000
 	}
 	if c.DBFlushInterval == "" {
 		c.DBFlushInterval = "30s"

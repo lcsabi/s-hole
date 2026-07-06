@@ -60,6 +60,33 @@ func TestLoad_PartialOverridesDefaultsForSetFields(t *testing.T) {
 	}
 }
 
+func TestLoad_CacheSizeZeroDisables(t *testing.T) {
+	// T1 regression: an explicit `cache_size: 0` must survive Load. The
+	// old post-decode applyDefaults could not tell 0-from-YAML apart from
+	// an absent key and silently re-enabled the default 2000-entry cache,
+	// contradicting the documented "set to 0 to disable".
+	cfg, err := Load(writeTemp(t, "cache_size: 0\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.CacheSize != 0 {
+		t.Errorf("CacheSize = %d, want 0 (cache disabled)", cfg.CacheSize)
+	}
+}
+
+func TestLoad_BlockTTLZeroHonored(t *testing.T) {
+	// T1 regression, same zero-value collision as cache_size: block_ttl 0
+	// is legal DNS ("do not cache this reply") and must not be promoted
+	// to the 300-second default.
+	cfg, err := Load(writeTemp(t, "block_ttl: 0\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.BlockTTL != 0 {
+		t.Errorf("BlockTTL = %d, want 0", cfg.BlockTTL)
+	}
+}
+
 func TestLoad_MissingFile(t *testing.T) {
 	if _, err := Load("/no/such/file.yaml"); err == nil {
 		t.Fatal("Load on missing file should error")
@@ -229,6 +256,9 @@ func TestApplyEnvOverrides_AllStringFields(t *testing.T) {
 }
 
 func TestApplyEnvOverrides_EnablePprof(t *testing.T) {
+	// Only 1/true/yes turn pprof on. Everything else — including an env
+	// var explicitly set to the empty string (LookupEnv ok=true, value="")
+	// — leaves it at the default false.
 	cases := []struct {
 		value string
 		want  bool
@@ -239,7 +269,7 @@ func TestApplyEnvOverrides_EnablePprof(t *testing.T) {
 		{"0", false},
 		{"false", false},
 		{"no", false},
-		{"", true}, // empty means "set to empty" — the parser treats it as "not 1/true/yes" → false; see below
+		{"", false},
 	}
 	for _, tc := range cases {
 		t.Run("value="+tc.value, func(t *testing.T) {
@@ -248,15 +278,10 @@ func TestApplyEnvOverrides_EnablePprof(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Load: %v", err)
 			}
-			// Empty-string LookupEnv returns ok=true, value="" → the
-			// parser leaves EnablePprof at the default (false) because
-			// "" is not in {1, true, yes}. Adjust the expectation.
-			want := tc.value == "1" || tc.value == "true" || tc.value == "yes"
-			if cfg.EnablePprof != want {
+			if cfg.EnablePprof != tc.want {
 				t.Errorf("EnablePprof = %v for env=%q, want %v",
-					cfg.EnablePprof, tc.value, want)
+					cfg.EnablePprof, tc.value, tc.want)
 			}
-			_ = tc.want // keep the table column for documentation
 		})
 	}
 }

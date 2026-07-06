@@ -22,7 +22,9 @@ stats_interval: "5m"
 # How to respond to blocked queries: "zero" (0.0.0.0) or "nxdomain"
 block_mode: "zero"
 
-# TTL in seconds advertised on blocked replies
+# TTL in seconds advertised on blocked replies.
+# 0 tells clients not to cache them (whitelist changes then take effect
+# immediately, at the cost of more repeat queries).
 block_ttl: 300
 
 # Which queries to write to the log: "all", "blocked", or "none"

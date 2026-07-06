@@ -8,6 +8,31 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
 
 ## [Unreleased]
 
+### Fixed
+- `cache_size: 0` in the YAML file now actually disables the DNS
+  response cache, as documented. Previously the post-decode default
+  silently turned 0 back into 2000; only the `S_HOLE_CACHE_SIZE=0` env
+  override worked (T1). `block_ttl: 0` is likewise honored now — it
+  tells clients not to cache sinkhole replies.
+- Truncated upstream replies (TC bit) are retried over TCP against the
+  same upstream before being returned, so large answers (DNSSEC, big
+  TXT/CDN RRsets) resolve instead of dead-ending the client's TCP
+  fallback at the forwarder. Truncated responses are also no longer
+  cached (T2).
+- The DNS response cache keys unknown record types as `TYPE1234`
+  instead of an empty string, so two distinct unknown qtypes can no
+  longer collide on one cache entry (T6).
+- One overlong blocklist line (past bufio's default 64 KiB token cap)
+  no longer aborts parsing of the entire list; the parser tolerates
+  lines up to 1 MiB and keeps dropping garbage per-line as before (T5).
+- The startup banner no longer advertises `http://<lan-ip>:8080` for
+  the admin UI when `api_listen` is bound to localhost (the default) —
+  it prints `http://127.0.0.1:8080 (this machine only)` instead (T4).
+
+### Changed
+- `/api/queries` clamps `?limit=` to 1000 so one request cannot
+  marshal the entire history table into a single JSON response (T3).
+
 ### Added
 - `runTicker` now honors a context for clean shutdown — background
   tickers (stats print, blocklist refresh) exit when `doStop` cancels

@@ -65,6 +65,49 @@ go test -fuzz=FuzzValidDomain -fuzztime=30s ./internal/blocklist/
 `-fuzztime=30s` is a sensible smoke; longer runs are appropriate when
 touching `ValidDomain`, `parseHostsFormat`, or `cacheFilename`.
 
+### Manual smoke test
+
+Unit tests cover the packages; this five-minute pass exercises the
+running binary end-to-end. Worth doing before a release tag or after
+touching startup, shutdown, or anything in the query path. Port 5353
+avoids both the privileged-port bind and the local resolver's claim on
+port 53 (`systemd-resolved` holds `127.0.0.53:53` on most distros).
+
+```bash
+# Terminal 1 — build and run; this terminal is also the live query log.
+go build -o /tmp/s-hole ./cmd/s-hole
+S_HOLE_LISTEN=0.0.0.0:5353 S_HOLE_QUERY_DB=/tmp/q.db S_HOLE_CACHE_DIR=/tmp \
+  /tmp/s-hole -config config.yaml
+```
+
+Expect: `blocklist updated total=…`, two `dns listener started` lines,
+and the router-setup banner. Then, in a second terminal:
+
+1. **Probes** — `curl localhost:8080/healthz` → `ok`;
+   `curl localhost:8080/readyz` → `ok` (503 means the blocklist
+   download failed).
+2. **DNS behaviour** — `dig @127.0.0.1 -p 5353 doubleclick.net +short`
+   → `0.0.0.0`; `dig @127.0.0.1 -p 5353 example.com +short` → a real
+   IP; repeat the second query → same answer, near-instant (cache
+   hit). Terminal 1 shows a `BLOCK` / `ALLOW` line per query — if a
+   query produces no line, it never reached the process.
+3. **Dashboard** — open `http://localhost:8080`; the stat cards and
+   recent-queries table should reflect step 2 within one poll (~5 s).
+4. **Whitelist round-trip** — query a blocked domain, `POST
+   /api/whitelist` with `{"domain":"…"}`, query again (now resolves),
+   `DELETE /api/whitelist?domain=…`, query again (blocked again).
+   Do one add via the dashboard's actions panel to cover the UI path.
+5. **Reload single-flight** — two immediate
+   `curl -X POST localhost:8080/api/reload` calls: the first returns
+   `"reload triggered"`, the second `"reload already in progress"`.
+6. **Stats vs. metrics** — `curl localhost:8080/api/stats` and
+   `curl localhost:8080/metrics`; blocked/total/cache numbers must
+   agree with what you just did.
+7. **Persistence + shutdown** — Ctrl+C: expect the final stats print
+   and a clean exit. Restart: `/api/queries?limit=10` still shows the
+   pre-restart rows, and startup is faster (blocklists load from the
+   disk cache).
+
 ## Project structure
 
 ```

@@ -34,6 +34,10 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   marshal the entire history table into a single JSON response (T3).
 
 ### Added
+- `CONTRIBUTING.md` documents a seven-step manual smoke-test workflow
+  (probes → DNS behaviour → dashboard → whitelist round-trip → reload
+  → stats/metrics cross-check → persistence + shutdown) for release
+  verification.
 - `runTicker` now honors a context for clean shutdown — background
   tickers (stats print, blocklist refresh) exit when `doStop` cancels
   the application-wide context instead of being implicitly reclaimed

@@ -17,7 +17,7 @@ s-hole is intentionally small: a single binary, a single YAML config file, no ru
 - [Security Notes](#security-notes)
 - [License](#license)
 
-For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/CL.md` (change-list index → `docs/cls/`), `docs/BUGS.md` (Buganizer-style bug tracker), `docs/CHANGELOG.md` (release notes), and `CONTRIBUTING.md`.
+For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/CL.md` (change-list index → `docs/cls/`), `docs/BUGS.md` (Buganizer-style bug tracker), `docs/CHANGELOG.md` (release notes), `docs/ROADMAP.md` (planned work and non-goals), and `CONTRIBUTING.md`.
 
 ---
 
@@ -477,7 +477,7 @@ A full end-to-end integration test (`internal/dnsserver/integration_test.go`) wi
 ├── cmd/s-hole/        application entry point (main package)
 ├── internal/          implementation packages (not importable externally)
 ├── deploy/            systemd unit + Linux install script
-├── docs/              DESIGN, CHANGELOG, BUGS, and CL.md (index)
+├── docs/              DESIGN, CHANGELOG, BUGS, ROADMAP, and CL.md (index)
 │   └── cls/           one file per CL (CL-01.md … CL-NN.md)
 ├── .github/           CI workflows, dependabot, CODEOWNERS, PR & issue templates
 ├── .golangci.yml      lint config

@@ -51,6 +51,10 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   marshal the entire history table into a single JSON response (T3).
 
 ### Added
+- `docs/ROADMAP.md` collects planned work (release workflow, subdomain
+  blocking, DoH upstreams, hardening batch), pending decisions, and —
+  equally deliberately — the non-goals, so future reviews don't
+  re-propose them.
 - `CONTRIBUTING.md` documents a seven-step manual smoke-test workflow
   (probes → DNS behaviour → dashboard → whitelist round-trip → reload
   → stats/metrics cross-check → persistence + shutdown) for release

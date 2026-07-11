@@ -2,7 +2,7 @@
 
 **Authors:** Laszlo (@lcsabi)  
 **Created:** 2026-06-23  
-**Last Updated:** 2026-06-24  
+**Last Updated:** 2026-07-11  
 **Status:** Implementation Complete
 
 ---
@@ -31,9 +31,9 @@ s-hole ("sinkhole") is a minimal DNS sinkhole written in Go. It is designed to b
 
 ## Non-Goals
 
-- **DNS-over-HTTPS (DoH) or DNS-over-TLS (DoT) termination.** Upstream forwarding uses plain DNS. DoH support is a separate, opt-in feature with distinct certificate management concerns.
+- **DNS-over-HTTPS (DoH) or DNS-over-TLS (DoT) termination.** Upstream forwarding uses plain DNS. DoH upstream support is planned as follow-up work (`docs/ROADMAP.md` #5) but is not part of the current implementation.
 - **Running on the router.** We assume the router is a commodity device that does not support arbitrary software. Network-wide coverage is achieved by pointing the router's DHCP DNS field at the host running s-hole.
-- **Wildcard subdomain blocking.** Blocklists are exact-domain sets. Wildcard support requires a different data structure and is left for a follow-up.
+- **Wildcard subdomain blocking.** Blocklists are exact-domain sets in the current implementation. Suffix-match blocking is planned as follow-up work (`docs/ROADMAP.md` #3).
 - **DNSSEC validation.** DNSSEC records are passed through transparently; we do not validate or strip them.
 - **Per-client policy.** All clients share the same blocklist and whitelist.
 - **Admin UI authentication.** The UI is intended for LAN use and has no login. Operators requiring access control should use a firewall rule or reverse proxy.
@@ -200,7 +200,7 @@ CREATE TABLE queries (
 
 ### Statistics (`internal/stats/`)
 
-`Counter` maintains atomic int64 counters for total queries, blocked queries, and cache hits. Per-domain block counts and per-client query counts are tracked in mutex-protected maps. Top-N extraction sorts a snapshot of those maps; the sort runs on a copy taken outside the lock to minimise contention.
+`Counter` maintains atomic counters for total queries and cache hits. The blocked count is deliberately *not* atomic: `RecordQuery` already takes the mutex to update the top-domain tally, so `blocked` is guarded by that same mutex — promoting it to an atomic would be redundant and misleading. Per-domain block counts and per-client query counts are tracked in the mutex-protected maps. Top-N extraction copies the map entries under the lock (resolving the map pointer *inside* the lock, since the prune reassigns it — R31) and sorts the copy outside it to minimise contention.
 
 `Snapshot(topN int)` returns a `Summary` struct with json tags, making it directly serialisable by the REST API without coupling the stats package to any HTTP library. Fields include uptime, totals, block percentage, cache hit count and percentage, and top-N entry lists.
 
@@ -210,7 +210,7 @@ The per-domain and per-client tally maps are capped at 4 096 entries each. When 
 
 ### Admin Interface (`internal/api/`)
 
-An HTTP server (default `:8080`) serves two things:
+An HTTP server (default `127.0.0.1:8080` — localhost only) serves two things:
 
 1. **REST API** — JSON endpoints backed by `stats.Snapshot`, `querylog.DBLogger.Recent`, and `blocklist.Store` methods.
 2. **Web UI** — a single-page dashboard embedded in the binary via `//go:embed`. It polls `/api/stats` and `/api/queries` every 3 seconds and renders stat cards, top domain/client tables, a recent query log, and an actions panel (blocklist reload, whitelist add).
@@ -251,7 +251,7 @@ Periodic `runTicker` goroutines (stats print, blocklist refresh) are wrapped in 
 
 ### Startup Network Hint
 
-On startup, `cmd/s-hole/main.go` calls `printNetworkHint`, which enumerates local interface addresses via `net.InterfaceAddrs()`, filters out loopback and link-local addresses, and prints a bordered box listing the DNS server address and Admin UI URL for each LAN-facing IPv4 address. This removes the need for the operator to manually discover the machine's IP when configuring the router's DHCP DNS field. The same information is printed by `deploy/install-linux.sh` at the end of installation using `hostname -I`.
+On startup, `cmd/s-hole/main.go` calls `printNetworkHint`, which enumerates local interface addresses via `net.InterfaceAddrs()`, filters out loopback and link-local addresses, and prints a bordered box listing the DNS server address for each LAN-facing IPv4 address. The Admin UI line honors where the API is actually bound (T4): with the localhost-only default it prints a single `http://127.0.0.1:<port> (this machine only)` line rather than advertising LAN URLs that would refuse connections. This removes the need for the operator to manually discover the machine's IP when configuring the router's DHCP DNS field. `deploy/install-linux.sh` prints the same banner at the end of installation using `hostname -I`, with the same `api_listen`-aware Admin UI logic.
 
 ### Configuration (`internal/config/`)
 
@@ -333,8 +333,8 @@ The query log records client IP addresses and all queried domain names. On a hom
 - **Fuzz tests:** `internal/blocklist/fuzz_test.go` fuzzes `ValidDomain`, `parseHostsFormat`, and `cacheFilename`. The parser fuzz asserts every emitted domain itself passes `ValidDomain`; the filename fuzz asserts the result is platform-safe (no `/`, `\`, or `:`). Run with `go test -fuzz=FuzzValidDomain -fuzztime=30s ./internal/blocklist/`.
 - **Integration test:** `internal/dnsserver/integration_test.go` wires the full stack — `blocklist.Store` + `cache.Cache` + `querylog.DBLogger` on a real SQLite file + `dnsserver.Handler` + `dnsserver.Server` on a free UDP port + a mock upstream — and exercises three real DNS queries (blocked, forwarded-and-cached, cache-hit). Catches wiring bugs (constructor arg order, nil dependencies, fan-out misconfig) that unit tests miss.
 - **Benchmark:** `BenchmarkStore_IsBlocked` against a 100 000-entry store guards the hot DNS path against accidental O(n) regressions.
-- **CI:** `.github/workflows/ci.yml` runs `go vet`, `go test -race`, single-iteration benchmarks, and a cross-compile matrix (linux/amd64, linux/arm64, linux/armv7, windows/amd64) on every push and PR.
-- **Manual smoke test:** Configure a single device's DNS to the running instance; browse to an ad-heavy site; verify blocked domains return `0.0.0.0` in `nslookup` and ads do not render. Check admin UI reflects live query counts. On Linux, verify `kill -HUP $(pidof s-hole)` triggers a refresh.
+- **CI:** `.github/workflows/ci.yml` runs a `golangci-lint` (v2) job, then `go mod verify`, `go build`, `go vet`, `go test -race`, single-iteration benchmarks, and a cross-compile matrix (linux/amd64, linux/arm64, linux/armv7, windows/amd64) on every push and PR. Branch protection on `master` requires all checks to pass and PR branches to be up to date before merging.
+- **Manual smoke test:** `CONTRIBUTING.md` documents the full 7-step pre-release pass (probes → DNS behaviour → dashboard → whitelist round-trip → reload single-flight → stats/metrics cross-check → persistence + shutdown). The network-level variant: configure a single device's DNS to the running instance, browse an ad-heavy site, verify blocked domains resolve to `0.0.0.0` and ads do not render, and on Linux verify `kill -HUP $(pidof s-hole)` triggers a refresh.
 
 ---
 
@@ -342,10 +342,10 @@ The query log records client IP addresses and all queried domain names. On a hom
 
 | # | Question | Owner | Status |
 |---|----------|-------|--------|
-| 1 | Should we support DNS-over-HTTPS upstream forwarding? Some ISPs intercept plain DNS on port 53. | — | Open |
-| 2 | Is there a use case for per-client whitelists (e.g., unblocking streaming services for one device)? | — | Open |
+| 1 | Should we support DNS-over-HTTPS upstream forwarding? Some ISPs intercept plain DNS on port 53. | — | **Resolved** — yes, planned (`docs/ROADMAP.md` #5) |
+| 2 | Is there a use case for per-client whitelists (e.g., unblocking streaming services for one device)? | — | **Resolved** — settled as a non-goal (`docs/ROADMAP.md`) |
 | 3 | Should the SQLite DB have a max-size or TTL-based retention policy to prevent unbounded growth? | — | **Resolved** — TTL-based prune via `query_db_retention_days` (CL 12, R16) |
 | 4 | Should the binary register itself as a Windows Service via `golang.org/x/sys/windows/svc`? | — | **Resolved** — implemented in Phase 6 |
-| 5 | Should the DNS cache use LRU eviction instead of drop-on-full? | — | Open — see Alternatives Considered |
-| 6 | Should the admin UI require authentication (e.g., a configurable API key)? | — | Open — partially mitigated by the localhost-by-default `api_listen` (CL 12, R18) |
+| 5 | Should the DNS cache use LRU eviction instead of drop-on-full? | — | **Resolved** — drop-on-full stays; settled as a non-goal (`docs/ROADMAP.md`; see Alternatives Considered) |
+| 6 | Should the admin UI require authentication (e.g., a configurable API key)? | — | **Resolved** — no; LAN-trust is a documented scope decision, localhost-by-default `api_listen` is the mitigation (`docs/ROADMAP.md`, CL 12, R18) |
 | 7 | Should we support DoH/DoT for blocklist downloads as well as upstream forwarding? Operator-controlled URLs over HTTPS already cover most threat models. | — | Open |

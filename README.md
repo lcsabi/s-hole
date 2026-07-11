@@ -81,6 +81,11 @@ nslookup google.com <s-hole-ip>
 # expected: a real IP address
 ```
 
+These commands address s-hole explicitly, so they work even before the
+router change above. Network-wide blocking — devices being filtered
+without naming the server — only begins once DHCP hands out s-hole's
+address and clients renew their leases.
+
 ---
 
 ## Configuration
@@ -172,6 +177,19 @@ Runtime whitelist changes take effect immediately but do not persist across rest
 ---
 
 ## Deployment
+
+The Quick Start runs s-hole as a foreground process — it lives exactly
+as long as your terminal session and dies with a reboot, a crash, or a
+logout. That's fine for evaluation, but once your router points the LAN
+at s-hole, every device's internet depends on it. Deployment registers
+the binary as a **service**: the operating system (systemd, the Windows
+SCM, or Docker's restart policy) starts it at boot, restarts it if it
+crashes, and runs it detached from any user session.
+
+If you want the admin dashboard reachable from other devices, set
+`api_listen: "0.0.0.0:8080"` in `config.yaml` **before** installing —
+the default binds localhost only, and the UI is unauthenticated, so
+LAN exposure is a deliberate opt-in.
 
 ### Raspberry Pi / Linux (systemd)
 

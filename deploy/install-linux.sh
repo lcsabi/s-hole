@@ -73,6 +73,19 @@ systemctl enable s-hole
 systemctl start s-hole
 systemctl status s-hole --no-pager
 
+# The Admin UI line must honor where the API is actually bound: with the
+# localhost-only default, printing http://<lan-ip>:8080 would advertise a
+# URL that refuses connections from every other device (same fix as the
+# in-binary banner, T4). Only show LAN URLs when api_listen is set to a
+# non-loopback address.
+api_listen=$(grep -E '^[[:space:]]*api_listen:' "$CONFIG_DIR/config.yaml" | tail -1 || true)
+api_port=$(echo "$api_listen" | grep -oE ':[0-9]+' | tr -d ':' || true)
+api_port=${api_port:-8080}
+api_on_lan=false
+if echo "$api_listen" | grep -qE '0\.0\.0\.0'; then
+  api_on_lan=true
+fi
+
 echo ""
 echo "┌─ Router setup ──────────────────────────────────────────"
 # hostname -I returns space-separated IPs; print one line per address.
@@ -80,7 +93,13 @@ for ip in $(hostname -I); do
   # Skip IPv6 addresses (contain colons).
   [[ "$ip" == *:* ]] && continue
   echo "│  DNS server → ${ip}:53"
-  echo "│  Admin UI   → http://${ip}:8080"
+  if $api_on_lan; then
+    echo "│  Admin UI   → http://${ip}:${api_port}"
+  fi
 done
+if ! $api_on_lan; then
+  echo "│  Admin UI   → http://127.0.0.1:${api_port} (this machine only —"
+  echo "│               set api_listen: \"0.0.0.0:${api_port}\" for LAN access)"
+fi
 echo "└─────────────────────────────────────────────────────────"
 echo "Point your router's DHCP DNS field at the address above."

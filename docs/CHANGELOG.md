@@ -9,6 +9,11 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
 ## [Unreleased]
 
 ### Fixed
+- `deploy/install-linux.sh` no longer advertises `http://<lan-ip>:8080`
+  for the admin UI when `api_listen` is left at the localhost-only
+  default — the shell-script counterpart of the T4 banner fix. It now
+  reads `api_listen` from the installed config and prints either the
+  LAN URLs or a localhost note with the opt-in instruction.
 - README's Docker port-conflict note no longer recommends disabling
   `systemd-resolved` entirely (which kills host DNS resolution on
   distros where `resolv.conf` points at the stub); it now shows the

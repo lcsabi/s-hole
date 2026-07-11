@@ -53,6 +53,9 @@ func NewFileLogger(path, logQueries string) *FileLogger {
 
 // Log writes a single line to the underlying file. Respects the
 // logQueries filter; a no-op for queries that should not be logged.
+// Write errors are deliberately ignored: query logging is best-effort
+// and must never fail or slow the DNS path (the same contract as
+// DBLogger's drop-on-full channel).
 func (l *FileLogger) Log(clientIP, domain string, blocked bool) {
 	if l.logQueries == "none" {
 		return

@@ -9,6 +9,13 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
 ## [Unreleased]
 
 ### Fixed
+- The CI lint job passes again: golangci-lint v2 removed the v1-era
+  default errcheck exclusions, flagging 40+ idiomatic best-effort
+  calls on the first real run. Restored a documented exclusion subset
+  in `.golangci.yml`, made `Server.Shutdown` log listener errors
+  instead of discarding them, and fixed `make tools-install` to
+  install golangci-lint v2 (the old path installed v1, which cannot
+  parse the config).
 - `deploy/install-linux.sh` no longer advertises `http://<lan-ip>:8080`
   for the admin UI when `api_listen` is left at the localhost-only
   default — the shell-script counterpart of the T4 banner fix. It now

@@ -84,11 +84,11 @@ func NewDBLogger(path, logQueries string, flushInterval time.Duration, retention
 		return nil, fmt.Errorf("open db: %w", err)
 	}
 	if _, err := db.Exec(pragmas); err != nil {
-		db.Close()
+		_ = db.Close() // best-effort: the Exec error is the one worth reporting
 		return nil, fmt.Errorf("pragmas: %w", err)
 	}
 	if _, err := db.Exec(schema); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}
 
@@ -228,7 +228,7 @@ func (d *DBLogger) flush(batch []entry) {
 	stmt, err := tx.Prepare("INSERT INTO queries(ts,client_ip,domain,blocked) VALUES(?,?,?,?)")
 	if err != nil {
 		logger.Error("db prepare failed, dropping batch", "entries", len(batch), "err", err)
-		tx.Rollback()
+		_ = tx.Rollback() // the Prepare error above is the actionable one
 		return
 	}
 	defer stmt.Close()

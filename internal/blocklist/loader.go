@@ -94,16 +94,19 @@ func fetchList(url, cacheDir string) ([]string, error) {
 	tee := io.TeeReader(io.LimitReader(resp.Body, maxBodyBytes), f)
 	domains, parseErr := parseHostsFormat(tee)
 	closeErr := f.Close()
+	// The .tmp removals below are best-effort cleanup on paths that
+	// already return an error; a leftover .tmp is harmless (ignored by
+	// loads, overwritten by the next download).
 	if parseErr != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return nil, parseErr
 	}
 	if closeErr != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return nil, closeErr
 	}
 	if err := os.Rename(tmpPath, cachePath); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return nil, err
 	}
 	return domains, nil

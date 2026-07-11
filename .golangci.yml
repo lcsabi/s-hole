@@ -16,6 +16,22 @@ linters:
     - revive
 
   settings:
+    errcheck:
+      # golangci-lint v2 dropped the v1 default exclusions; restore the
+      # idiomatic subset we rely on. Everything here is a deliberate
+      # best-effort call: fmt.Fprint* targets http.ResponseWriters (a
+      # failed write means the client hung up) or the best-effort query
+      # log; the Close variants are deferred cleanup on read paths where
+      # no data can be lost. Writes that CAN lose data (DBLogger.Close,
+      # FileLogger.Close, cache-file renames) check their errors in code.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*os.File).Close
+        - (io.ReadCloser).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Stmt).Close
     revive:
       rules:
         # Allow short names in handler receivers and small loops.

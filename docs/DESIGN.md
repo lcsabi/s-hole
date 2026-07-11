@@ -50,35 +50,35 @@ Client devices (DNS server learned via DHCP from router)
         │ UDP/TCP :53
         ▼
 ┌────────────────────────────────────────────────────────────────────┐
-│                          s-hole process                             │
+│                           s-hole process                           │
 │                                                                    │
 │  ┌──────────┐  blocked?   ┌──────────────────────────────────────┐ │
 │  │ Handler  │────────────▶│ Sinkhole reply (zero / NXDOMAIN)     │ │
-│  │          │             │ EDNS0 OPT mirrored from request       │ │
+│  │          │             │ EDNS0 OPT mirrored from request      │ │
 │  │          │  cache hit? └──────────────────────────────────────┘ │
-│  │          │────────────▶ DNS Response Cache  (atomic hits/misses)│
+│  │          │────────────▶ DNS Response Cache (atomic hits/misses) │
 │  │          │  cache miss → upstream forward (health-tracked)      │
 │  └────┬─────┘                                                      │
 │       │ every query                                                │
-│  ┌────▼──────┐  ┌──────────────┐  ┌──────────────────────────┐    │
-│  │ Blocklist │  │    Stats     │  │   Query Logger            │   │
-│  │   Store   │  │   Counter    │  │  (file + SQLite WAL)      │   │
-│  │ (atomic   │  │ (top-N maps  │  │  context-aware reads;     │   │
-│  │  Replace) │  │  bounded)    │  │  optional retention prune)│   │
-│  └───────────┘  └──────────────┘  └──────────────────────────┘    │
+│  ┌────▼──────┐  ┌──────────────┐  ┌───────────────────────────┐    │
+│  │ Blocklist │  │    Stats     │  │ Query Logger              │    │
+│  │   Store   │  │   Counter    │  │ (file + SQLite WAL)       │    │
+│  │ (atomic   │  │ (top-N maps  │  │ context-aware reads;      │    │
+│  │  Replace) │  │  bounded)    │  │ optional retention prune) │    │
+│  └───────────┘  └──────────────┘  └───────────────────────────┘    │
 │                                                                    │
-│  ┌──────────────────────────────────────────────────────────┐     │
-│  │       Admin HTTP Server (default 127.0.0.1:8080)          │     │
-│  │   REST API  +  embedded web UI                            │     │
-│  │   /healthz  +  /readyz  +  /metrics                       │     │
-│  │   /debug/pprof/* (opt-in via enable_pprof)                │     │
-│  └──────────────────────────────────────────────────────────┘     │
+│  ┌──────────────────────────────────────────────────────────┐      │
+│  │   Admin HTTP Server (default 127.0.0.1:8080)             │      │
+│  │   REST API  +  embedded web UI                           │      │
+│  │   /healthz  +  /readyz  +  /metrics                      │      │
+│  │   /debug/pprof/*  (opt-in via enable_pprof)              │      │
+│  └──────────────────────────────────────────────────────────┘      │
 │                                                                    │
-│  ┌─────────────────────┐  ┌──────────────────────────────────┐    │
-│  │  Periodic refresh   │  │  Periodic stats print            │    │
-│  │  ticker  ── shares ─┼──┤  ticker (panic-recovered)        │    │
-│  │  single-flight gate │  └──────────────────────────────────┘    │
-│  └─────────────────────┘                                          │
+│  ┌─────────────────────┐  ┌──────────────────────────────────┐     │
+│  │  Periodic refresh   │  │  Periodic stats print            │     │
+│  │  ticker  ── shares ─┼──┤  ticker (panic-recovered)        │     │
+│  │  single-flight gate │  └──────────────────────────────────┘     │
+│  └─────────────────────┘                                           │
 │                                                                    │
 │  Structured logging via log/slog. JSON format opt-in.              │
 └────────────────────────────────────────────────────────────────────┘

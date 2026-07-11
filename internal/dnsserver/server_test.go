@@ -22,6 +22,16 @@ func TestNewServer_FieldsSet(t *testing.T) {
 	}
 }
 
+// TestServer_ShutdownBeforeStartIsSafe pins the never-started path:
+// Shutdown must not panic when the listeners were never bound. miekg/dns
+// returns "server not started" errors there, which Shutdown logs and
+// swallows (CL 24) — this also covers those error-logging branches.
+func TestServer_ShutdownBeforeStartIsSafe(t *testing.T) {
+	h := dns.HandlerFunc(func(w dns.ResponseWriter, _ *dns.Msg) {})
+	s := NewServer("127.0.0.1:5301", h)
+	s.Shutdown() // reaching the next line without panicking is the assertion
+}
+
 // TestServer_StartShutdownLifecycle exercises the real Start/Shutdown
 // code path: binds UDP and TCP on a free port, sends a real query to
 // confirm the handler is wired, then triggers Shutdown and verifies the

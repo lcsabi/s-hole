@@ -49,6 +49,9 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   it prints `http://127.0.0.1:8080 (this machine only)` instead (T4).
 
 ### Changed
+- Dependency refresh via Dependabot: `alpine` 3.24 base image,
+  `golang.org/x/sys` v0.47.0, and CI action majors (checkout v7,
+  cache v6, setup-go v6, golangci-lint-action v9).
 - The default `listen` is now `":53"` (dual-stack wildcard, IPv4 +
   IPv6) instead of the IPv4-only `"0.0.0.0:53"`, so clients querying
   over IPv6 on dual-stack LANs are served instead of silently ignored.

@@ -173,7 +173,7 @@ strictly, but the per-package targets are:
 
 The `cmd/s-hole` package sits around 32 % because the rest is the
 `main()` bootstrap and SCM glue that aren't unit-testable. Module-wide
-coverage tracks around 72 %.
+coverage tracks around 77 %.
 
 Run `go test -cover ./...` locally to see the current state before
 sending a PR; if your change drops a number, please either add the

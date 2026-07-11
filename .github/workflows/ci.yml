@@ -15,7 +15,11 @@ jobs:
         with:
           go-version: "1.25"
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        # v8 of the action installs golangci-lint v2 (required by the
+        # version:"2" config schema and a Go-1.25 module target). v6
+        # installs v1.64.x, which is built with an older Go and refuses
+        # to load the config at all — see CL 24 addendum.
+        uses: golangci/golangci-lint-action@v9
         with:
           version: latest
 

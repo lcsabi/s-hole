@@ -546,9 +546,10 @@ func TestReload_ConcurrentCallsCollapse(t *testing.T) {
 			}
 			defer resp.Body.Close()
 			out := decode[map[string]string](t, resp.Body)
-			if out["status"] == "reload triggered" {
+			switch out["status"] {
+			case "reload triggered":
 				triggered.Add(1)
-			} else if out["status"] == "reload already in progress" {
+			case "reload already in progress":
 				inProgress.Add(1)
 			}
 		}()

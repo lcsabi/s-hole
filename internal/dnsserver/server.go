@@ -52,7 +52,14 @@ func (s *Server) Start() error {
 
 // Shutdown stops both listeners. After Shutdown returns, any goroutine
 // blocked in Start will observe both servers as cleanly stopped.
+// Errors are logged rather than returned: by the time Shutdown runs the
+// process is exiting, and "server not started" (the main failure mode)
+// is not actionable — but it should not vanish silently either.
 func (s *Server) Shutdown() {
-	s.udp.Shutdown()
-	s.tcp.Shutdown()
+	if err := s.udp.Shutdown(); err != nil {
+		logger.Warn("udp listener shutdown", "err", err)
+	}
+	if err := s.tcp.Shutdown(); err != nil {
+		logger.Warn("tcp listener shutdown", "err", err)
+	}
 }

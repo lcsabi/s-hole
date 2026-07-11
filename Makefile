@@ -66,7 +66,9 @@ lint:
 
 ## tools-install: install developer tools (golangci-lint) into $GOBIN
 tools-install:
-	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+	# v2 module path — the un-versioned path installs golangci-lint v1,
+	# which cannot parse the version:"2" schema in .golangci.yml.
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 	@echo "tools installed; ensure \$$(go env GOBIN) (or \$$GOPATH/bin) is on \$$PATH"
 
 ## check: fmt + vet + lint + test — what CI does

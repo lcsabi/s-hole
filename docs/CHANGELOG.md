@@ -9,6 +9,15 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
 ## [Unreleased]
 
 ### Fixed
+- The CI lint job passes again — two stacked problems: the
+  `golangci-lint-action@v6` pin installs golangci-lint v1, which
+  cannot even load a `version: "2"` config targeting Go 1.25 (bumped
+  to `@v8`, which installs v2); and once v2 actually runs, it lacks
+  the v1-era default errcheck exclusions, flagging 40+ idiomatic
+  best-effort calls. Restored a documented exclusion subset in
+  `.golangci.yml`, made `Server.Shutdown` log listener errors instead
+  of discarding them, and fixed `make tools-install` to install
+  golangci-lint v2.
 - `deploy/install-linux.sh` no longer advertises `http://<lan-ip>:8080`
   for the admin UI when `api_listen` is left at the localhost-only
   default — the shell-script counterpart of the T4 banner fix. It now

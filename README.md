@@ -73,6 +73,8 @@ Keep a fallback upstream DNS as the secondary DNS entry (e.g. `1.1.1.1`) in case
 
 ### Verify it works
 
+With `nslookup` (preinstalled on Windows and macOS):
+
 ```
 nslookup doubleclick.net <s-hole-ip>
 # expected: Address: 0.0.0.0
@@ -81,10 +83,23 @@ nslookup google.com <s-hole-ip>
 # expected: a real IP address
 ```
 
+Or with `dig` (`apt install dnsutils` / `dnf install bind-utils`):
+
+```
+dig @<s-hole-ip> doubleclick.net +short   # expected: 0.0.0.0
+dig @<s-hole-ip> google.com +short        # expected: a real IP address
+```
+
 These commands address s-hole explicitly, so they work even before the
 router change above. Network-wide blocking — devices being filtered
 without naming the server — only begins once DHCP hands out s-hole's
 address and clients renew their leases.
+
+If a query times out, check s-hole's log (stdout, or
+`journalctl -u s-hole -f` under systemd): every query that reaches the
+process produces one `ALLOW`/`BLOCK` line. A missing line means the
+query never arrived — look at the network path (firewall, wrong IP,
+client tool) rather than at s-hole.
 
 ---
 

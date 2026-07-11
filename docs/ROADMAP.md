@@ -6,19 +6,22 @@ and working sessions; each should land as a CL when picked up. This
 file records *intent and rationale* — the durable record of what
 actually changed stays in `CL.md` / `CHANGELOG.md`.
 
-Sizes: **S** = an afternoon, **M** = a day or two, **L** = a week-class
-feature with design decisions.
+Impact gauges the value delivered, not the effort required — effort
+estimates are deliberately omitted. **High** = user-visible filtering,
+distribution, or validation wins; **Medium** = robustness,
+observability, or niche-deployment wins; **Low** = hygiene and guard
+rails.
 
-| # | Item | Size | Status |
+| # | Item | Impact | Status |
 |--:|---|---|---|
-| 1 | Deploy to real hardware (Raspberry Pi) | S | not started |
-| 2 | Tag `v0.1.0` + release workflow | M | not started |
-| 3 | Wildcard / subdomain blocking | M | not started |
-| 4 | Wire up or delete `DBLogger.TopBlocked` | S | not started |
-| 5 | DNS-over-HTTPS upstream support | L | not started |
-| 6 | Hardening batch: goleak, govulncheck, embedded fallback blocklist | M | not started |
-| 7 | Windows service logging (slog is lost under the SCM) | M | not started |
-| 8 | Benchmark companions for the hot path | S | blocked on #3 |
+| 1 | Deploy to real hardware (Raspberry Pi) | High | not started |
+| 2 | Tag `v0.1.0` + release workflow | High | not started |
+| 3 | Wildcard / subdomain blocking | High | not started |
+| 4 | Wire up or delete `DBLogger.TopBlocked` | Medium | not started |
+| 5 | DNS-over-HTTPS upstream support | Medium | not started |
+| 6 | Hardening batch: goleak, govulncheck, embedded fallback blocklist | Medium | not started |
+| 7 | Windows service logging (slog is lost under the SCM) | Low | not started |
+| 8 | Benchmark companions for the hot path | Low | blocked on #3 |
 
 ## 1. Deploy to real hardware
 
@@ -70,9 +73,11 @@ port-53 traffic. Needs **zero new dependencies**: DoH is POSTing the
 wire-format query (miekg/dns already packs it) over `net/http`. Slots
 into the `exchange()` helper as a third transport; the upstream
 cooldown tracker works unchanged because upstreams are just strings
-(`https://…` alongside `1.1.1.1:53`). The L-size is in the details:
-timeout semantics, connection reuse, bootstrap resolution of the DoH
-hostname itself.
+(`https://…` alongside `1.1.1.1:53`). The complexity hides in the
+details: timeout semantics, connection reuse, bootstrap resolution of
+the DoH hostname itself. Impact is Medium rather than High because
+plain-DNS interception is an ISP-specific problem — many home LANs
+never hit it.
 
 ## 6. Hardening batch (one CL)
 
@@ -91,7 +96,9 @@ stream vanishes under the SCM — startup errors and refresh failures
 are simply lost. The query log survives only if `log_file` is set.
 Route slog to a file (or the Windows Event Log) when
 `service.IsWindowsService()` is true. Linux/systemd is unaffected
-(journald captures stdout).
+(journald captures stdout). Rated Low while the primary deployment
+target is a Linux/Pi box; promote it if the Windows service becomes a
+first-class use case.
 
 ## 8. Benchmark companions
 

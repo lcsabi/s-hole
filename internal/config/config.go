@@ -1,10 +1,12 @@
-// Package config loads s-hole's YAML configuration, applies safe defaults
-// for every field (an empty config file is valid), validates enumerated
-// values, and finally applies environment-variable overrides (S_HOLE_*)
-// so container deployments can tune the binary without rebuilding a
-// bind-mounted config. Duration fields are stored as strings and parsed
-// lazily via ParsedXxx helpers so a malformed duration produces a
-// precise startup error.
+// Package config loads s-hole's YAML configuration and applies safe
+// defaults for every field (an empty config file is valid): two
+// zero-is-meaningful fields are seeded before the decode (see Load),
+// the rest are filled in by applyDefaults afterwards, and finally
+// environment-variable overrides (S_HOLE_*) are applied so container
+// deployments can tune the binary without rebuilding a bind-mounted
+// config. Duration fields are stored as strings and parsed lazily via
+// ParsedXxx helpers so a malformed duration produces a precise startup
+// error.
 //
 // Precedence (highest wins): S_HOLE_* env vars > YAML file > built-in
 // defaults. Validate runs explicitly after Load and reports unrecognised

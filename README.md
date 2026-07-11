@@ -63,7 +63,7 @@ sudo ./s-hole -config config.yaml          # Linux / macOS
 .\s-hole.exe -config config.yaml           # Windows (Administrator)
 ```
 
-On first run, blocklists are downloaded (~150 000 domains by default) and cached to disk. Subsequent starts skip the download if the cache is less than 24 hours old.
+On first run, blocklists are downloaded (~80 000 domains with the default lists; the exact count shifts as the upstream lists evolve) and cached to disk. Subsequent starts skip the download if the cache is less than 24 hours old.
 
 ### Point your router at it
 

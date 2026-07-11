@@ -27,7 +27,7 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
 - **Community blocklists** — downloads and auto-refreshes hosts-file or plain-domain lists from any URL
 - **DNS response cache** — serves repeat queries from memory; typical cache hit rates of 40–70% reduce upstream load and latency
 - **Dual query log** — plain-text file for `grep`/`tail` and a SQLite database for historical queries
-- **Admin web UI** — live stats, top blocked domains, recent query log, whitelist management; auto-refreshes every 5 seconds
+- **Admin web UI** — live stats, top blocked domains, recent query log, whitelist management; auto-refreshes every 3 seconds
 - **REST API** — all UI data available as JSON; suitable for scripting and future integrations
 - **Configurable sinkhole mode** — return `0.0.0.0` (default, silent failure) or `NXDOMAIN`
 - **Cross-platform** — single binary for Windows, Linux x86-64, Linux arm64 (Pi 4/5), Linux armv7 (Pi 2/3)

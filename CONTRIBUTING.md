@@ -92,7 +92,7 @@ and the router-setup banner. Then, in a second terminal:
    hit). Terminal 1 shows a `BLOCK` / `ALLOW` line per query — if a
    query produces no line, it never reached the process.
 3. **Dashboard** — open `http://localhost:8080`; the stat cards and
-   recent-queries table should reflect step 2 within one poll (~5 s).
+   recent-queries table should reflect step 2 within one poll (~3 s).
 4. **Whitelist round-trip** — query a blocked domain, `POST
    /api/whitelist` with `{"domain":"…"}`, query again (now resolves),
    `DELETE /api/whitelist?domain=…`, query again (blocked again).

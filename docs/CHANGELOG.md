@@ -40,6 +40,8 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   it prints `http://127.0.0.1:8080 (this machine only)` instead (T4).
 
 ### Changed
+- The admin dashboard polls `/api/stats` and `/api/queries` every 3
+  seconds (was 5) for a snappier live view.
 - `/api/queries` clamps `?limit=` to 1000 so one request cannot
   marshal the entire history table into a single JSON response (T3).
 

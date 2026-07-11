@@ -209,7 +209,7 @@ The per-domain and per-client tally maps are capped at 4 096 entries each. When 
 An HTTP server (default `:8080`) serves two things:
 
 1. **REST API** — JSON endpoints backed by `stats.Snapshot`, `querylog.DBLogger.Recent`, and `blocklist.Store` methods.
-2. **Web UI** — a single-page dashboard embedded in the binary via `//go:embed`. It polls `/api/stats` and `/api/queries` every 5 seconds and renders stat cards, top domain/client tables, a recent query log, and an actions panel (blocklist reload, whitelist add).
+2. **Web UI** — a single-page dashboard embedded in the binary via `//go:embed`. It polls `/api/stats` and `/api/queries` every 3 seconds and renders stat cards, top domain/client tables, a recent query log, and an actions panel (blocklist reload, whitelist add).
 
 The web UI has no external dependencies (no CDN, no framework). It is pure HTML/CSS/JS and works without an internet connection.
 

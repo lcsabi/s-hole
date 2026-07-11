@@ -11,14 +11,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
       - name: golangci-lint
-        # v8 of the action installs golangci-lint v2 (required by the
-        # version:"2" config schema and a Go-1.25 module target). v6
-        # installs v1.64.x, which is built with an older Go and refuses
-        # to load the config at all — see CL 24 addendum.
+        # Action v8+ installs golangci-lint v2, required by the
+        # version:"2" config schema and a Go-1.25 module target. Action
+        # v6 installed v1.64.x, which is built with an older Go and
+        # refuses to load the config at all — see CL 24 addendum.
         uses: golangci/golangci-lint-action@v9
         with:
           version: latest
@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
       - name: Cache Go module + build cache
@@ -66,7 +66,7 @@ jobs:
           - { goos: windows, goarch: amd64 }
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
       - name: Resolve version metadata

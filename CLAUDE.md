@@ -27,6 +27,8 @@ go test -fuzz=FuzzValidDomain -fuzztime=30s ./internal/blocklist/   # fuzz targe
 
 Environment notes:
 - On a Windows host without gcc, `-race` fails; run it in WSL: `CGO_ENABLED=1 go test -race -count=1 ./...` (CI also runs it on Linux).
+- Measure **module-wide** coverage on Linux/WSL only: `go test -coverpkg=./... ./...`. A Windows Go install missing the `covdata` tool silently under-merges the profile — this once put a wrong number in three docs. Per-package `go test -cover` is fine anywhere.
+- Lint requires **golangci-lint v2** (`make tools-install` uses the `/v2` module path; v1 cannot parse the `version: "2"` config). If lint fails with a config-load error right after a Go toolchain bump, it's the lint-binary-built-with-older-Go coupling — see the CL 24 addendum. The deliberate errcheck exclusions live in `.golangci.yml` with their rationale.
 - Closed-port UDP tests make `./internal/dnsserver` take ~17 s on Windows vs ~2 s on Linux — expected, not a hang.
 - Run locally without root/port conflicts: `S_HOLE_LISTEN=:5353 go run ./cmd/s-hole -config config.yaml`, then `dig @127.0.0.1 -p 5353 doubleclick.net`. CONTRIBUTING.md has the full 7-step manual smoke test.
 
@@ -69,4 +71,5 @@ Admin server (`internal/api`): unauthenticated by design (LAN-trust is a documen
 - **ID conventions**: `b/NNN` = bug in `docs/BUGS.md`; `R/S/T NN` = staff-review findings (letter = review round), tracked in CL notes only. Reference IDs in regression-test comments.
 - **Commit style**: imperative subject, often prefixed (`docs:`, `test:`, or `s-hole:` for CLs), body explains why; CL commits end the subject with `(CL NN)`.
 - **Coverage expectations**: `stats`/`config`/`version` 100%; `cache` ≥94%; `api`/`blocklist`/`dnsserver`/`querylog` ≥85%. Run `go test -cover ./...` before PR; if a number drops, add the test or justify in the CL.
-- **Roadmap** (`docs/ROADMAP.md`): planned work rated by impact (never effort estimates), pending decisions, and settled non-goals — check it before proposing features; don't re-propose the non-goals list.
+- **Roadmap** (`docs/ROADMAP.md`): planned work rated by impact (never effort estimates), pending decisions, and settled non-goals — check it before proposing features; don't re-propose the non-goals list. When an item lands, flip its status row to `done (CL NN)`.
+- **Dependabot PRs that touch the same file can merge-race**: a later PR branched from an older master can silently revert an earlier merged bump (setup-go v6 was lost this way; restored in 0d360d9). After batch-merging, verify the final file state, not the PR list.

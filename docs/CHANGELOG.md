@@ -40,6 +40,11 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   it prints `http://127.0.0.1:8080 (this machine only)` instead (T4).
 
 ### Changed
+- The default `listen` is now `":53"` (dual-stack wildcard, IPv4 +
+  IPv6) instead of the IPv4-only `"0.0.0.0:53"`, so clients querying
+  over IPv6 on dual-stack LANs are served instead of silently ignored.
+  Set `listen: "0.0.0.0:53"` explicitly to restore IPv4-only binding.
+  The README also documents the RA/RDNSS bypass trap on IPv6 networks.
 - The admin dashboard polls `/api/stats` and `/api/queries` every 3
   seconds (was 5) for a snappier live view.
 - `/api/queries` clamps `?limit=` to 1000 so one request cannot

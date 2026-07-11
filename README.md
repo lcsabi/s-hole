@@ -71,6 +71,15 @@ In your router's DHCP settings, set the **DNS Server** field to the IP address o
 
 Keep a fallback upstream DNS as the secondary DNS entry (e.g. `1.1.1.1`) in case s-hole is unavailable.
 
+> **IPv6 networks:** on a dual-stack LAN, routers typically advertise a
+> DNS server over IPv6 as well (via RA/RDNSS or DHCPv6) — and many
+> clients *prefer* it. If that advertisement still points at the router
+> or your ISP, dual-stack devices will quietly bypass s-hole for most
+> queries and the ads come back. Either disable the router's IPv6 DNS
+> advertisement, or give the s-hole machine a stable IPv6 address and
+> advertise that instead (s-hole listens on IPv6 by default via
+> `listen: ":53"`).
+
 ### Verify it works
 
 With `nslookup` (preinstalled on Windows and macOS):
@@ -109,7 +118,7 @@ All configuration lives in `config.yaml`. Every field has a safe default; an emp
 
 | Field | Default | Description |
 |---|---|---|
-| `listen` | `0.0.0.0:53` | Address and port for DNS queries (UDP + TCP) |
+| `listen` | `:53` | Address and port for DNS queries (UDP + TCP). `:53` binds all interfaces, IPv4 + IPv6; use `0.0.0.0:53` for IPv4 only |
 | `upstreams` | `[1.1.1.1:53, 8.8.8.8:53]` | Upstream resolvers, tried in order |
 | `blocklists` | StevenBlack + AdAway | List of URLs to download (hosts-file or plain-domain format) |
 | `whitelist` | `[]` | Domains that are never blocked, regardless of blocklist membership |

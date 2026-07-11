@@ -20,8 +20,10 @@ func TestLoad_EmptyAppliesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load empty: %v", err)
 	}
-	if cfg.Listen != "0.0.0.0:53" {
-		t.Errorf("Listen default = %q, want 0.0.0.0:53", cfg.Listen)
+	// ":53" is the dual-stack wildcard — IPv4-only "0.0.0.0:53" would
+	// silently drop IPv6 clients on dual-stack LANs.
+	if cfg.Listen != ":53" {
+		t.Errorf("Listen default = %q, want :53 (dual-stack)", cfg.Listen)
 	}
 	if len(cfg.Upstreams) != 2 {
 		t.Errorf("Upstreams default = %v, want 2 entries", cfg.Upstreams)

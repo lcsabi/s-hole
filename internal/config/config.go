@@ -185,7 +185,10 @@ func (c *Config) applyEnvOverrides() {
 // in the file is honored.
 func (c *Config) applyDefaults() {
 	if c.Listen == "" {
-		c.Listen = "0.0.0.0:53"
+		// ":53" binds a dual-stack wildcard socket (IPv4 + IPv6) on every
+		// mainstream OS. The old "0.0.0.0:53" default was IPv4-only, which
+		// silently ignored clients that query over IPv6 on dual-stack LANs.
+		c.Listen = ":53"
 	}
 	if len(c.Upstreams) == 0 {
 		c.Upstreams = []string{"1.1.1.1:53", "8.8.8.8:53"}

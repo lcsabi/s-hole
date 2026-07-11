@@ -76,7 +76,7 @@ port 53 (`systemd-resolved` holds `127.0.0.53:53` on most distros).
 ```bash
 # Terminal 1 — build and run; this terminal is also the live query log.
 go build -o /tmp/s-hole ./cmd/s-hole
-S_HOLE_LISTEN=0.0.0.0:5353 S_HOLE_QUERY_DB=/tmp/q.db S_HOLE_CACHE_DIR=/tmp \
+S_HOLE_LISTEN=:5353 S_HOLE_QUERY_DB=/tmp/q.db S_HOLE_CACHE_DIR=/tmp \
   /tmp/s-hole -config config.yaml
 ```
 

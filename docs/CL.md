@@ -35,6 +35,7 @@ the per-file layout here mirrors that intent for an open-source repo.
 | [CL 20](cls/CL-20.md) | Act on fourth staff review (R31–R48) |
 | [CL 21](cls/CL-21.md) | Act on fifth staff review (S1–S11) + split CL log |
 | [CL 22](cls/CL-22.md) | Act on sixth staff review (T1–T8): cache_size 0, TCP retry on truncation |
+| [CL 23](cls/CL-23.md) | Dual-stack listener default (`:53`) + IPv6 network docs |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N — title`

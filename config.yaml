@@ -1,4 +1,7 @@
-listen: "0.0.0.0:53"
+# Address and port for DNS queries (UDP + TCP).
+# ":53" binds all interfaces, IPv4 and IPv6 (dual-stack).
+# Use "0.0.0.0:53" for IPv4 only, or a specific address to bind one interface.
+listen: ":53"
 
 upstreams:
   - "1.1.1.1:53"

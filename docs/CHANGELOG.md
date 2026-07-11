@@ -9,6 +9,11 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
 ## [Unreleased]
 
 ### Fixed
+- README's Docker port-conflict note no longer recommends disabling
+  `systemd-resolved` entirely (which kills host DNS resolution on
+  distros where `resolv.conf` points at the stub); it now shows the
+  `DNSStubListener=no` drop-in that releases port 53 while keeping the
+  host resolver working.
 - `cache_size: 0` in the YAML file now actually disables the DNS
   response cache, as documented. Previously the post-decode default
   silently turned 0 back into 2000; only the `S_HOLE_CACHE_SIZE=0` env

@@ -276,14 +276,19 @@ docker run -d `
   s-hole
 ```
 
-> **Note (Linux host):** port 53 is often already occupied by `systemd-resolved`.
-> If `docker run` fails with "address already in use", disable it first:
+> **Note (Linux host):** port 53 is often already occupied by
+> `systemd-resolved`'s stub listener. If `docker run` fails with
+> "address already in use", turn off just the stub — do **not** disable
+> the whole service (on distros where `/etc/resolv.conf` points at the
+> stub address, that kills the host's own DNS resolution):
 > ```bash
-> sudo systemctl disable --now systemd-resolved
-> sudo rm /etc/resolv.conf
-> echo "nameserver 1.1.1.1" | sudo tee /etc/resolv.conf
+> sudo mkdir -p /etc/systemd/resolved.conf.d
+> printf '[Resolve]\nDNSStubListener=no\n' | sudo tee /etc/systemd/resolved.conf.d/no-stub.conf
+> sudo systemctl restart systemd-resolved
 > ```
-> Then re-run the `docker run` command.
+> `systemd-resolved` keeps resolving for the host; only the
+> `127.0.0.53:53` listener is released. Then re-run the `docker run`
+> command.
 
 ### Windows (system service)
 

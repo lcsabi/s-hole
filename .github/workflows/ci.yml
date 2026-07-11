@@ -10,8 +10,8 @@ jobs:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
       - name: golangci-lint
@@ -27,8 +27,8 @@ jobs:
     name: build / vet / test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
       - name: Cache Go module + build cache
@@ -65,8 +65,8 @@ jobs:
           - { goos: linux,  goarch: arm, goarm: "7" }
           - { goos: windows, goarch: amd64 }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
       - name: Resolve version metadata

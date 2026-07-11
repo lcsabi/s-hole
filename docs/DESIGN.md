@@ -109,7 +109,9 @@ Blocked replies preserve the EDNS0 OPT pseudo-record from the request when the c
 
 ### Blocklist Store (`internal/blocklist/`)
 
-The store is an in-memory `map[string]struct{}` (hash set) keyed on normalised domain names (lowercase, no trailing dot). Lookup is O(1).
+The store is an in-memory `map[string]struct{}` (hash set) keyed on normalised domain names (lowercase, no trailing dot). Incoming queries are normalised the same way before lookup — DNS names arrive with a trailing dot and arbitrary casing — so both sides of the comparison share one key space. Lookup is O(1).
+
+Multiple blocklists are merged by construction rather than by an explicit dedup pass: `Update` concatenates the parsed lists and `Replace` inserts them all into the set, where entries appearing in several lists (or differing only in case/trailing dot) collapse to a single key. The `total` reported at startup is the deduplicated set size, which is why it is smaller than the sum of the per-list counts.
 
 Blocklists are downloaded from configurable URLs on startup and periodically thereafter (default: every 24 hours). Both the hosts-file format (`0.0.0.0 ads.example.com`) and the plain-domain-per-line format are supported. Downloaded files are cached on disk so a restart does not require a network round-trip. If a download fails or the server returns a non-200 status, the stale cache is used (the error response body is never written to disk).
 
@@ -122,6 +124,8 @@ A whitelist (exact domain names) is checked before the blocklist. A whitelisted 
 Blocklist replacement is atomic from the perspective of DNS handlers: `Store.Replace` swaps the internal map pointer under a write lock, so handlers either see the old list or the new list — never a partial update.
 
 The on-disk cache file is also written atomically: `fetchList` streams to a sibling `.tmp` file and `os.Rename`s on success. A network drop or `kill -9` mid-download leaves only the `.tmp` and the prior cache file in place; the next start still sees a usable cache.
+
+Cache files are deliberately per-URL, verbatim copies of what each server sent — never merged or deduplicated on disk. The stale-fallback contract is per-list (a failing URL falls back to *its own* last good snapshot, independent of the other lists), and an untransformed copy is inspectable evidence when a source misbehaves (see b/007). Deduplication happens for free in the in-memory set.
 
 Entries in a parsed list that fail `ValidDomain` (empty, no dot, over 253 chars, or containing characters illegal in a DNS label) are silently dropped so one malformed blocklist line cannot pollute the store. The same validator gates user-supplied whitelist entries via `POST /api/whitelist`.
 

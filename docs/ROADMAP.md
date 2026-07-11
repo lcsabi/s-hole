@@ -137,3 +137,8 @@ Pi-hole/AdGuard Home:
 - **Tuning knobs for `flushBatchSize` / `queryQueueSize`** — per the
   in-code rationale: changing them without a benchmark is unlikely to
   help.
+- **Deduplicating the on-disk blocklist caches** — per-URL verbatim
+  snapshots are load-bearing: the stale-fallback contract is per-list,
+  and an untransformed copy is inspectable evidence when a source
+  misbehaves. The in-memory set already deduplicates for free; disk
+  savings would be a few hundred KB once per day.

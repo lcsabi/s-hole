@@ -29,7 +29,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -o s-hole ./cmd/s-hole
 
 # ── Runtime stage ─────────────────────────────────────────────
-FROM alpine:3.21
+FROM alpine:3.24
 
 # ca-certificates: required for HTTPS blocklist downloads.
 # Container logs default to UTC (matches log/slog), so tzdata is not

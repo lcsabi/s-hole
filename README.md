@@ -481,6 +481,7 @@ A full end-to-end integration test (`internal/dnsserver/integration_test.go`) wi
 │   └── cls/           one file per CL (CL-01.md … CL-NN.md)
 ├── .github/           CI workflows, dependabot, CODEOWNERS, PR & issue templates
 ├── .golangci.yml      lint config
+├── CLAUDE.md          AI-assistant guidance (commands, architecture, conventions)
 ├── config.yaml        default configuration
 ├── Dockerfile         multi-stage container build
 ├── Makefile           build + lint + test + install targets

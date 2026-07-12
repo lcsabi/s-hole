@@ -30,6 +30,7 @@ Environment notes:
 - Measure **module-wide** coverage on Linux/WSL only: `go test -coverpkg=./... ./...`. A Windows Go install missing the `covdata` tool silently under-merges the profile — this once put a wrong number in three docs. Per-package `go test -cover` is fine anywhere.
 - Lint requires **golangci-lint v2** (`make tools-install` uses the `/v2` module path; v1 cannot parse the `version: "2"` config). If lint fails with a config-load error right after a Go toolchain bump, it's the lint-binary-built-with-older-Go coupling — see the CL 24 addendum. The deliberate errcheck exclusions live in `.golangci.yml` with their rationale.
 - Closed-port UDP tests make `./internal/dnsserver` take ~17 s on Windows vs ~2 s on Linux — expected, not a hang.
+- If port-binding tests fail mysteriously on a Windows/Hyper-V host (bind errors or probe timeouts on ports that look free), check `netsh int ipv4 show excludedportrange protocol=udp` — Windows reserves large port blocks *per protocol* and the reservations shift when VMs start (b/029). `pickFreePort` in dnsserver already defends against this; new tests that bind ports should reuse it or copy its dual-transport random-probe approach.
 - Run locally without root/port conflicts: `S_HOLE_LISTEN=:5353 go run ./cmd/s-hole -config config.yaml`, then `dig @127.0.0.1 -p 5353 doubleclick.net`. CONTRIBUTING.md has the full 7-step manual smoke test.
 
 ## Architecture

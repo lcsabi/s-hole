@@ -37,6 +37,7 @@ the per-file layout here mirrors that intent for an open-source repo.
 | [CL 22](cls/CL-22.md) | Act on sixth staff review (T1–T8): cache_size 0, TCP retry on truncation |
 | [CL 23](cls/CL-23.md) | Dual-stack listener default (`:53`) + IPv6 network docs |
 | [CL 24](cls/CL-24.md) | Make the lint gate real: golangci-lint v2 compliance |
+| [CL 25](cls/CL-25.md) | Dashboard: Cache Hit Rate stat card |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N — title`

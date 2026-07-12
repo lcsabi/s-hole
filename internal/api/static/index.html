@@ -65,7 +65,7 @@
     /* ── Stat cards ──────────────────────────────────────────── */
     .cards {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(4, 1fr);
       gap: 16px;
       padding: 24px;
     }
@@ -295,6 +295,10 @@
       <div class="card-label">Block Rate</div>
       <div class="card-value num" id="stat-pct">—</div>
     </div>
+    <div class="card">
+      <div class="card-label">Cache Hit Rate</div>
+      <div class="card-value num" id="stat-cache">—</div>
+    </div>
   </div>
 
   <div class="two-col">
@@ -378,6 +382,7 @@
         $('stat-total').textContent = fmt(s.total_queries);
         $('stat-blocked').textContent = fmt(s.blocked_count);
         $('stat-pct').textContent = s.blocked_pct.toFixed(1) + '%';
+        $('stat-cache').textContent = s.cache_hit_pct.toFixed(1) + '%';
 
         const domains = s.top_domains || [];
         setTbody('top-domains', domains.length

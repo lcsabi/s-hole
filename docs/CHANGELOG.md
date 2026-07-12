@@ -8,6 +8,11 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
 
 ## [Unreleased]
 
+### Added
+- The dashboard shows a fourth stat card, **Cache Hit Rate**, bound to
+  the `cache_hit_pct` value the UI already polls from `/api/stats` —
+  the number that tells you whether `cache_size` fits your network.
+
 ### Fixed
 - The CI lint job passes again — two stacked problems: the
   `golangci-lint-action@v6` pin installs golangci-lint v1, which

@@ -134,8 +134,9 @@ reasons to answer them locally instead:
   LAN's internal addressing to the upstream resolver for zero benefit;
   no public server can ever answer them.
 - **Wasted round-trips** — the upstream answer is always NXDOMAIN, and
-  NXDOMAIN is deliberately never cached (b/017 territory), so *every*
-  private PTR pays a full upstream round-trip, forever.
+  the cache deliberately stores only NOERROR-with-answers responses
+  (DESIGN.md, negative-caching note), so *every* private PTR pays a
+  full upstream round-trip, forever.
 - **Standard practice** — RFC 6303 (*Locally Served DNS Zones*) says
   resolvers SHOULD answer these zones locally; unbound, dnsmasq, and
   systemd-resolved all do.
@@ -157,11 +158,15 @@ upstream chatter and an information leak.
 
 ## Pending decisions
 
-- **Sample config `query_db`** — an uncommitted working-tree edit sets
-  `query_db: ""` (SQLite logging off) while the committed sample and
-  README table say `queries.db` (on). Decide which the sample ships
-  with and sync the README row. Note: with it off, the dashboard's
-  recent-queries panel is empty by default.
+- **Sample config `query_db` / `api_listen`** — uncommitted
+  working-tree edits (deliberate, for the first-hardware deployment)
+  set `query_db: ""` (SQLite logging off) and
+  `api_listen: "0.0.0.0:8080"` (LAN dashboard) while the committed
+  sample says `queries.db` / `127.0.0.1:8080`. Decide which values the
+  sample ships with and sync the README rows. Notes: with the DB off,
+  the dashboard's recent-queries panel is empty; the localhost
+  `api_listen` default is a security posture (unauthenticated UI), so
+  shipping `0.0.0.0` would need a SECURITY.md-consistent justification.
 
 ## Deliberately not planned
 

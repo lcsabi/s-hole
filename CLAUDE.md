@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-s-hole is a single-binary DNS sinkhole (lightweight Pi-hole alternative) in Go: it answers LAN DNS queries, returns `0.0.0.0`/`::` (or NXDOMAIN) for blocklisted domains, forwards the rest upstream, and serves an embedded admin UI + REST API. Design identity: **auditable in an afternoon** — one binary, one YAML config, tiny dependency graph (`miekg/dns`, `yaml.v3`, pure-Go SQLite). Don't add dependencies without strong justification.
+s-hole is a single-binary DNS sinkhole (lightweight Pi-hole alternative) in Go: it answers LAN DNS queries, returns `0.0.0.0`/`::` (or NXDOMAIN) for blocklisted domains, forwards the rest upstream, and serves an embedded admin UI + REST API. Design identity: **auditable in an afternoon** — one binary, one YAML config, tiny dependency graph (`miekg/dns`, `yaml.v3`, pure-Go SQLite, `x/sys` for the Windows service). Don't add dependencies without strong justification.
 
 ## Commands
 

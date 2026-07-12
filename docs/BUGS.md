@@ -746,3 +746,52 @@ treating EOF as "no overrides" and falling through to `applyDefaults`.
 
 Wrap the decode error: `if err != nil && !errors.Is(err, io.EOF)`. Empty
 files now load successfully and produce a Config with all defaults applied.
+
+---
+
+## b/029 — dnsserver tests: pickFreePort ignores per-protocol Windows port exclusions
+
+**Priority:** P3
+**Component:** dnsserver (tests)
+**Status:** Fixed in CL 26
+**Filed:** 2026-07-12
+
+### Description
+
+`TestServer_StartShutdownLifecycle` and `TestIntegration_FullPipeline`
+began failing consistently on the Windows dev machine with
+"server never accepted a query: udp probe timed out" — with no code
+change (the working diff was an HTML-only dashboard edit). The same
+suite had passed hours earlier. The failure was environmental and
+latent since the tests were written; starting a VirtualBox VM that
+afternoon shifted Windows' dynamic port reservations into the
+triggering configuration.
+
+### Root Cause
+
+Two stacked problems:
+
+1. `pickFreePort` bound a free **TCP** port and assumed the same port
+   number was bindable for UDP. Windows reserves large contiguous
+   port ranges *per protocol* (Hyper-V/WSL dynamic exclusions,
+   `netsh int ipv4 show excludedportrange`); at failure time the TCP
+   ephemeral allocator was parked inside a UDP-excluded block
+   (63547–64346), so every picked port bound fine for TCP and failed
+   for UDP. The first fix attempt (pick via UDP `:0`, verify TCP)
+   revealed the mirror image: the UDP allocator sat inside the
+   TCP-excluded block (61186–61985), and because Windows allocates
+   ephemeral ports sequentially, retrying `:0` stayed stuck in the
+   same 800-port block.
+2. The lifecycle test's probe-timeout path never read the `startErr`
+   channel, so `ListenAndServe`'s immediate bind error was reported as
+   a generic probe timeout — masking the root cause.
+
+### Fix
+
+`pickFreePort` now probes random ports in 20000–47999 (below the
+49152+ dynamic-reservation area) and requires a successful bind on
+**both** transports before returning; random probes escape contiguous
+excluded blocks immediately, where sequential retries could not. The
+lifecycle test's timeout path now also drains and reports what
+`Start` returned, so a future bind failure names itself instead of
+masquerading as a timeout.

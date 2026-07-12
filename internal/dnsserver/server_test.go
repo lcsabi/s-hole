@@ -1,6 +1,8 @@
 package dnsserver
 
 import (
+	"fmt"
+	"math/rand/v2"
 	"net"
 	"testing"
 	"time"
@@ -67,10 +69,17 @@ func TestServer_StartShutdownLifecycle(t *testing.T) {
 	startErr := make(chan error, 1)
 	go func() { startErr <- srv.Start() }()
 
-	// Give the listeners a beat to come up.
+	// Give the listeners a beat to come up. On failure, surface what
+	// Start returned — a bind error looks identical to a probe timeout
+	// otherwise (this masked b/029).
 	if err := waitForUDP(addr, 2*time.Second); err != nil {
 		srv.Shutdown()
-		t.Fatalf("server never accepted a query: %v", err)
+		select {
+		case serr := <-startErr:
+			t.Fatalf("server never accepted a query: %v (Start returned: %v)", err, serr)
+		default:
+			t.Fatalf("server never accepted a query: %v", err)
+		}
 	}
 
 	// Send a real query through the wrapped Server.
@@ -99,19 +108,39 @@ func TestServer_StartShutdownLifecycle(t *testing.T) {
 	}
 }
 
-// pickFreePort returns "127.0.0.1:N" where N is a port that was free
-// at call time. It binds and immediately releases. miekg/dns will
-// rebind for both UDP and TCP at the same port; collisions across
-// transports are rare on a loopback test host.
+// pickFreePort returns "127.0.0.1:N" where N was bindable for BOTH
+// transports at call time. It binds and immediately releases; miekg/dns
+// will rebind for UDP and TCP at the same port.
+//
+// N is probed at random rather than taken from the OS allocator
+// (b/029): Windows reserves large contiguous port ranges per protocol
+// (Hyper-V/WSL dynamic exclusions; `netsh int ipv4 show
+// excludedportrange`), and the sequential ephemeral allocator of one
+// protocol routinely parks inside a block excluded for the other — a
+// port that `:0` hands out for TCP can be UDP-forbidden and vice
+// versa, and sequential retries stay stuck in the same block. Random
+// probes in a range below the dynamic-reservation area (49152+) escape
+// immediately.
 func pickFreePort(t *testing.T) (string, error) {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return "", err
+	var lastErr error
+	for range 20 {
+		addr := fmt.Sprintf("127.0.0.1:%d", 20000+rand.IntN(28000))
+		pc, err := net.ListenPacket("udp", addr)
+		if err != nil {
+			lastErr = err // in use or excluded for UDP; probe again
+			continue
+		}
+		l, err := net.Listen("tcp", addr)
+		pc.Close()
+		if err != nil {
+			lastErr = err // in use or excluded for TCP; probe again
+			continue
+		}
+		l.Close()
+		return addr, nil
 	}
-	addr := l.Addr().String()
-	l.Close()
-	return addr, nil
+	return "", lastErr
 }
 
 // waitForUDP polls a UDP DNS query against addr until we get any reply

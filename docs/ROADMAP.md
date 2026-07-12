@@ -215,3 +215,14 @@ Pi-hole/AdGuard Home:
   and an untransformed copy is inspectable evidence when a source
   misbehaves. The in-memory set already deduplicates for free; disk
   savings would be a few hundred KB once per day.
+- **Live application-log panel in the web UI** — ~90 % redundant with
+  the recent-queries panel, which already renders the
+  timestamp/client/domain/blocked content of the `ALLOW`/`BLOCK`
+  stream once `query_db` is enabled. The remainder is operational slog
+  lines (refresh results, upstream errors), which matter during
+  incidents where `journalctl` is the better tool. Building it would
+  require an in-memory log ring buffer plus a new `/api/logs` endpoint
+  (the process does not retain its own stdout — journald owns it), and
+  exposing operational internals on the unauthenticated UI sits on the
+  pprof end of the disclosure gradient: if ever revisited, it must be
+  opt-in like `enable_pprof`.

@@ -22,6 +22,7 @@ rails.
 | 6 | Hardening batch: goleak, govulncheck, embedded fallback blocklist | Medium | not started |
 | 7 | Windows service logging (slog is lost under the SCM) | Low | not started |
 | 8 | Benchmark companions for the hot path | Low | blocked on #3 |
+| 9 | Answer private-range PTR queries locally (RFC 6303) | Low | discussion — not started |
 
 ## 1. Deploy to real hardware
 
@@ -115,6 +116,44 @@ Deliberately deferred until #3 lands: `BenchmarkCache_Get` and
 `BenchmarkHandler_ServeDNS` (stub ResponseWriter) alongside the
 existing `BenchmarkStore_IsBlocked`. Benchmarks nobody watches are
 suite weight; these earn their place the day the hot path changes.
+
+## 9. Answer private-range PTR queries locally
+
+Observed during the 2026-07-12 VM deployment test: `nslookup` produces
+three log entries per lookup, and the first is a **PTR** (reverse)
+query for the *server's own* private IP (`18.100.168.192.in-addr.arpa`)
+— nslookup resolves the server name for its output header before
+asking the actual question. This is not tool-specific noise: OSes,
+mail servers, and network monitors reverse-look-up private LAN
+addresses constantly on a real network.
+
+Today s-hole forwards these upstream like any other query. Three
+reasons to answer them locally instead:
+
+- **Privacy** — reverse queries for `192.168.x.x`/`10.x.x.x` leak the
+  LAN's internal addressing to the upstream resolver for zero benefit;
+  no public server can ever answer them.
+- **Wasted round-trips** — the upstream answer is always NXDOMAIN, and
+  NXDOMAIN is deliberately never cached (b/017 territory), so *every*
+  private PTR pays a full upstream round-trip, forever.
+- **Standard practice** — RFC 6303 (*Locally Served DNS Zones*) says
+  resolvers SHOULD answer these zones locally; unbound, dnsmasq, and
+  systemd-resolved all do.
+
+Sketch: in the handler, before the blocklist check, match PTR queries
+whose name falls under the RFC 6303 zones (`10.in-addr.arpa`,
+`16.172.in-addr.arpa`–`31.172.in-addr.arpa`, `168.192.in-addr.arpa`,
+plus IPv6 ULA `d.f.ip6.arpa` and link-local) and return authoritative
+NXDOMAIN immediately — a static suffix match, no config, no new
+dependencies, hot-path cost one label comparison for non-PTR queries.
+
+Decisions to settle in the CL: NXDOMAIN vs NODATA; whether the reply
+counts as "blocked" in stats (probably neither — a third "local"
+outcome, or simply uncounted); whether a config escape hatch is needed
+for LANs that *do* run an internal reverse zone (likely
+`local_ptr: true` default with opt-out, or defer the knob until
+someone asks). Rated Low: invisible to the user, but removes constant
+upstream chatter and an information leak.
 
 ## Pending decisions
 

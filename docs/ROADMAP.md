@@ -14,7 +14,7 @@ rails.
 
 | # | Item | Impact | Status |
 |--:|---|---|---|
-| 1 | Deploy to real hardware (Raspberry Pi) | High | not started |
+| 1 | Deploy to real hardware (Raspberry Pi) | High | procedure validated in a VM; awaiting hardware |
 | 2 | Tag `v0.1.0` + release workflow | High | not started |
 | 3 | Wildcard / subdomain blocking | High | not started |
 | 4 | Wire up or delete `DBLogger.TopBlocked` | Medium | not started |
@@ -32,6 +32,15 @@ CONTRIBUTING smoke test, then point the router's DHCP DNS at it (see
 the README's IPv6-networks note for the RA/RDNSS bypass trap). Give
 the machine a static IP / DHCP reservation first. A few days of real
 LAN traffic is the qualification gate for #2.
+
+**2026-07-12:** the full procedure was rehearsed on a VirtualBox
+Debian 12 VM (amd64 build, bridged networking) — installer, systemd
+unit, blocklist load (78 469 domains), LAN probes, block/allow/cache
+verification from another machine, SIGHUP reload, and
+restart-from-cached-blocklists all passed; SQLite layer deliberately
+disabled (`query_db: ""`). What remains is a replay on ARM hardware
+(`make pi`) plus the router cut-over and the multi-day soak, so the
+item stays open until a Raspberry Pi is available.
 
 ## 2. Tag `v0.1.0` + release workflow
 

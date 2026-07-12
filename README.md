@@ -506,6 +506,19 @@ All implementation packages live under `internal/` so they cannot be imported by
 | `internal/config` | YAML loading with defaults and validation |
 | `internal/service` | Windows Service integration (build-tagged) |
 
+### Dependencies
+
+The "afternoon's reading" claim extends to the dependency graph: four direct modules, chosen where hand-rolling would be a source of subtle bugs and skipped everywhere else.
+
+| Module | Why it's a dependency |
+|---|---|
+| `github.com/miekg/dns` | Complete RFC-compliant DNS codec, server, and client — rolling our own would be a correctness minefield |
+| `modernc.org/sqlite` | Pure-Go SQLite for the query log; no CGO, so cross-compilation stays a one-liner |
+| `gopkg.in/yaml.v3` | Parses `config.yaml` |
+| `golang.org/x/sys` | Windows Service Control Manager integration |
+
+The indirect modules in `go.mod` are almost all pulled in by the pure-Go SQLite port; none are used directly. Everything else is deliberately hand-rolled or omitted — the Prometheus exposition is written by hand rather than importing `client_golang`, the web UI is framework-free embedded HTML/CSS/JS, and the systemd integration is a static unit file rather than a service library. The reasoning behind each choice (and the alternatives rejected) is in `docs/DESIGN.md`. New dependencies need discussion first — see `CONTRIBUTING.md`.
+
 ---
 
 ## Security Notes

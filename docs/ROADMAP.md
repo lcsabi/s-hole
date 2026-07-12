@@ -23,6 +23,7 @@ rails.
 | 7 | Windows service logging (slog is lost under the SCM) | Low | not started |
 | 8 | Benchmark companions for the hot path | Low | blocked on #3 |
 | 9 | Answer private-range PTR queries locally (RFC 6303) | Low | discussion — not started |
+| 10 | Blocklist size in `/api/stats` + dashboard | Medium | not started |
 
 ## 1. Deploy to real hardware
 
@@ -155,6 +156,25 @@ for LANs that *do* run an internal reverse zone (likely
 `local_ptr: true` default with opt-out, or defer the knob until
 someone asks). Rated Low: invisible to the user, but removes constant
 upstream chatter and an information leak.
+
+## 10. Blocklist size in `/api/stats` + dashboard
+
+Companion to the Cache Hit Rate card (CL 25), which was free because
+the field already rode in the stats payload. Blocklist size is the
+next most useful number the dashboard cannot show: "78 469 domains" is
+the at-a-glance trust signal that the lists downloaded, parsed, and
+survived the last refresh — today it is visible only in `/metrics`
+(`shole_blocklist_size`) and the startup log line.
+
+Unlike CL 25 this touches Go: `store.Len()` must join the
+`/api/stats` response (either plumbed into `stats.Snapshot` or added
+in the API handler, which already holds the `*blocklist.Store` for
+`/readyz` — the handler is the lighter touch). Then a fifth display
+element in the UI; five stat cards may crowd the row, so consider a
+header chip next to uptime instead. Sync the `/api/stats` description
+in README/DESIGN if the payload shape is documented at the time.
+Rated Medium by the impact rubric (observability win): the number
+builds operator trust but changes no filtering behaviour.
 
 ## Pending decisions
 

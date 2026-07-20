@@ -70,6 +70,10 @@ type Summary struct {
 	LocalPTRCount int64   `json:"local_ptr_count"`
 	CacheHits     int64   `json:"cache_hits"`
 	CacheHitPct   float64 `json:"cache_hit_pct"`
+	// BlocklistSize is the current number of domains in the block set.
+	// Set by the API handler (not Counter.Snapshot) because the stats
+	// package does not depend on the blocklist package.
+	BlocklistSize int     `json:"blocklist_size"`
 	TopDomains    []Entry `json:"top_domains"`
 	TopClients    []Entry `json:"top_clients"`
 }

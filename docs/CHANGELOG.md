@@ -9,6 +9,10 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
 ## [Unreleased]
 
 ### Added
+- The current number of blocked domains is now included in the `/api/stats`
+  JSON response as `blocklist_size` and displayed as a "Blocklist Size" card
+  on the dashboard. This confirms at a glance that the blocklist downloaded
+  and parsed successfully after each refresh. (CL 28)
 - PTR queries for RFC 6303 private-range reverse zones (10/8, 172.16/12,
   192.168/16, fc00::/7, fe80::/10) are now answered locally with authoritative
   NXDOMAIN instead of being forwarded upstream. No public resolver holds records

@@ -187,7 +187,7 @@ The admin web UI is served at **`http://127.0.0.1:8080`** by default — localho
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/stats` | Live stats: uptime, query totals, block rate, cache hit rate, top domains/clients |
+| `GET` | `/api/stats` | Live stats: uptime, query totals, block rate, cache hit rate, blocklist size, top domains/clients |
 | `GET` | `/api/queries?limit=N` | Last N queries from SQLite, newest first (default: 50, max: 1000) |
 | `GET` | `/api/whitelist` | List all runtime-whitelisted domains |
 | `POST` | `/api/whitelist` | Add a domain — body: `{"domain": "example.com"}` |
@@ -404,7 +404,7 @@ Coverage by package (after `go test -cover ./...`):
 | `internal/config` | 100 % |
 | `internal/version` | 100 % |
 | `internal/cache` | 94.8 % |
-| `internal/api` | 91.1 % |
+| `internal/api` | 91.2 % |
 | `internal/blocklist` | 89.6 % |
 | `internal/dnsserver` | 88.4 % |
 | `internal/querylog` | 85.6 % |

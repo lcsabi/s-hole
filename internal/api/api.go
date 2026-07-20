@@ -152,7 +152,9 @@ func (s *Server) handler() http.Handler {
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, s.counter.Snapshot(10))
+	snap := s.counter.Snapshot(10)
+	snap.BlocklistSize = s.store.Len()
+	writeJSON(w, snap)
 }
 
 // defaultQueriesLimit and maxQueriesLimit bound the ?limit= parameter on

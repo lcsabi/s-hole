@@ -288,6 +288,59 @@ func TestApplyEnvOverrides_EnablePprof(t *testing.T) {
 	}
 }
 
+func TestLoad_LocalPTRDefaultTrue(t *testing.T) {
+	// local_ptr defaults to true (RFC 6303 private-range PTR answering on).
+	// This requires seeding it before the YAML decode because the zero value
+	// of bool is false, which is the opt-out, not the default.
+	cfg, err := Load(writeTemp(t, ""))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.LocalPTR {
+		t.Error("LocalPTR default = false, want true")
+	}
+}
+
+func TestLoad_LocalPTRFalseHonored(t *testing.T) {
+	// An explicit `local_ptr: false` in the YAML must survive the decode
+	// and not be promoted back to the default true.
+	cfg, err := Load(writeTemp(t, "local_ptr: false\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LocalPTR {
+		t.Error("LocalPTR = true after explicit false in YAML")
+	}
+}
+
+func TestApplyEnvOverrides_LocalPTR(t *testing.T) {
+	cases := []struct {
+		value string
+		want  bool
+	}{
+		{"1", true},
+		{"true", true},
+		{"yes", true},
+		{"0", false},
+		{"false", false},
+		{"no", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		t.Run("value="+tc.value, func(t *testing.T) {
+			t.Setenv("S_HOLE_LOCAL_PTR", tc.value)
+			cfg, err := Load(writeTemp(t, ""))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.LocalPTR != tc.want {
+				t.Errorf("LocalPTR = %v for env=%q, want %v",
+					cfg.LocalPTR, tc.value, tc.want)
+			}
+		})
+	}
+}
+
 func TestApplyEnvOverrides_IgnoresMalformedNumerics(t *testing.T) {
 	// A bogus CACHE_SIZE should leave the default in place, not zero it
 	// or crash startup. Same for BLOCK_TTL and RETENTION_DAYS.

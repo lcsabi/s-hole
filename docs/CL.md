@@ -39,6 +39,7 @@ the per-file layout here mirrors that intent for an open-source repo.
 | [CL 24](cls/CL-24.md) | Make the lint gate real: golangci-lint v2 compliance |
 | [CL 25](cls/CL-25.md) | Dashboard: Cache Hit Rate stat card |
 | [CL 26](cls/CL-26.md) | Test: dual-transport-safe port picking; surface Start errors (b/029) |
+| [CL 27](cls/CL-27.md) | RFC 6303 local PTR answering for private-range zones |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N — title`

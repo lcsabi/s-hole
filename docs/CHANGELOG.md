@@ -9,6 +9,16 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
 ## [Unreleased]
 
 ### Added
+- PTR queries for RFC 6303 private-range reverse zones (10/8, 172.16/12,
+  192.168/16, fc00::/7, fe80::/10) are now answered locally with authoritative
+  NXDOMAIN instead of being forwarded upstream. No public resolver holds records
+  for these addresses; forwarding only wastes a round-trip and leaks internal LAN
+  addressing to the upstream resolver. Controlled by `local_ptr` (default `true`;
+  set to `false` if you run a private reverse DNS zone on your LAN). The counter
+  appears as `local_ptr_count` in `/api/stats` and `shole_local_ptr_total` in
+  `/metrics`. The `S_HOLE_LOCAL_PTR` environment variable overrides the config.
+
+### Added
 - The dashboard shows a fourth stat card, **Cache Hit Rate**, bound to
   the `cache_hit_pct` value the UI already polls from `/api/stats` —
   the number that tells you whether `cache_size` fits your network.

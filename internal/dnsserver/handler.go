@@ -1,11 +1,16 @@
 // Package dnsserver implements the DNS sinkhole's listening servers and
-// per-query handler. The handler consults the blocklist, then the in-memory
-// response cache, then upstream resolvers — in that order — and routes the
-// reply back to the client. UDP and TCP listeners run in parallel; clients
-// fall back to TCP automatically when a UDP reply is truncated. On the
-// upstream side the forwarder mirrors that fallback: a truncated UDP reply
-// is retried over TCP against the same upstream before being returned —
-// see exchange in upstream.go.
+// per-query handler. For each query the handler:
+//  1. Intercepts PTR queries for RFC 6303 private-range zones and returns
+//     authoritative NXDOMAIN locally, without consulting the blocklist,
+//     cache, or upstream (see privateReverseZones, isPrivatePTR).
+//  2. Consults the blocklist and writes a sinkhole reply for blocked domains.
+//  3. Checks the in-memory response cache and returns cached replies.
+//  4. Forwards cache misses to upstream resolvers.
+//
+// UDP and TCP listeners run in parallel; clients fall back to TCP
+// automatically when a UDP reply is truncated. On the upstream side the
+// forwarder mirrors that fallback: a truncated UDP reply is retried over TCP
+// against the same upstream before being returned — see exchange in upstream.go.
 //
 // The handler mirrors the client's EDNS0 OPT pseudo-record on sinkhole
 // replies so clients that advertise EDNS0 do not fall back to legacy DNS.
@@ -24,6 +29,7 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/lcsabi/s-hole/internal/blocklist"
@@ -47,9 +53,52 @@ type Logger interface {
 	Log(clientIP, domain string, blocked bool)
 }
 
-// Handler is the per-query routing logic: blocklist check → cache check
-// → upstream forward. It is safe for concurrent use; miekg/dns invokes
-// ServeDNS from a separate goroutine per request.
+// privateReverseZones lists the RFC 6303 locally-served DNS reverse zones.
+// PTR queries whose names fall under any of these zones are answered locally
+// with authoritative NXDOMAIN when localPTR is enabled: no public resolver
+// holds records for RFC 1918 or ULA addresses, so forwarding only wastes a
+// round-trip and leaks internal LAN addresses to the upstream resolver.
+//
+// IPv4 zones: RFC 1918 (10/8, 172.16/12, 192.168/16).
+// IPv6 zones: RFC 4193 ULA fc00::/7 (c.f, d.f) and RFC 4291 link-local
+// fe80::/10 (8.e.f, 9.e.f, a.e.f, b.e.f).
+var privateReverseZones = []string{
+	// 10.0.0.0/8
+	"10.in-addr.arpa.",
+	// 172.16.0.0/12 (second octet 16–31)
+	"16.172.in-addr.arpa.", "17.172.in-addr.arpa.", "18.172.in-addr.arpa.",
+	"19.172.in-addr.arpa.", "20.172.in-addr.arpa.", "21.172.in-addr.arpa.",
+	"22.172.in-addr.arpa.", "23.172.in-addr.arpa.", "24.172.in-addr.arpa.",
+	"25.172.in-addr.arpa.", "26.172.in-addr.arpa.", "27.172.in-addr.arpa.",
+	"28.172.in-addr.arpa.", "29.172.in-addr.arpa.", "30.172.in-addr.arpa.",
+	"31.172.in-addr.arpa.",
+	// 192.168.0.0/16
+	"168.192.in-addr.arpa.",
+	// fc00::/7 ULA — covers fc::/8 and fd::/8
+	"c.f.ip6.arpa.", "d.f.ip6.arpa.",
+	// fe80::/10 link-local — third nibble is 8, 9, a, or b
+	"8.e.f.ip6.arpa.", "9.e.f.ip6.arpa.", "a.e.f.ip6.arpa.", "b.e.f.ip6.arpa.",
+}
+
+// isPrivatePTR reports whether q is a PTR query whose name falls under one
+// of the RFC 6303 private-range reverse zones. Non-PTR queries return false
+// immediately without scanning the zone list.
+func isPrivatePTR(qtype uint16, name string) bool {
+	if qtype != dns.TypePTR {
+		return false
+	}
+	for _, zone := range privateReverseZones {
+		if name == zone || strings.HasSuffix(name, "."+zone) {
+			return true
+		}
+	}
+	return false
+}
+
+// Handler is the per-query routing logic: RFC 6303 local PTR check →
+// blocklist check → cache check → upstream forward. It is safe for
+// concurrent use; miekg/dns invokes ServeDNS from a separate goroutine
+// per request.
 type Handler struct {
 	store     *blocklist.Store
 	counter   *stats.Counter
@@ -58,11 +107,13 @@ type Handler struct {
 	blockMode string // "zero" or "nxdomain"
 	blockTTL  uint32
 	cache     *cache.Cache // nil when caching is disabled
+	localPTR  bool         // when true, answer RFC 6303 private PTR queries locally
 }
 
 // NewHandler wires together all dependencies needed to answer a query.
 // c may be nil to disable response caching entirely (the handler then
-// always forwards on a cache miss).
+// always forwards on a cache miss). localPTR enables authoritative NXDOMAIN
+// replies for RFC 6303 private-range PTR queries; see privateReverseZones.
 func NewHandler(
 	store *blocklist.Store,
 	counter *stats.Counter,
@@ -71,6 +122,7 @@ func NewHandler(
 	blockMode string,
 	blockTTL uint32,
 	c *cache.Cache,
+	localPTR bool,
 ) *Handler {
 	return &Handler{
 		store:     store,
@@ -80,12 +132,13 @@ func NewHandler(
 		blockMode: blockMode,
 		blockTTL:  blockTTL,
 		cache:     c,
+		localPTR:  localPTR,
 	}
 }
 
-// ServeDNS satisfies miekg/dns.Handler. It records the query in stats and
-// loggers, returns a sinkhole reply if the domain is blocked, otherwise
-// serves from cache or forwards upstream.
+// ServeDNS satisfies miekg/dns.Handler. It intercepts private-range PTR
+// queries (when localPTR is enabled), returns a sinkhole reply for blocked
+// domains, and otherwise serves from cache or forwards upstream.
 func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	if len(req.Question) == 0 {
 		dns.HandleFailed(w, req)
@@ -95,6 +148,19 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	q := req.Question[0]
 	domain := q.Name // already has trailing dot
 	clientIP := clientAddr(w)
+
+	// RFC 6303: answer PTR queries for private-range zones (10/8, 172.16/12,
+	// 192.168/16, fc00::/7, fe80::/10) locally with authoritative NXDOMAIN.
+	// No public resolver holds records for these addresses; forwarding wastes
+	// a round-trip and leaks LAN addressing to the upstream. Checked before
+	// the blocklist so these queries are never counted as blocked.
+	if h.localPTR && isPrivatePTR(q.Qtype, domain) {
+		h.counter.RecordQuery(clientIP, domain, false)
+		h.counter.RecordLocalPTR()
+		h.logger.Log(clientIP, domain, false)
+		h.writeLocalNXDOMAIN(w, req)
+		return
+	}
 
 	blocked := h.store.IsBlocked(domain)
 	h.counter.RecordQuery(clientIP, domain, blocked)
@@ -170,6 +236,23 @@ func (h *Handler) writeSinkhole(w dns.ResponseWriter, req *dns.Msg, q dns.Questi
 	// For MX, TXT, etc. return NOERROR with no answer — clients won't retry.
 	if err := w.WriteMsg(resp); err != nil {
 		logger.Warn("write sinkhole reply failed", "err", err, "domain", q.Name)
+	}
+}
+
+// writeLocalNXDOMAIN sends an authoritative NXDOMAIN reply for a privately
+// answered PTR query (RFC 6303). The EDNS0 OPT record is mirrored from the
+// request for the same reason as in writeSinkhole: clients that advertised
+// it must see it echoed or they fall back to legacy DNS.
+func (h *Handler) writeLocalNXDOMAIN(w dns.ResponseWriter, req *dns.Msg) {
+	resp := new(dns.Msg)
+	resp.SetReply(req)
+	resp.Authoritative = true
+	resp.SetRcode(req, dns.RcodeNameError)
+	if opt := req.IsEdns0(); opt != nil {
+		resp.SetEdns0(opt.UDPSize(), opt.Do())
+	}
+	if err := w.WriteMsg(resp); err != nil {
+		logger.Warn("write local PTR reply failed", "err", err, "domain", req.Question[0].Name)
 	}
 }
 

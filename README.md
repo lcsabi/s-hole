@@ -135,6 +135,7 @@ All configuration lives in `config.yaml`. Every field has a safe default; an emp
 | `cache_dir` | `.` | Directory for cached blocklist files |
 | `query_db_retention_days` | `0` (forever) | Delete query-log rows older than this many days. `0` disables the prune. |
 | `enable_pprof` | `false` | Expose `/debug/pprof/*` on the admin server. Localhost-only deployment recommended. |
+| `local_ptr` | `true` | Answer PTR queries for RFC 6303 private ranges (10/8, 172.16/12, 192.168/16, fc00::/7, fe80::/10) locally with NXDOMAIN. Set to `false` if you run a private reverse DNS zone on your LAN. |
 
 ### Minimal config example
 
@@ -166,6 +167,7 @@ For container deployments where editing `config.yaml` requires a re-bind-mount, 
 | `S_HOLE_BLOCK_TTL` | `block_ttl` (integer) |
 | `S_HOLE_RETENTION_DAYS` | `query_db_retention_days` (integer) |
 | `S_HOLE_ENABLE_PPROF` | `enable_pprof` (`1`/`true`/`yes` enable) |
+| `S_HOLE_LOCAL_PTR` | `local_ptr` (`1`/`true`/`yes` keep on; `0`/`false`/`no` opt out) |
 | `S_HOLE_LOG_FORMAT` | `text` (default) or `json` — controls slog handler |
 | `S_HOLE_ASCII_BANNER` | set to `1` to use ASCII box-drawing on the startup banner |
 
@@ -193,7 +195,7 @@ The admin web UI is served at **`http://127.0.0.1:8080`** by default — localho
 | `POST` | `/api/reload` | Trigger an immediate blocklist refresh — de-duplicated via single-flight mutex (returns `"reload already in progress"` if one is running) |
 | `GET`  | `/healthz` | Liveness probe — always 200 OK while the HTTP server is responsive |
 | `GET`  | `/readyz` | Readiness probe — 200 OK once the blocklist has loaded at least one entry; 503 otherwise |
-| `GET`  | `/metrics` | Prometheus text exposition: `shole_queries_total`, `shole_blocked_total`, `shole_cache_hits_total`, `shole_cache_misses_total`, `shole_cache_size`, `shole_blocklist_size`, `shole_whitelist_size`, `shole_query_log_dropped_total` |
+| `GET`  | `/metrics` | Prometheus text exposition: `shole_queries_total`, `shole_blocked_total`, `shole_local_ptr_total`, `shole_cache_hits_total`, `shole_cache_misses_total`, `shole_cache_size`, `shole_blocklist_size`, `shole_whitelist_size`, `shole_query_log_dropped_total` |
 | `GET`  | `/debug/pprof/*` | Standard Go pprof endpoints — registered **only** when `enable_pprof: true` is set in config (or `S_HOLE_ENABLE_PPROF=1`). Pair with `api_listen: "127.0.0.1:8080"`. |
 
 Runtime whitelist changes take effect immediately but do not persist across restarts. To make a whitelist entry permanent, add it to `config.yaml`.
@@ -402,9 +404,9 @@ Coverage by package (after `go test -cover ./...`):
 | `internal/config` | 100 % |
 | `internal/version` | 100 % |
 | `internal/cache` | 94.8 % |
-| `internal/api` | 90.8 % |
+| `internal/api` | 91.1 % |
 | `internal/blocklist` | 89.6 % |
-| `internal/dnsserver` | 88.1 % |
+| `internal/dnsserver` | 88.4 % |
 | `internal/querylog` | 85.6 % |
 | `cmd/s-hole` | 31.7 % |
 | **module-wide** | **76.8 %** |
@@ -442,9 +444,10 @@ A full end-to-end integration test (`internal/dnsserver/integration_test.go`) wi
      │                                                      │
      │   ┌──────────────────────────────────────────────┐   │
      │   │  DNS Handler  (per query)                    │   │
-     │   │    1. blocklist  → sinkhole reply            │   │
-     │   │    2. cache hit  → cached reply              │   │
-     │   │    3. cache miss → upstream forward + cache  │   │
+     │   │    1. private PTR → local NXDOMAIN (RFC6303) │   │
+     │   │    2. blocklist  → sinkhole reply            │   │
+     │   │    3. cache hit  → cached reply              │   │
+     │   │    4. cache miss → upstream forward + cache  │   │
      │   └──────────────────────────────────────────────┘   │
      │                                                      │
      │   ┌───────────┐   ┌──────────┐   ┌───────────┐       │

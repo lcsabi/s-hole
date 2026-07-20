@@ -22,7 +22,7 @@ rails.
 | 6 | Hardening batch: goleak, govulncheck, embedded fallback blocklist | Medium | not started |
 | 7 | Windows service logging (slog is lost under the SCM) | Low | not started |
 | 8 | Benchmark companions for the hot path | Low | blocked on #3 |
-| 9 | Answer private-range PTR queries locally (RFC 6303) | Low | discussion — not started |
+| 9 | Answer private-range PTR queries locally (RFC 6303) | Low | done (CL 27) |
 | 10 | Blocklist size in `/api/stats` + dashboard | Medium | not started |
 
 ## 1. Deploy to real hardware

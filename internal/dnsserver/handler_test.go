@@ -52,7 +52,7 @@ func TestServeDNS_BlockedZeroMode(t *testing.T) {
 	store := blocklist.NewStore()
 	store.Replace([]string{"ads.example.com"})
 
-	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil)
+	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, false)
 	w := fakeClient()
 	h.ServeDNS(w, buildReq("ads.example.com"))
 
@@ -75,7 +75,7 @@ func TestServeDNS_BlockedNxdomainMode(t *testing.T) {
 	store := blocklist.NewStore()
 	store.Replace([]string{"ads.example.com"})
 
-	h := NewHandler(store, stats.New(), nil, nullLogger{}, "nxdomain", 60, nil)
+	h := NewHandler(store, stats.New(), nil, nullLogger{}, "nxdomain", 60, nil, false)
 	w := fakeClient()
 	h.ServeDNS(w, buildReq("ads.example.com"))
 
@@ -101,7 +101,7 @@ func TestServeDNS_WhitelistOverridesBlock(t *testing.T) {
 	c.Set(q, preCached)
 
 	counter := stats.New()
-	h := NewHandler(store, counter, nil, nullLogger{}, "zero", 60, c)
+	h := NewHandler(store, counter, nil, nullLogger{}, "zero", 60, c, false)
 	w := fakeClient()
 	h.ServeDNS(w, buildReq("example.com"))
 
@@ -133,7 +133,7 @@ func TestServeDNS_CacheHitAvoidsUpstream(t *testing.T) {
 	// Upstream is unreachable on purpose: if the cache path works, we
 	// never call forward, so this must succeed.
 	unreachable := []string{"127.0.0.1:1"}
-	h := NewHandler(store, counter, unreachable, nullLogger{}, "zero", 60, c)
+	h := NewHandler(store, counter, unreachable, nullLogger{}, "zero", 60, c, false)
 
 	w := fakeClient()
 	h.ServeDNS(w, buildReq("example.com"))
@@ -156,7 +156,7 @@ func TestServeDNS_CacheHitAvoidsUpstream(t *testing.T) {
 
 func TestServeDNS_EmptyQuestion(t *testing.T) {
 	store := blocklist.NewStore()
-	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil)
+	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, false)
 	w := fakeClient()
 
 	req := new(dns.Msg)
@@ -179,7 +179,7 @@ func TestServeDNS_BlockedPreservesEDNS0(t *testing.T) {
 	store := blocklist.NewStore()
 	store.Replace([]string{"ads.example.com"})
 
-	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil)
+	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, false)
 	w := fakeClient()
 	req := new(dns.Msg)
 	req.SetQuestion("ads.example.com.", dns.TypeA)
@@ -204,7 +204,7 @@ func TestServeDNS_CacheMissForwardsToUpstream(t *testing.T) {
 	c := cache.New(10)
 	defer c.Close()
 
-	h := NewHandler(store, stats.New(), []string{addr}, nullLogger{}, "zero", 60, c)
+	h := NewHandler(store, stats.New(), []string{addr}, nullLogger{}, "zero", 60, c, false)
 	w := fakeClient()
 	h.ServeDNS(w, buildReq("example.com"))
 
@@ -224,7 +224,7 @@ func TestServeDNS_UpstreamFailureProducesServfail(t *testing.T) {
 	// All upstreams are unreachable. Handler must surface SERVFAIL via
 	// dns.HandleFailed rather than write a malformed reply.
 	store := blocklist.NewStore()
-	h := NewHandler(store, stats.New(), []string{"127.0.0.1:1"}, nullLogger{}, "zero", 60, nil)
+	h := NewHandler(store, stats.New(), []string{"127.0.0.1:1"}, nullLogger{}, "zero", 60, nil, false)
 	w := fakeClient()
 	h.ServeDNS(w, buildReq("example.com"))
 	if w.written == nil {
@@ -243,7 +243,7 @@ func TestServeDNS_WriteSinkholeErrorIsLogged(t *testing.T) {
 	store := blocklist.NewStore()
 	store.Replace([]string{"ads.example.com"})
 
-	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil)
+	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, false)
 	w := fakeClient()
 	w.writeError = errFakeWriteFailed
 	h.ServeDNS(w, buildReq("ads.example.com"))
@@ -265,7 +265,7 @@ func TestServeDNS_BlockedMXReturnsNoAnswer(t *testing.T) {
 	store := blocklist.NewStore()
 	store.Replace([]string{"ads.example.com"})
 
-	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil)
+	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, false)
 	w := fakeClient()
 	req := new(dns.Msg)
 	req.SetQuestion("ads.example.com.", dns.TypeMX)
@@ -279,6 +279,124 @@ func TestServeDNS_BlockedMXReturnsNoAnswer(t *testing.T) {
 	}
 	if len(w.written.Answer) != 0 {
 		t.Errorf("Answer = %v, want empty", w.written.Answer)
+	}
+}
+
+func TestIsPrivatePTR(t *testing.T) {
+	// Verify the zone-list covers all RFC 6303 private ranges and that
+	// non-PTR queries and public-range PTR queries are not matched.
+	cases := []struct {
+		name  string
+		qtype uint16
+		want  bool
+	}{
+		// RFC 1918 IPv4 — private
+		{"1.0.0.10.in-addr.arpa.", dns.TypePTR, true},
+		{"255.255.0.10.in-addr.arpa.", dns.TypePTR, true},
+		{"1.1.16.172.in-addr.arpa.", dns.TypePTR, true},
+		{"1.1.31.172.in-addr.arpa.", dns.TypePTR, true},
+		{"1.1.168.192.in-addr.arpa.", dns.TypePTR, true},
+		// Zone apex itself
+		{"168.192.in-addr.arpa.", dns.TypePTR, true},
+		// IPv6 ULA
+		{"1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.d.f.ip6.arpa.", dns.TypePTR, true},
+		{"1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.c.f.ip6.arpa.", dns.TypePTR, true},
+		// IPv6 link-local
+		{"1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.e.f.ip6.arpa.", dns.TypePTR, true},
+		{"1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.b.e.f.ip6.arpa.", dns.TypePTR, true},
+		// Public range — must not match
+		{"4.3.2.1.in-addr.arpa.", dns.TypePTR, false},
+		{"8.8.8.8.in-addr.arpa.", dns.TypePTR, false},
+		// 172.15 is NOT in 172.16/12
+		{"1.1.15.172.in-addr.arpa.", dns.TypePTR, false},
+		// Same name but wrong qtype — must not match
+		{"1.0.0.10.in-addr.arpa.", dns.TypeA, false},
+		{"1.0.0.10.in-addr.arpa.", dns.TypeAAAA, false},
+	}
+	for _, tc := range cases {
+		if got := isPrivatePTR(tc.qtype, tc.name); got != tc.want {
+			t.Errorf("isPrivatePTR(%d, %q) = %v, want %v", tc.qtype, tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestServeDNS_LocalPTRReturnsNXDOMAIN(t *testing.T) {
+	// Private PTR query with localPTR enabled must yield authoritative
+	// NXDOMAIN without touching the upstream or the blocklist.
+	store := blocklist.NewStore()
+	counter := stats.New()
+	h := NewHandler(store, counter, []string{"127.0.0.1:1"}, nullLogger{}, "zero", 60, nil, true)
+	w := fakeClient()
+	req := new(dns.Msg)
+	req.SetQuestion("1.1.168.192.in-addr.arpa.", dns.TypePTR)
+	h.ServeDNS(w, req)
+
+	if w.written == nil {
+		t.Fatal("no response written")
+	}
+	if w.written.Rcode != dns.RcodeNameError {
+		t.Errorf("Rcode = %d, want NXDOMAIN", w.written.Rcode)
+	}
+	if !w.written.Authoritative {
+		t.Error("local PTR reply must be authoritative")
+	}
+	s := counter.Snapshot(0)
+	if s.LocalPTRCount != 1 {
+		t.Errorf("LocalPTRCount = %d, want 1", s.LocalPTRCount)
+	}
+	if s.BlockedCount != 0 {
+		t.Errorf("BlockedCount = %d, want 0 (local PTR must not count as blocked)", s.BlockedCount)
+	}
+}
+
+func TestServeDNS_LocalPTRDisabledForwardsUpstream(t *testing.T) {
+	// With localPTR disabled, private PTR queries are forwarded normally.
+	addr, hits := startMockUpstream(t, net.IPv4(0, 0, 0, 0))
+	store := blocklist.NewStore()
+	h := NewHandler(store, stats.New(), []string{addr}, nullLogger{}, "zero", 60, nil, false)
+	w := fakeClient()
+	req := new(dns.Msg)
+	req.SetQuestion("1.1.168.192.in-addr.arpa.", dns.TypePTR)
+	h.ServeDNS(w, req)
+
+	if hits.Load() != 1 {
+		t.Errorf("upstream hits = %d, want 1 (localPTR disabled)", hits.Load())
+	}
+}
+
+func TestServeDNS_LocalPTRPreservesEDNS0(t *testing.T) {
+	// The EDNS0 OPT record must be echoed on local PTR replies for the same
+	// reason as on sinkhole replies (R12): clients that advertised it must
+	// see it echoed or they fall back to legacy DNS.
+	store := blocklist.NewStore()
+	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, true)
+	w := fakeClient()
+	req := new(dns.Msg)
+	req.SetQuestion("1.1.168.192.in-addr.arpa.", dns.TypePTR)
+	req.SetEdns0(4096, true)
+	h.ServeDNS(w, req)
+
+	if w.written == nil {
+		t.Fatal("no response written")
+	}
+	if w.written.IsEdns0() == nil {
+		t.Error("local PTR reply dropped OPT pseudo-record; clients will fall back to legacy DNS")
+	}
+}
+
+func TestServeDNS_NonPrivatePTRIsForwarded(t *testing.T) {
+	// A PTR query for a public IP address (not in any private range) must
+	// not be intercepted and must reach the upstream.
+	addr, hits := startMockUpstream(t, net.IPv4(1, 2, 3, 4))
+	store := blocklist.NewStore()
+	h := NewHandler(store, stats.New(), []string{addr}, nullLogger{}, "zero", 60, nil, true)
+	w := fakeClient()
+	req := new(dns.Msg)
+	req.SetQuestion("4.3.2.1.in-addr.arpa.", dns.TypePTR)
+	h.ServeDNS(w, req)
+
+	if hits.Load() != 1 {
+		t.Errorf("upstream hits = %d, want 1 (public PTR must be forwarded)", hits.Load())
 	}
 }
 

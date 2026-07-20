@@ -47,6 +47,10 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintln(w, "# TYPE shole_blocked_total counter")
 	fmt.Fprintf(w, "shole_blocked_total %d\n", snap.BlockedCount)
 
+	fmt.Fprintln(w, "# HELP shole_local_ptr_total Total PTR queries for RFC 6303 private-range zones answered locally with NXDOMAIN.")
+	fmt.Fprintln(w, "# TYPE shole_local_ptr_total counter")
+	fmt.Fprintf(w, "shole_local_ptr_total %d\n", snap.LocalPTRCount)
+
 	fmt.Fprintln(w, "# HELP shole_cache_hits_total Total DNS responses served from the in-memory cache.")
 	fmt.Fprintln(w, "# TYPE shole_cache_hits_total counter")
 	fmt.Fprintf(w, "shole_cache_hits_total %d\n", snap.CacheHits)

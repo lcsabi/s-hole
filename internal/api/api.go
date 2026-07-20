@@ -19,7 +19,7 @@
 //	POST   /api/reload           trigger blocklist refresh (single-flight)
 //	GET    /healthz              liveness probe (always 200 when running)
 //	GET    /readyz               readiness probe (200 once blocklist > 0)
-//	GET    /metrics              Prometheus text exposition
+//	GET    /metrics              Prometheus text exposition (queries, blocked, local_ptr, cache, blocklist)
 //	GET    /debug/pprof/*        net/http/pprof handlers; opt-in via EnablePprof
 //	GET    /                     embedded SPA from internal/api/static/
 package api

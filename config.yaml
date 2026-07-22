@@ -38,7 +38,7 @@ log_file: ""
 
 # SQLite database for persistent query log + historical top-domain queries
 # Leave empty to disable SQLite logging.
-query_db: "queries.db"
+query_db: ""
 
 # Directory to cache downloaded blocklists (avoids re-downloading on restart)
 cache_dir: "."
@@ -46,7 +46,7 @@ cache_dir: "."
 # Address:port for the admin web UI and REST API.
 # Default is "127.0.0.1:8080" — localhost only, no LAN access.
 # Set to "0.0.0.0:8080" to expose the UI to every device on the LAN.
-api_listen: "127.0.0.1:8080"
+api_listen: "0.0.0.0:8080"
 
 # Maximum number of DNS responses to hold in the in-memory cache.
 # Cached responses are served without an upstream round-trip until their TTL expires.
@@ -68,3 +68,13 @@ query_db_retention_days: 0
 # reveals goroutine stacks, heap layouts, and symbols that are useful to
 # the operator and dangerous in the wrong hands.
 enable_pprof: false
+
+# Answer PTR (reverse DNS) queries for RFC 6303 private-range zones
+# (10/8, 172.16/12, 192.168/16, fc00::/7, fe80::/10) locally with
+# authoritative NXDOMAIN instead of forwarding them upstream.
+# No public resolver can ever hold records for these addresses — forwarding
+# wastes a round-trip on every request and leaks LAN addressing to the
+# upstream resolver. Recommended: true (the default).
+# Set to false only if you run a private reverse DNS zone on your LAN and
+# want queries for it to reach a forwarding resolver that can answer them.
+local_ptr: true

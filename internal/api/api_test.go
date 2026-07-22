@@ -385,6 +385,10 @@ func TestStatsEndpoint_ReturnsSummary(t *testing.T) {
 	if got.TotalQueries != 1 || got.BlockedCount != 1 {
 		t.Errorf("summary = %+v, want 1/1", got)
 	}
+	// newTestServer seeds one blocked domain, so BlocklistSize must be 1.
+	if got.BlocklistSize != 1 {
+		t.Errorf("BlocklistSize = %d, want 1", got.BlocklistSize)
+	}
 }
 
 func TestWhitelistEndpoints_RoundTrip(t *testing.T) {

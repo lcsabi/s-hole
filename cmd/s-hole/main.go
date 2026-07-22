@@ -180,7 +180,7 @@ func main() {
 	}
 
 	logger := buildMultiLogger(fileLog, db)
-	handler := dnsserver.NewHandler(store, counter, cfg.Upstreams, logger, cfg.BlockMode, cfg.BlockTTL, dnsCache)
+	handler := dnsserver.NewHandler(store, counter, cfg.Upstreams, logger, cfg.BlockMode, cfg.BlockTTL, dnsCache, cfg.LocalPTR)
 	dnsServer := dnsserver.NewServer(cfg.Listen, handler)
 
 	// reloadMu single-flights blocklist refreshes across both the periodic

@@ -65,6 +65,13 @@ type Config struct {
 	// localhost — pprof reveals enough internal state to be useful to an
 	// attacker who can reach it.
 	EnablePprof bool `yaml:"enable_pprof"`
+	// LocalPTR enables local authoritative NXDOMAIN replies for PTR queries
+	// targeting RFC 6303 private-range reverse zones (10/8, 172.16/12,
+	// 192.168/16, fc00::/7, fe80::/10). No public resolver can answer these
+	// queries; forwarding them wastes a round-trip and leaks LAN addressing
+	// to the upstream resolver. Set to false only if you run a private
+	// reverse DNS zone on your LAN and want those queries forwarded.
+	LocalPTR bool `yaml:"local_ptr"`
 }
 
 // Defaults for the two fields whose zero value is itself a meaningful
@@ -89,10 +96,14 @@ func Load(path string) (*Config, error) {
 	defer f.Close()
 
 	// Seed zero-is-meaningful defaults before decoding; see the constant
-	// block above for why these two cannot go through applyDefaults.
+	// block above for why CacheSize and BlockTTL cannot go through
+	// applyDefaults. LocalPTR is seeded here for the same reason: its zero
+	// value (false) is a meaningful opt-out, and applyDefaults cannot
+	// distinguish an explicit `local_ptr: false` from an absent key.
 	cfg := &Config{
 		CacheSize: defaultCacheSize,
 		BlockTTL:  defaultBlockTTL,
+		LocalPTR:  true,
 	}
 	// An empty file decodes to io.EOF; we treat that as "no overrides" and
 	// fall through to applyDefaults — the README states an empty config is
@@ -128,6 +139,7 @@ func Load(path string) (*Config, error) {
 //	S_HOLE_BLOCK_TTL           → block_ttl  (integer)
 //	S_HOLE_RETENTION_DAYS      → query_db_retention_days (integer)
 //	S_HOLE_ENABLE_PPROF        → enable_pprof (1/true/yes turns it on)
+//	S_HOLE_LOCAL_PTR           → local_ptr    (1/true/yes keeps it on; 0/false/no opts out)
 func (c *Config) applyEnvOverrides() {
 	if v, ok := os.LookupEnv("S_HOLE_LISTEN"); ok {
 		c.Listen = v
@@ -177,12 +189,15 @@ func (c *Config) applyEnvOverrides() {
 	if v, ok := os.LookupEnv("S_HOLE_ENABLE_PPROF"); ok {
 		c.EnablePprof = v == "1" || v == "true" || v == "yes"
 	}
+	if v, ok := os.LookupEnv("S_HOLE_LOCAL_PTR"); ok {
+		c.LocalPTR = v == "1" || v == "true" || v == "yes"
+	}
 }
 
 // applyDefaults fills every field whose zero value is NOT a meaningful
-// setting. CacheSize and BlockTTL are deliberately absent: their
-// defaults are seeded in Load before the YAML decode so an explicit 0
-// in the file is honored.
+// setting. CacheSize, BlockTTL, and LocalPTR are deliberately absent:
+// their defaults are seeded in Load before the YAML decode so an explicit
+// 0 / false in the file is honored (see the constant block above).
 func (c *Config) applyDefaults() {
 	if c.Listen == "" {
 		// ":53" binds a dual-stack wildcard socket (IPv4 + IPv6) on every

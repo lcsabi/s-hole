@@ -206,6 +206,42 @@ func itoa(n int) string {
 	return string(buf[i:])
 }
 
+func TestCounter_RecordLocalPTR(t *testing.T) {
+	c := New()
+	c.RecordQuery("1.2.3.4", "1.1.168.192.in-addr.arpa.", false)
+	c.RecordLocalPTR()
+
+	s := c.Snapshot(0)
+	if s.LocalPTRCount != 1 {
+		t.Errorf("LocalPTRCount = %d, want 1", s.LocalPTRCount)
+	}
+	if s.TotalQueries != 1 {
+		t.Errorf("TotalQueries = %d, want 1", s.TotalQueries)
+	}
+	if s.BlockedCount != 0 {
+		t.Errorf("BlockedCount = %d, want 0", s.BlockedCount)
+	}
+}
+
+func TestCounter_LocalPTRExcludedFromCacheHitDenominator(t *testing.T) {
+	// Local PTR queries never reach the cache; they must not inflate the
+	// "forwardable" denominator used to compute CacheHitPct.
+	c := New()
+	// One normal forwardable query with a cache hit.
+	c.RecordQuery("1.2.3.4", "example.com.", false)
+	c.RecordCacheHit()
+	// One local PTR — not forwardable.
+	c.RecordQuery("1.2.3.4", "1.1.168.192.in-addr.arpa.", false)
+	c.RecordLocalPTR()
+
+	s := c.Snapshot(0)
+	// Forwardable = total(2) - blocked(0) - localPTR(1) = 1.
+	// CacheHitPct = 1 / 1 * 100 = 100 %.
+	if s.CacheHitPct != 100.0 {
+		t.Errorf("CacheHitPct = %.1f, want 100.0 (localPTR excluded from denominator)", s.CacheHitPct)
+	}
+}
+
 func TestCounter_BlockRateNeverExceeds100UnderLoad(t *testing.T) {
 	// Regression for b/021. Hammer RecordQuery from many goroutines while
 	// repeatedly calling Snapshot from one goroutine; assert

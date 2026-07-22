@@ -40,10 +40,12 @@ const topNMaxEntries = 4096
 // blocked is mutex-guarded (incremented inside RecordQuery's critical
 // section alongside the top-domain map update) — making it atomic too
 // would be misleading dead optimisation. Snapshot reads it back inside
-// the same lock.
+// the same lock. localPTR is atomic alongside cacheHit: it is
+// incremented after total, maintaining total ≥ localPTR at all times.
 type Counter struct {
 	total    atomic.Int64
 	cacheHit atomic.Int64
+	localPTR atomic.Int64
 	start    time.Time
 
 	mu         sync.Mutex
@@ -61,14 +63,19 @@ type Entry struct {
 // Summary is the JSON-serialisable snapshot returned by Counter.Snapshot
 // and surfaced by the REST API at /api/stats.
 type Summary struct {
-	Uptime       string  `json:"uptime"`
-	TotalQueries int64   `json:"total_queries"`
-	BlockedCount int64   `json:"blocked_count"`
-	BlockedPct   float64 `json:"blocked_pct"`
-	CacheHits    int64   `json:"cache_hits"`
-	CacheHitPct  float64 `json:"cache_hit_pct"`
-	TopDomains   []Entry `json:"top_domains"`
-	TopClients   []Entry `json:"top_clients"`
+	Uptime        string  `json:"uptime"`
+	TotalQueries  int64   `json:"total_queries"`
+	BlockedCount  int64   `json:"blocked_count"`
+	BlockedPct    float64 `json:"blocked_pct"`
+	LocalPTRCount int64   `json:"local_ptr_count"`
+	CacheHits     int64   `json:"cache_hits"`
+	CacheHitPct   float64 `json:"cache_hit_pct"`
+	// BlocklistSize is the current number of domains in the block set.
+	// Set by the API handler (not Counter.Snapshot) because the stats
+	// package does not depend on the blocklist package.
+	BlocklistSize int     `json:"blocklist_size"`
+	TopDomains    []Entry `json:"top_domains"`
+	TopClients    []Entry `json:"top_clients"`
 }
 
 // New returns a Counter with its start time set to now and empty top-N
@@ -142,6 +149,14 @@ func (c *Counter) RecordCacheHit() {
 	c.cacheHit.Add(1)
 }
 
+// RecordLocalPTR increments the local-PTR counter. Called from the DNS
+// handler after RecordQuery when a PTR query for an RFC 6303 private-range
+// zone is answered locally instead of being forwarded upstream. The caller
+// must invoke RecordQuery first so that total ≥ localPTR at all times.
+func (c *Counter) RecordLocalPTR() {
+	c.localPTR.Add(1)
+}
+
 // topNTarget selects which of the two tally maps Snapshot/topN reads.
 // We pass an enum rather than the map pointer itself so the map header is
 // read under c.mu — see R31. Reading c.topDomains as a function argument
@@ -156,35 +171,38 @@ const (
 
 // Snapshot returns a point-in-time summary with the top-n domains and clients.
 //
-// Load order matters: blocked must be read BEFORE total. RecordQuery
-// increments total (atomic) first, then increments blocked under the
-// mutex. Reading in the opposite order can observe (total=N,
-// blocked=N+k) when more queries complete between the two loads,
-// producing a block rate >100% in the UI.
+// Load order: blocked is read under mu BEFORE total (atomic). RecordQuery
+// increments total first, then blocked under mu — the reverse read order
+// prevents observing blocked > total (b/021). localPTR is read after total:
+// RecordLocalPTR is called after RecordQuery, so total ≥ localPTR always.
+// The cache-hit denominator excludes both blocked and localPTR because
+// neither class ever reaches the cache or upstream.
 func (c *Counter) Snapshot(topN int) Summary {
 	c.mu.Lock()
 	blocked := c.blocked
 	c.mu.Unlock()
 	total := c.total.Load()
+	localPTR := c.localPTR.Load()
 	hits := c.cacheHit.Load()
 	blockPct := 0.0
 	if total > 0 {
 		blockPct = float64(blocked) / float64(total) * 100
 	}
-	forwardable := total - blocked
+	forwardable := total - blocked - localPTR
 	hitPct := 0.0
 	if forwardable > 0 {
 		hitPct = float64(hits) / float64(forwardable) * 100
 	}
 	return Summary{
-		Uptime:       time.Since(c.start).Round(time.Second).String(),
-		TotalQueries: total,
-		BlockedCount: blocked,
-		BlockedPct:   blockPct,
-		CacheHits:    hits,
-		CacheHitPct:  hitPct,
-		TopDomains:   c.topN(topNDomains, topN),
-		TopClients:   c.topN(topNClients, topN),
+		Uptime:        time.Since(c.start).Round(time.Second).String(),
+		TotalQueries:  total,
+		BlockedCount:  blocked,
+		BlockedPct:    blockPct,
+		LocalPTRCount: localPTR,
+		CacheHits:     hits,
+		CacheHitPct:   hitPct,
+		TopDomains:    c.topN(topNDomains, topN),
+		TopClients:    c.topN(topNClients, topN),
 	}
 }
 
@@ -220,8 +238,8 @@ func (c *Counter) topN(target topNTarget, n int) []Entry {
 // (stats_interval) and once at shutdown.
 func (c *Counter) Print() {
 	s := c.Snapshot(5)
-	fmt.Printf("[stats] uptime=%s total=%d blocked=%d (%.1f%%) cache-hits=%d (%.1f%%)\n",
-		s.Uptime, s.TotalQueries, s.BlockedCount, s.BlockedPct, s.CacheHits, s.CacheHitPct)
+	fmt.Printf("[stats] uptime=%s total=%d blocked=%d (%.1f%%) local-ptr=%d cache-hits=%d (%.1f%%)\n",
+		s.Uptime, s.TotalQueries, s.BlockedCount, s.BlockedPct, s.LocalPTRCount, s.CacheHits, s.CacheHitPct)
 	if len(s.TopDomains) > 0 {
 		fmt.Println("[stats] top blocked domains:")
 		for i, e := range s.TopDomains {

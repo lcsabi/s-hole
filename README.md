@@ -127,7 +127,7 @@ All configuration lives in `config.yaml`. Every field has a safe default; an emp
 | `block_ttl` | `300` | TTL (seconds) advertised on blocked replies; `0` tells clients not to cache them |
 | `log_file` | stdout | Path to the plain-text query log |
 | `log_queries` | `all` | Which queries to write to logs: `all`, `blocked`, or `none` |
-| `query_db` | `queries.db` | Path to the SQLite query log database (empty to disable) |
+| `query_db` | _(off)_ | Path to the SQLite query log database; set a path to enable, empty disables it |
 | `db_flush_interval` | `30s` | How often buffered queries are committed to SQLite |
 | `cache_size` | `2000` | Maximum DNS responses held in the in-memory cache (0 to disable) |
 | `stats_interval` | `5m` | How often stats are printed to stdout |
@@ -410,7 +410,7 @@ Coverage by package (after `go test -cover ./...`):
 | `internal/dnsserver` | 88.4 % |
 | `internal/querylog` | 85.6 % |
 | `cmd/s-hole` | 31.7 % |
-| **module-wide** | **76.8 %** |
+| **module-wide** | **77.5 %** |
 
 The uncovered region is the `main()` bootstrap and the Windows-only SCM glue — both exercised by manual smoke tests, not unit tests.
 

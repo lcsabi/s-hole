@@ -30,67 +30,9 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   set to `false` if you run a private reverse DNS zone on your LAN). The counter
   appears as `local_ptr_count` in `/api/stats` and `shole_local_ptr_total` in
   `/metrics`. The `S_HOLE_LOCAL_PTR` environment variable overrides the config.
-
-### Added
 - The dashboard shows a fourth stat card, **Cache Hit Rate**, bound to
   the `cache_hit_pct` value the UI already polls from `/api/stats` —
   the number that tells you whether `cache_size` fits your network.
-
-### Fixed
-- The CI lint job passes again — two stacked problems: the
-  `golangci-lint-action@v6` pin installs golangci-lint v1, which
-  cannot even load a `version: "2"` config targeting Go 1.25 (bumped
-  to `@v8`, which installs v2); and once v2 actually runs, it lacks
-  the v1-era default errcheck exclusions, flagging 40+ idiomatic
-  best-effort calls. Restored a documented exclusion subset in
-  `.golangci.yml`, made `Server.Shutdown` log listener errors instead
-  of discarding them, and fixed `make tools-install` to install
-  golangci-lint v2.
-- `deploy/install-linux.sh` no longer advertises `http://<lan-ip>:8080`
-  for the admin UI when `api_listen` is left at the localhost-only
-  default — the shell-script counterpart of the T4 banner fix. It now
-  reads `api_listen` from the installed config and prints either the
-  LAN URLs or a localhost note with the opt-in instruction.
-- README's Docker port-conflict note no longer recommends disabling
-  `systemd-resolved` entirely (which kills host DNS resolution on
-  distros where `resolv.conf` points at the stub); it now shows the
-  `DNSStubListener=no` drop-in that releases port 53 while keeping the
-  host resolver working.
-- `cache_size: 0` in the YAML file now actually disables the DNS
-  response cache, as documented. Previously the post-decode default
-  silently turned 0 back into 2000; only the `S_HOLE_CACHE_SIZE=0` env
-  override worked (T1). `block_ttl: 0` is likewise honored now — it
-  tells clients not to cache sinkhole replies.
-- Truncated upstream replies (TC bit) are retried over TCP against the
-  same upstream before being returned, so large answers (DNSSEC, big
-  TXT/CDN RRsets) resolve instead of dead-ending the client's TCP
-  fallback at the forwarder. Truncated responses are also no longer
-  cached (T2).
-- The DNS response cache keys unknown record types as `TYPE1234`
-  instead of an empty string, so two distinct unknown qtypes can no
-  longer collide on one cache entry (T6).
-- One overlong blocklist line (past bufio's default 64 KiB token cap)
-  no longer aborts parsing of the entire list; the parser tolerates
-  lines up to 1 MiB and keeps dropping garbage per-line as before (T5).
-- The startup banner no longer advertises `http://<lan-ip>:8080` for
-  the admin UI when `api_listen` is bound to localhost (the default) —
-  it prints `http://127.0.0.1:8080 (this machine only)` instead (T4).
-
-### Changed
-- Dependency refresh via Dependabot: `alpine` 3.24 base image,
-  `golang.org/x/sys` v0.47.0, and CI action majors (checkout v7,
-  cache v6, setup-go v6, golangci-lint-action v9).
-- The default `listen` is now `":53"` (dual-stack wildcard, IPv4 +
-  IPv6) instead of the IPv4-only `"0.0.0.0:53"`, so clients querying
-  over IPv6 on dual-stack LANs are served instead of silently ignored.
-  Set `listen: "0.0.0.0:53"` explicitly to restore IPv4-only binding.
-  The README also documents the RA/RDNSS bypass trap on IPv6 networks.
-- The admin dashboard polls `/api/stats` and `/api/queries` every 3
-  seconds (was 5) for a snappier live view.
-- `/api/queries` clamps `?limit=` to 1000 so one request cannot
-  marshal the entire history table into a single JSON response (T3).
-
-### Added
 - `CLAUDE.md` at the repo root gives AI coding assistants the
   canonical commands, hot-path architecture, concurrency invariants,
   and process conventions up front.
@@ -194,6 +136,18 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   R28, plus coverage for everything new in this release).
 
 ### Changed
+- Dependency refresh via Dependabot: `alpine` 3.24 base image,
+  `golang.org/x/sys` v0.47.0, and CI action majors (checkout v7,
+  cache v6, setup-go v6, golangci-lint-action v9).
+- The default `listen` is now `":53"` (dual-stack wildcard, IPv4 +
+  IPv6) instead of the IPv4-only `"0.0.0.0:53"`, so clients querying
+  over IPv6 on dual-stack LANs are served instead of silently ignored.
+  Set `listen: "0.0.0.0:53"` explicitly to restore IPv4-only binding.
+  The README also documents the RA/RDNSS bypass trap on IPv6 networks.
+- The admin dashboard polls `/api/stats` and `/api/queries` every 3
+  seconds (was 5) for a snappier live view.
+- `/api/queries` clamps `?limit=` to 1000 so one request cannot
+  marshal the entire history table into a single JSON response (T3).
 - DESIGN's "Alternatives Considered" no longer claims Windows is the
   first-class platform. Linux is the primary deployment target; the
   Windows SCM path is the secondary supported platform.
@@ -212,6 +166,44 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   `/metrics` endpoint can surface cache statistics.
 
 ### Fixed
+- The CI lint job passes again — two stacked problems: the
+  `golangci-lint-action@v6` pin installs golangci-lint v1, which
+  cannot even load a `version: "2"` config targeting Go 1.25 (bumped
+  to `@v8`, which installs v2); and once v2 actually runs, it lacks
+  the v1-era default errcheck exclusions, flagging 40+ idiomatic
+  best-effort calls. Restored a documented exclusion subset in
+  `.golangci.yml`, made `Server.Shutdown` log listener errors instead
+  of discarding them, and fixed `make tools-install` to install
+  golangci-lint v2.
+- `deploy/install-linux.sh` no longer advertises `http://<lan-ip>:8080`
+  for the admin UI when `api_listen` is left at the localhost-only
+  default — the shell-script counterpart of the T4 banner fix. It now
+  reads `api_listen` from the installed config and prints either the
+  LAN URLs or a localhost note with the opt-in instruction.
+- README's Docker port-conflict note no longer recommends disabling
+  `systemd-resolved` entirely (which kills host DNS resolution on
+  distros where `resolv.conf` points at the stub); it now shows the
+  `DNSStubListener=no` drop-in that releases port 53 while keeping the
+  host resolver working.
+- `cache_size: 0` in the YAML file now actually disables the DNS
+  response cache, as documented. Previously the post-decode default
+  silently turned 0 back into 2000; only the `S_HOLE_CACHE_SIZE=0` env
+  override worked (T1). `block_ttl: 0` is likewise honored now — it
+  tells clients not to cache sinkhole replies.
+- Truncated upstream replies (TC bit) are retried over TCP against the
+  same upstream before being returned, so large answers (DNSSEC, big
+  TXT/CDN RRsets) resolve instead of dead-ending the client's TCP
+  fallback at the forwarder. Truncated responses are also no longer
+  cached (T2).
+- The DNS response cache keys unknown record types as `TYPE1234`
+  instead of an empty string, so two distinct unknown qtypes can no
+  longer collide on one cache entry (T6).
+- One overlong blocklist line (past bufio's default 64 KiB token cap)
+  no longer aborts parsing of the entire list; the parser tolerates
+  lines up to 1 MiB and keeps dropping garbage per-line as before (T5).
+- The startup banner no longer advertises `http://<lan-ip>:8080` for
+  the admin UI when `api_listen` is bound to localhost (the default) —
+  it prints `http://127.0.0.1:8080 (this machine only)` instead (T4).
 - Integration test no longer relies on a hardcoded 150 ms sleep to
   wait for the SQLite flush tick — it polls for up to 2 s. Fast on
   healthy CI, robust under load.

@@ -188,18 +188,12 @@ builds operator trust but changes no filtering behaviour.
 
 ## Pending decisions
 
-- **Sample config ships `query_db: ""` + `api_listen: "0.0.0.0:8080"`** —
-  the committed `config.yaml` turns SQLite logging off and exposes the
-  dashboard to the LAN (set during the first-hardware deployment prep).
-  Two consequences to weigh before a tagged release: with the DB off, the
-  dashboard's recent-queries panel is empty out of the box; and shipping
-  `0.0.0.0` for the unauthenticated admin UI runs against the
-  localhost-only security posture (SECURITY.md; the code default is
-  `127.0.0.1:8080`). Decide whether the shipped sample should revert to
-  the conservative `queries.db` / `127.0.0.1:8080` before v0.1.0. The
-  README config table documents the *code* defaults (`api_listen`
-  `127.0.0.1:8080`, `query_db` off), which are unaffected by the sample's
-  overrides.
+- _None open._ (Resolved: the shipped sample `config.yaml` was restored
+  to the conservative `query_db: "queries.db"` / `api_listen:
+  "127.0.0.1:8080"` after `0.0.0.0`/SQLite-off values were accidentally
+  committed with CL 27 — the unauthenticated admin UI should not ship
+  LAN-exposed. The README config table documents the *code* defaults,
+  which are `api_listen` `127.0.0.1:8080` and `query_db` off.)
 
 ## Deliberately not planned
 

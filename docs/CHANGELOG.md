@@ -166,6 +166,12 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   `/metrics` endpoint can surface cache statistics.
 
 ### Fixed
+- The shipped sample `config.yaml` is back to conservative defaults —
+  `query_db: "queries.db"` (SQLite logging on) and `api_listen:
+  "127.0.0.1:8080"` (localhost only). A first-hardware deployment's
+  `""` / `0.0.0.0:8080` working values had been committed by accident,
+  which would have exposed the unauthenticated admin UI to the LAN out
+  of the box.
 - The CI lint job passes again — two stacked problems: the
   `golangci-lint-action@v6` pin installs golangci-lint v1, which
   cannot even load a `version: "2"` config targeting Go 1.25 (bumped

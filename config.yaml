@@ -38,7 +38,7 @@ log_file: ""
 
 # SQLite database for persistent query log + historical top-domain queries
 # Leave empty to disable SQLite logging.
-query_db: ""
+query_db: "queries.db"
 
 # Directory to cache downloaded blocklists (avoids re-downloading on restart)
 cache_dir: "."
@@ -46,7 +46,7 @@ cache_dir: "."
 # Address:port for the admin web UI and REST API.
 # Default is "127.0.0.1:8080" — localhost only, no LAN access.
 # Set to "0.0.0.0:8080" to expose the UI to every device on the LAN.
-api_listen: "0.0.0.0:8080"
+api_listen: "127.0.0.1:8080"
 
 # Maximum number of DNS responses to hold in the in-memory cache.
 # Cached responses are served without an upstream round-trip until their TTL expires.

@@ -19,7 +19,7 @@ rails.
 | 3 | Wildcard / subdomain blocking | High | not started |
 | 4 | Wire up or delete `DBLogger.TopBlocked` | Medium | not started |
 | 5 | DNS-over-HTTPS upstream support | Medium | not started |
-| 6 | Hardening batch: goleak, govulncheck, embedded fallback blocklist | Medium | not started |
+| 6 | Hardening batch: goleak, govulncheck, empty-blocklist alarm | Medium | done (CL 29) |
 | 7 | Windows service logging (slog is lost under the SCM) | Low | not started |
 | 8 | Benchmark companions for the hot path | Low | blocked on #3 |
 | 9 | Answer private-range PTR queries locally (RFC 6303) | Low | done (CL 27) |
@@ -90,15 +90,25 @@ the DoH hostname itself. Impact is Medium rather than High because
 plain-DNS interception is an ISP-specific problem — many home LANs
 never hit it.
 
-## 6. Hardening batch (one CL)
+## 6. Hardening batch (one CL) — done (CL 29)
 
 - `go.uber.org/goleak` in `TestMain` for the goroutine-heavy packages
   (cache, querylog, dnsserver). The one new dependency worth waving
-  through.
-- `govulncheck` as a CI step.
-- Embedded fallback blocklist (`//go:embed`, ~1 000 core ad domains)
+  through. **Done** — test-only dep; all three packages pass clean.
+- `govulncheck` as a CI step. **Done** — standalone CI job plus a
+  `make vuln` target.
+- ~~Embedded fallback blocklist (`//go:embed`, ~1 000 core ad domains)
   so a first run with no network still filters something and
-  `/readyz` can go green offline.
+  `/readyz` can go green offline.~~ **Dropped in favor of an
+  empty-blocklist alarm.** The offline-first-run scenario is vanishingly
+  narrow — s-hole already needs network to forward queries at all, and
+  the on-disk cache covers every restart after one successful download.
+  A vendored list is stale on commit, carries licensing/provenance
+  baggage, bloats the binary, and *masks* the "nothing loaded" problem
+  instead of surfacing it. `blocklist.Update` now emits a loud WARN
+  whenever the block set ends up empty (covering both the all-sources-
+  failed path and the source-returned-200-but-parsed-to-zero path,
+  which previously logged `total=0` at Info like a healthy refresh).
 
 ## 7. Windows service logging
 

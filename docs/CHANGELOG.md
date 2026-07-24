@@ -9,6 +9,15 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
 ## [Unreleased]
 
 ### Added
+- s-hole now logs a loud `WARN` whenever a blocklist update leaves the block
+  set empty — a fresh run that could reach no source, or a source that
+  responded but parsed to zero domains. Previously an empty result after a
+  reachable source looked like a normal refresh in the logs, so "running but
+  blocking nothing" could go unnoticed. (CL 29)
+- Two standing CI safety nets: goroutine-leak detection (`go.uber.org/goleak`,
+  test-only) across the cache, querylog, and DNS-server packages, and
+  `govulncheck` scanning for known CVEs (also available locally via
+  `make vuln`). (CL 29)
 - The current number of blocked domains is now included in the `/api/stats`
   JSON response as `blocklist_size` and displayed as a "Blocklist Size" card
   on the dashboard. This confirms at a glance that the blocklist downloaded

@@ -1,6 +1,8 @@
 package blocklist
 
 import (
+	"bytes"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -180,6 +182,54 @@ func TestUpdate_PreservesStoreOnFullFailure(t *testing.T) {
 	}
 }
 
+func TestUpdate_EmptyBlockSetWarns(t *testing.T) {
+	// A reachable source that returns 200 but only comments parses to zero
+	// domains. Update must NOT report an error (the source responded), but it
+	// must raise the empty-block-set alarm so an operator notices s-hole is
+	// running with nothing to block — otherwise the "blocklist updated
+	// total=0" Info line would look like a normal refresh.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("# only comments, no domains\n\n"))
+	}))
+	defer srv.Close()
+
+	var buf bytes.Buffer
+	restore := swapLogger(&buf)
+	defer restore()
+
+	store := NewStore()
+	if err := Update(store, []string{srv.URL}, t.TempDir()); err != nil {
+		t.Fatalf("Update with an empty-but-reachable source returned error: %v", err)
+	}
+	if store.Len() != 0 {
+		t.Fatalf("store should be empty, got Len=%d", store.Len())
+	}
+	if !strings.Contains(buf.String(), "block set is EMPTY") {
+		t.Errorf("expected empty-block-set alarm in logs, got: %q", buf.String())
+	}
+}
+
+func TestUpdate_NonEmptyBlockSetDoesNotWarn(t *testing.T) {
+	// The alarm must stay silent on a normal refresh that loads domains,
+	// otherwise it would train operators to ignore it.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("0.0.0.0 ads.example.com\n"))
+	}))
+	defer srv.Close()
+
+	var buf bytes.Buffer
+	restore := swapLogger(&buf)
+	defer restore()
+
+	store := NewStore()
+	if err := Update(store, []string{srv.URL}, t.TempDir()); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if strings.Contains(buf.String(), "block set is EMPTY") {
+		t.Errorf("alarm fired on a non-empty refresh; logs: %q", buf.String())
+	}
+}
+
 func TestUpdate_PartialSuccessReplaces(t *testing.T) {
 	// One URL succeeds, another fails: Update should still call
 	// store.Replace with whatever it loaded.
@@ -283,4 +333,13 @@ func equalSlices(a, b []string) bool {
 func mustOldTime(t *testing.T) (oldTime time.Time) {
 	t.Helper()
 	return time.Now().Add(-48 * time.Hour)
+}
+
+// swapLogger redirects the package logger to buf for the duration of a test
+// and returns a restore func. Tests run sequentially within the package
+// (none call t.Parallel), so mutating the package-level logger is safe.
+func swapLogger(buf *bytes.Buffer) (restore func()) {
+	prev := logger
+	logger = slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	return func() { logger = prev }
 }

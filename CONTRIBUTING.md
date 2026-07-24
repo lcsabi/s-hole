@@ -41,8 +41,10 @@ make tools-install # install golangci-lint
 ```
 
 Before sending a PR, please run `make check` locally. CI runs the same
-thing plus a race-enabled test run and cross-compile for
-`linux/{amd64,arm64,armv7}` and `windows/amd64`.
+thing plus a race-enabled test run (which also runs the goroutine-leak
+check via `go.uber.org/goleak`), a `govulncheck` scan (`make vuln`
+locally), and cross-compile for `linux/{amd64,arm64,armv7}` and
+`windows/amd64`.
 
 ### Running the binary
 

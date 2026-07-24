@@ -391,6 +391,7 @@ make test        # plain test run
 make test-race   # tests under the race detector (CGO toolchain required)
 make bench       # one iteration of each benchmark
 make lint        # golangci-lint
+make vuln        # govulncheck — scan deps + code for known CVEs
 make fmt         # gofmt -s -w
 make install     # go install into $GOBIN
 make version     # print the version that the next build would embed
@@ -405,7 +406,7 @@ Coverage by package (after `go test -cover ./...`):
 | `internal/version` | 100 % |
 | `internal/cache` | 94.8 % |
 | `internal/api` | 91.2 % |
-| `internal/blocklist` | 89.6 % |
+| `internal/blocklist` | 89.9 % |
 | `internal/dnsserver` | 88.4 % |
 | `internal/querylog` | 85.6 % |
 | `cmd/s-hole` | 31.7 % |
@@ -424,7 +425,7 @@ s-hole v1.0.0
   os/arch: linux/amd64
 ```
 
-CI runs lint + `go mod verify` + race-enabled tests + cross-compile for `linux/{amd64,arm64,armv7}` and `windows/amd64` on every push and PR — see `.github/workflows/ci.yml`. Dependabot keeps Go modules, GitHub Actions, and the Docker base image up to date.
+CI runs lint + `go mod verify` + race-enabled tests + `govulncheck` + cross-compile for `linux/{amd64,arm64,armv7}` and `windows/amd64` on every push and PR — see `.github/workflows/ci.yml`. The race-enabled run also exercises `go.uber.org/goleak`, which fails the goroutine-heavy packages (cache, querylog, dnsserver) if any goroutine outlives its tests. Dependabot keeps Go modules, GitHub Actions, and the Docker base image up to date.
 
 Fuzz tests live alongside the unit tests for `blocklist.ValidDomain`, `blocklist.parseHostsFormat`, and `blocklist.cacheFilename`. Run them ad-hoc with `go test -fuzz=FuzzValidDomain -fuzztime=30s ./internal/blocklist/`.
 
@@ -511,7 +512,7 @@ All implementation packages live under `internal/` so they cannot be imported by
 
 ### Dependencies
 
-The "afternoon's reading" claim extends to the dependency graph: four direct modules, chosen where hand-rolling would be a source of subtle bugs and skipped everywhere else.
+The "afternoon's reading" claim extends to the dependency graph: four direct modules linked into the binary, chosen where hand-rolling would be a source of subtle bugs and skipped everywhere else. (A fifth direct module, `go.uber.org/goleak`, is test-only — it runs the suite under a goroutine-leak check and is never compiled into the shipped binary.)
 
 | Module | Why it's a dependency |
 |---|---|

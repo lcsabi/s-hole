@@ -13,7 +13,7 @@ LDFLAGS     = -ldflags="-s -w \
 # On Windows use: $env:GOOS="linux"; $env:GOARCH="arm64"; go build ...
 # or run these targets from WSL / Git Bash.
 
-.PHONY: all pi pi32 linux clean test test-race bench fmt vet lint check install help version tools-install
+.PHONY: all pi pi32 linux clean test test-race bench fmt vet lint vuln check install help version tools-install
 
 ## help: show this help text (default target)
 help:
@@ -63,6 +63,12 @@ vet:
 ## lint: run golangci-lint (install via `make tools-install` if missing)
 lint:
 	golangci-lint run ./...
+
+## vuln: scan dependencies + code for known CVEs (govulncheck)
+vuln:
+	# go run keeps govulncheck out of the module's require set; CI runs the
+	# same tool via the golang/govulncheck-action job.
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
 ## tools-install: install developer tools (golangci-lint) into $GOBIN
 tools-install:

@@ -45,11 +45,26 @@ func Update(store *Store, urls []string, cacheDir string) error {
 	if ok == 0 && len(urls) > 0 {
 		logger.Error("all sources failed; keeping existing block set",
 			"sources", len(urls), "current", store.Len())
+		warnIfEmpty(store)
 		return fmt.Errorf("all blocklists failed: %w", lastErr)
 	}
 	store.Replace(all)
 	logger.Info("blocklist updated", "total", store.Len())
+	warnIfEmpty(store)
 	return nil
+}
+
+// warnIfEmpty raises a loud alarm when the block set is empty after an
+// update. An empty store means s-hole is answering queries but blocking
+// nothing — typically a first run that could reach no blocklist URL (and had
+// no disk cache to fall back on), or a source that returned 200 but parsed to
+// zero valid domains. /readyz reports this as 503, but that signal is easy to
+// miss on a headless box, so the state is surfaced here at WARN as well.
+func warnIfEmpty(store *Store) {
+	if store.Len() == 0 {
+		logger.Warn("block set is EMPTY: s-hole is running but blocking no domains — " +
+			"check the blocklist URLs and network connectivity")
+	}
 }
 
 func fetchList(url, cacheDir string) ([]string, error) {

@@ -13,6 +13,7 @@
 //
 //	GET    /api/stats            JSON Snapshot
 //	GET    /api/queries          recent rows from SQLite (?limit=N, default 50, max 1000)
+//	GET    /api/top-blocked      all-time most-blocked domains from SQLite (?limit=N, default 50, max 1000)
 //	GET    /api/whitelist        runtime whitelist (sorted)
 //	POST   /api/whitelist        add a domain (ValidDomain-gated, 64 KiB cap)
 //	DELETE /api/whitelist        remove a domain
@@ -126,6 +127,7 @@ func (s *Server) handler() http.Handler {
 
 	mux.HandleFunc("GET /api/stats", s.handleStats)
 	mux.HandleFunc("GET /api/queries", s.handleQueries)
+	mux.HandleFunc("GET /api/top-blocked", s.handleTopBlocked)
 	mux.HandleFunc("GET /api/whitelist", s.handleWhitelistList)
 	mux.HandleFunc("POST /api/whitelist", s.handleWhitelistAdd)
 	mux.HandleFunc("DELETE /api/whitelist", s.handleWhitelistRemove)
@@ -199,6 +201,36 @@ func (s *Server) handleQueries(w http.ResponseWriter, r *http.Request) {
 		rows = []querylog.QueryRow{}
 	}
 	writeJSON(w, response{Queries: rows})
+}
+
+// handleTopBlocked serves the all-time most-blocked domains from the SQLite
+// query log — the persistent, unpruned companion to the in-memory
+// top_domains list in /api/stats (which resets on restart and caps at
+// topNMaxEntries). When query logging is disabled (s.db == nil) it returns an
+// empty list rather than an error, so the dashboard's "All time" toggle
+// degrades to an empty panel instead of a failure, exactly like /api/queries.
+func (s *Server) handleTopBlocked(w http.ResponseWriter, r *http.Request) {
+	limit := parseLimit(r)
+
+	type response struct {
+		Domains []querylog.Entry `json:"domains"`
+	}
+
+	if s.db == nil {
+		writeJSON(w, response{Domains: []querylog.Entry{}})
+		return
+	}
+
+	rows, err := s.db.TopBlocked(r.Context(), limit)
+	if err != nil {
+		logger.Warn("top-blocked query failed", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if rows == nil {
+		rows = []querylog.Entry{}
+	}
+	writeJSON(w, response{Domains: rows})
 }
 
 func (s *Server) handleWhitelistList(w http.ResponseWriter, _ *http.Request) {

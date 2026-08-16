@@ -127,6 +127,36 @@
       font-size: 12px;
     }
 
+    /* Segmented toggle (Since start / All time) in a panel header */
+    .seg {
+      display: inline-flex;
+      gap: 2px;
+      padding: 2px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+
+    .seg button {
+      padding: 3px 9px;
+      font-size: 11px;
+      font-weight: 600;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--muted);
+    }
+
+    .seg button:hover {
+      opacity: 1;
+      color: var(--text);
+    }
+
+    .seg button.active {
+      background: var(--surface);
+      color: var(--text);
+    }
+
     /* ── Tables ──────────────────────────────────────────────── */
     table {
       width: 100%;
@@ -307,7 +337,13 @@
 
   <div class="two-col">
     <div class="panel">
-      <div class="panel-hd">Top Blocked Domains <span class="count" id="domains-count"></span></div>
+      <div class="panel-hd">
+        <span>Top Blocked Domains <span class="count" id="domains-count"></span></span>
+        <span class="seg" id="domains-mode">
+          <button type="button" data-mode="start" class="active">Since start</button>
+          <button type="button" data-mode="all">All time</button>
+        </span>
+      </div>
       <table>
         <thead>
           <tr>
@@ -323,7 +359,7 @@
       </table>
     </div>
     <div class="panel">
-      <div class="panel-hd">Top Clients <span class="count" id="clients-count"></span></div>
+      <div class="panel-hd"><span>Top Clients <span class="count" id="clients-count"></span></span></div>
       <table>
         <thead>
           <tr>
@@ -378,6 +414,28 @@
 
     function setTbody(id, html) { $(id).innerHTML = html; }
 
+    // 'start' = in-memory tally from /api/stats (resets on restart);
+    // 'all' = persistent tally from /api/top-blocked (SQLite, survives restart).
+    let domainsMode = 'start';
+
+    function renderTopDomains(domains, emptyMsg) {
+      setTbody('top-domains', domains.length
+        ? domains.map(e =>
+          `<tr><td class="mono">${esc(e.name)}</td><td class="muted num">${fmt(e.count)}</td></tr>`
+        ).join('')
+        : `<tr><td colspan="2" class="empty">${emptyMsg}</td></tr>`);
+      $('domains-count').textContent = domains.length ? `(${domains.length})` : '';
+    }
+
+    // Fetch and render the all-time list independently of the stats poll so
+    // the toggle updates instantly on click and on each refresh tick.
+    async function refreshTopDomainsAllTime() {
+      try {
+        const { domains } = await fetch('/api/top-blocked?limit=10').then(r => r.json());
+        renderTopDomains(domains || [], 'No blocked queries recorded — ensure query_db is set in config.yaml');
+      } catch (e) { console.error('top-blocked fetch failed:', e); }
+    }
+
     async function refresh() {
       try {
         const s = await fetch('/api/stats').then(r => r.json());
@@ -389,13 +447,11 @@
         $('stat-cache').textContent = s.cache_hit_pct.toFixed(1) + '%';
         $('stat-blocklist').textContent = fmt(s.blocklist_size);
 
-        const domains = s.top_domains || [];
-        setTbody('top-domains', domains.length
-          ? domains.map(e =>
-            `<tr><td class="mono">${esc(e.name)}</td><td class="muted num">${fmt(e.count)}</td></tr>`
-          ).join('')
-          : '<tr><td colspan="2" class="empty">No blocked queries yet</td></tr>');
-        $('domains-count').textContent = domains.length ? `(${domains.length})` : '';
+        if (domainsMode === 'all') {
+          await refreshTopDomainsAllTime();
+        } else {
+          renderTopDomains(s.top_domains || [], 'No blocked queries yet');
+        }
 
         const clients = s.top_clients || [];
         setTbody('top-clients', clients.length
@@ -454,6 +510,23 @@
       el.className = 'action-msg ' + (ok ? 'ok' : 'err');
       setTimeout(() => { el.textContent = ''; el.className = 'action-msg'; }, 3000);
     }
+
+    // Top Blocked "Since start / All time" toggle.
+    $('domains-mode').addEventListener('click', e => {
+      const btn = e.target.closest('button[data-mode]');
+      if (!btn || btn.dataset.mode === domainsMode) return;
+      domainsMode = btn.dataset.mode;
+      for (const b of $('domains-mode').children) {
+        b.classList.toggle('active', b.dataset.mode === domainsMode);
+      }
+      // Redraw immediately from the correct source instead of waiting for
+      // the next 3 s tick.
+      if (domainsMode === 'all') {
+        refreshTopDomainsAllTime();
+      } else {
+        refresh();
+      }
+    });
 
     setInterval(refresh, 3000);
     refresh();

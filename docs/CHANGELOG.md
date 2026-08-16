@@ -30,6 +30,13 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   cannot take DNS down for the LAN. (CL 31)
 
 ### Added
+- **All-time top-blocked domains on the dashboard.** The "Top Blocked Domains"
+  panel now has a "Since start / All time" toggle. "Since start" is the
+  existing in-memory tally (resets when s-hole restarts); "All time" is a new
+  persistent tally read from the SQLite query log, so it survives restarts and
+  is not capped. It is served by a new `GET /api/top-blocked?limit=N` endpoint
+  (default 50, max 1000), which returns an empty list when `query_db` is not
+  configured. (CL 33)
 - s-hole now logs a loud `WARN` whenever a blocklist update leaves the block
   set empty — a fresh run that could reach no source, or a source that
   responded but parsed to zero domains. Previously an empty result after a

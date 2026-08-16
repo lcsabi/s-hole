@@ -17,7 +17,7 @@ rails.
 | 1 | Deploy to real hardware (Raspberry Pi) | High | procedure validated in a VM; awaiting hardware |
 | 2 | Tag `v0.1.0` + release workflow | High | not started |
 | 3 | Wildcard / subdomain blocking | High | done (CL 30) |
-| 4 | Wire up or delete `DBLogger.TopBlocked` | Medium | not started |
+| 4 | Wire up or delete `DBLogger.TopBlocked` | Medium | done (CL 33) |
 | 5 | DNS-over-HTTPS upstream support | Medium | not started |
 | 6 | Hardening batch: goleak, govulncheck, empty-blocklist alarm | Medium | done (CL 29) |
 | 7 | Windows service logging (slog is lost under the SCM) | Low | not started |
@@ -76,16 +76,16 @@ Design decisions settled in the CL:
   the subdomain-rotation hole. The suffix-aware whitelist is the
   per-domain escape hatch, so no `config.yaml` change was needed.
 
-## 4. Wire up or delete `DBLogger.TopBlocked`
+## 4. Wire up or delete `DBLogger.TopBlocked` — done (CL 33)
 
-`TopBlocked` has been exported, context-aware, and unit-tested since
-CL 2 — and no handler has ever called it. Meanwhile the dashboard's
-"Top Blocked Domains" panel uses the in-memory stats counter, which
-resets on restart and prunes at 4 096 entries. Either add
-`GET /api/top-blocked?limit=N` plus a dashboard toggle ("since start"
-vs "all time"), or delete the method — the same dead-exported-code
-reasoning S1 applied to `version.Short`. Current limbo is the worst
-option.
+`TopBlocked` had been exported, context-aware, and unit-tested since
+CL 2 — and no handler ever called it. Meanwhile the dashboard's "Top
+Blocked Domains" panel used the in-memory stats counter, which resets on
+restart and prunes at 4 096 entries. **CL 33 chose wire-up over
+deletion:** `GET /api/top-blocked?limit=N` serves the persistent SQLite
+tally, and the panel gained a "Since start / All time" toggle (default
+"Since start", so the `query_db`-off deployment is unchanged). The
+db-disabled path returns an empty list, matching `/api/queries`.
 
 ## 5. DNS-over-HTTPS upstream support
 

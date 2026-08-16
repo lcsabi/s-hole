@@ -190,6 +190,7 @@ The admin web UI is served at **`http://127.0.0.1:8080`** by default — localho
 |---|---|---|
 | `GET` | `/api/stats` | Live stats: uptime, query totals, block rate, cache hit rate, blocklist size, top domains/clients |
 | `GET` | `/api/queries?limit=N` | Last N queries from SQLite, newest first (default: 50, max: 1000) |
+| `GET` | `/api/top-blocked?limit=N` | All-time most-blocked domains from SQLite (default: 50, max: 1000); empty when `query_db` is unset |
 | `GET` | `/api/whitelist` | List all runtime-whitelisted domains |
 | `POST` | `/api/whitelist` | Add a domain — body: `{"domain": "example.com"}` |
 | `DELETE` | `/api/whitelist?domain=…` | Remove a domain from the runtime whitelist |
@@ -406,12 +407,12 @@ Coverage by package (after `go test -cover ./...`):
 | `internal/config` | 100 % |
 | `internal/version` | 100 % |
 | `internal/cache` | 94.8 % |
-| `internal/api` | 91.2 % |
+| `internal/api` | 89.2 % |
 | `internal/blocklist` | 90.4 % |
 | `internal/dnsserver` | 88.4 % |
 | `internal/querylog` | 85.6 % |
 | `cmd/s-hole` | 31.7 % |
-| **module-wide** | **77.9 %** |
+| **module-wide** | **77.8 %** |
 
 The uncovered region is the `main()` bootstrap and the Windows-only SCM glue — both exercised by manual smoke tests, not unit tests.
 

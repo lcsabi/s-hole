@@ -144,6 +144,71 @@ func TestQueriesEndpoint_WithRealDB(t *testing.T) {
 	}
 }
 
+// topBlockedResponse mirrors the JSON shape returned by /api/top-blocked.
+type topBlockedResponse struct {
+	Domains []querylog.Entry `json:"domains"`
+}
+
+func TestTopBlockedEndpoint_WithRealDB(t *testing.T) {
+	// Wire a real DBLogger so the s.db.TopBlocked branch is exercised
+	// end-to-end and the domains come back ordered most-blocked-first.
+	dbPath := filepath.Join(t.TempDir(), "q.db")
+	db, err := querylog.NewDBLogger(dbPath, "all", 50*time.Millisecond, 0)
+	if err != nil {
+		t.Fatalf("NewDBLogger: %v", err)
+	}
+	defer db.Close()
+
+	db.Log("1.1.1.1", "ads.com.", true)
+	db.Log("1.1.1.1", "ads.com.", true)
+	db.Log("1.1.1.1", "tracker.com.", true)
+	db.Log("1.1.1.1", "allowed.com.", false) // must not appear
+	time.Sleep(150 * time.Millisecond)       // wait for the flush tick
+
+	store := blocklist.NewStore()
+	s := New(stats.New(), db, store, nil, func() bool { return true })
+	srv := httptest.NewServer(s.handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/top-blocked?limit=10")
+	if err != nil {
+		t.Fatalf("GET /api/top-blocked: %v", err)
+	}
+	defer resp.Body.Close()
+	body := decode[topBlockedResponse](t, resp.Body)
+	if len(body.Domains) != 2 {
+		t.Fatalf("got %d domains, want 2 (allowed query excluded)", len(body.Domains))
+	}
+	if body.Domains[0].Name != "ads.com." || body.Domains[0].Count != 2 {
+		t.Errorf("top entry = %+v, want {ads.com. 2}", body.Domains[0])
+	}
+	if body.Domains[1].Name != "tracker.com." || body.Domains[1].Count != 1 {
+		t.Errorf("second entry = %+v, want {tracker.com. 1}", body.Domains[1])
+	}
+}
+
+func TestTopBlockedEndpoint_NoDBReturnsEmpty(t *testing.T) {
+	// With query logging disabled (db == nil) the endpoint must return an
+	// empty list and 200, not an error — the dashboard "All time" toggle
+	// then shows an empty panel rather than failing.
+	_, srv := newTestServer(t, nil) // newTestServer passes db == nil
+	resp, err := http.Get(srv.URL + "/api/top-blocked")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	body := decode[topBlockedResponse](t, resp.Body)
+	if body.Domains == nil {
+		t.Error("Domains is null, want [] (empty non-nil slice)")
+	}
+	if len(body.Domains) != 0 {
+		t.Errorf("got %d domains, want 0", len(body.Domains))
+	}
+}
+
 func TestQueriesEndpoint_IgnoresBadLimit(t *testing.T) {
 	// A non-numeric ?limit= must fall through to the default.
 	_, srv := newTestServer(t, nil)

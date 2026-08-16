@@ -43,6 +43,7 @@ the per-file layout here mirrors that intent for an open-source repo.
 | [CL 28](cls/CL-28.md) | Blocklist size in `/api/stats` and dashboard |
 | [CL 29](cls/CL-29.md) | Hardening batch: goleak, govulncheck, empty-blocklist alarm |
 | [CL 30](cls/CL-30.md) | Wildcard / subdomain blocking (suffix match) |
+| [CL 31](cls/CL-31.md) | Skip and WARN on invalid config whitelist entries |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N — title`

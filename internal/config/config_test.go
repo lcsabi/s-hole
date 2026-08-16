@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -134,6 +135,43 @@ func TestValidate_RejectsBogusLogQueries(t *testing.T) {
 	cfg := &Config{BlockMode: "zero", LogQueries: "verbose"}
 	if err := cfg.Validate(); err == nil {
 		t.Error("Validate accepted bogus log_queries")
+	}
+}
+
+func TestFilterWhitelist(t *testing.T) {
+	// Whitelist entries are suffix-matched (CL 30): a bare label like a TLD
+	// would exempt its whole subtree. filterWhitelist drops invalid entries
+	// (Load WARNs on them) instead of aborting startup, and a dropped entry
+	// fails safe — the domain stays blockable.
+	in := []string{"safe.doubleclick.net", "com", "example.com", "bad host"}
+	valid, dropped := filterWhitelist(in)
+
+	wantValid := []string{"safe.doubleclick.net", "example.com"}
+	if !reflect.DeepEqual(valid, wantValid) {
+		t.Errorf("valid = %v, want %v", valid, wantValid)
+	}
+	wantDropped := []string{"com", "bad host"}
+	if !reflect.DeepEqual(dropped, wantDropped) {
+		t.Errorf("dropped = %v, want %v", dropped, wantDropped)
+	}
+}
+
+func TestFilterWhitelist_Empty(t *testing.T) {
+	valid, dropped := filterWhitelist(nil)
+	if valid != nil || dropped != nil {
+		t.Errorf("filterWhitelist(nil) = (%v, %v), want (nil, nil)", valid, dropped)
+	}
+}
+
+func TestLoad_DropsInvalidWhitelistEntries(t *testing.T) {
+	path := writeTemp(t, "whitelist:\n  - example.com\n  - com\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load = %v, want nil", err)
+	}
+	want := []string{"example.com"}
+	if !reflect.DeepEqual(cfg.Whitelist, want) {
+		t.Errorf("cfg.Whitelist = %v, want %v", cfg.Whitelist, want)
 	}
 }
 

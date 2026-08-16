@@ -19,6 +19,15 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   whitelist `safe.doubleclick.net` (or a parent domain) to let a subtree
   through while the rest of the blocked domain stays sinkholed. There is no
   new configuration; the behaviour is unconditional. (CL 30)
+- **Invalid `whitelist` entries are now dropped with a `WARN`.** Because
+  whitelist matching is suffix-based (CL 30), a bare label such as a TLD
+  would silently exempt its whole subtree. At startup, `config.Load` now
+  drops any `whitelist` entry that is not a valid domain name — the same
+  `ValidDomain` check the REST `/api/whitelist` endpoint applies — and logs
+  each dropped entry at `WARN`. A typo is surfaced loudly instead of quietly
+  disabling blocking for an entire suffix, and it does not abort startup: a
+  dropped entry fails safe (the domain stays blockable) and one bad line
+  cannot take DNS down for the LAN. (CL 31)
 
 ### Added
 - s-hole now logs a loud `WARN` whenever a blocklist update leaves the block

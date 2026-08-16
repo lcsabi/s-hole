@@ -18,12 +18,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strconv"
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/lcsabi/s-hole/internal/blocklist"
 )
+
+var logger = slog.With("pkg", "config")
 
 // Config is the in-memory representation of config.yaml. All fields have
 // safe defaults applied by applyDefaults; enumerated fields are checked
@@ -113,7 +118,33 @@ func Load(path string) (*Config, error) {
 	}
 	cfg.applyDefaults()
 	cfg.applyEnvOverrides()
+	// Drop invalid whitelist entries with a WARN rather than aborting: a
+	// whitelist typo must not take DNS down for the whole LAN, and a dropped
+	// entry fails safe (the domain stays blockable). See filterWhitelist.
+	var dropped []string
+	cfg.Whitelist, dropped = filterWhitelist(cfg.Whitelist)
+	for _, d := range dropped {
+		logger.Warn("ignoring invalid whitelist entry", "entry", d)
+	}
 	return cfg, nil
+}
+
+// filterWhitelist splits entries into those that pass blocklist.ValidDomain
+// and those that do not, preserving order. Whitelist matching is
+// suffix-based (CL 30), so an invalid entry such as a bare TLD would exempt
+// its whole subtree; Load drops the invalid ones (with a WARN) instead of
+// making one typo a fatal startup error. This mirrors the blocklist loader,
+// which likewise skips tokens that fail ValidDomain, and uses the same rule
+// the REST /api/whitelist handler applies to interactive additions.
+func filterWhitelist(entries []string) (valid, dropped []string) {
+	for _, d := range entries {
+		if blocklist.ValidDomain(d) {
+			valid = append(valid, d)
+		} else {
+			dropped = append(dropped, d)
+		}
+	}
+	return valid, dropped
 }
 
 // applyEnvOverrides reads S_HOLE_* environment variables and overrides

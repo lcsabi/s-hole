@@ -8,6 +8,18 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
 
 ## [Unreleased]
 
+### Changed
+- **Blocking now matches subdomains.** A blocklist (or whitelist) entry now
+  covers the whole subtree beneath it: `ads.example.com` blocks
+  `x.ads.example.com` as well, so trackers can no longer sidestep a list
+  entry by rotating subdomains. Lookups walk a domain's parent labels
+  (`a.b.example.com → b.example.com → example.com`) instead of requiring an
+  exact match. The whitelist is matched the same way and still wins at every
+  level, so it remains the escape hatch for an over-broad block entry —
+  whitelist `safe.doubleclick.net` (or a parent domain) to let a subtree
+  through while the rest of the blocked domain stays sinkholed. There is no
+  new configuration; the behaviour is unconditional. (CL 30)
+
 ### Added
 - s-hole now logs a loud `WARN` whenever a blocklist update leaves the block
   set empty — a fresh run that could reach no source, or a source that

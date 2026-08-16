@@ -24,6 +24,7 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
 ## Features
 
 - **Network-wide blocking** — blocks ads and trackers at the DNS layer before any connection is established
+- **Subdomain (suffix) blocking** — a blocked domain blocks its whole subtree, so `ads.example.com` also covers `x.ads.example.com`; trackers can't dodge a list entry by rotating subdomains
 - **Community blocklists** — downloads and auto-refreshes hosts-file or plain-domain lists from any URL
 - **DNS response cache** — serves repeat queries from memory; typical cache hit rates of 40–70% reduce upstream load and latency
 - **Dual query log** — plain-text file for `grep`/`tail` and a SQLite database for historical queries
@@ -121,7 +122,7 @@ All configuration lives in `config.yaml`. Every field has a safe default; an emp
 | `listen` | `:53` | Address and port for DNS queries (UDP + TCP). `:53` binds all interfaces, IPv4 + IPv6; use `0.0.0.0:53` for IPv4 only |
 | `upstreams` | `[1.1.1.1:53, 8.8.8.8:53]` | Upstream resolvers, tried in order |
 | `blocklists` | StevenBlack + AdAway | List of URLs to download (hosts-file or plain-domain format) |
-| `whitelist` | `[]` | Domains that are never blocked, regardless of blocklist membership |
+| `whitelist` | `[]` | Domains that are never blocked, regardless of blocklist membership. Matched by suffix and wins at every level: a whitelisted domain exempts its whole subtree, even past a more specific blocked parent |
 | `refresh_interval` | `24h` | How often to re-download blocklists |
 | `block_mode` | `zero` | Sinkhole reply: `zero` returns `0.0.0.0`/`::`, `nxdomain` returns NXDOMAIN |
 | `block_ttl` | `300` | TTL (seconds) advertised on blocked replies; `0` tells clients not to cache them |
@@ -406,11 +407,11 @@ Coverage by package (after `go test -cover ./...`):
 | `internal/version` | 100 % |
 | `internal/cache` | 94.8 % |
 | `internal/api` | 91.2 % |
-| `internal/blocklist` | 89.9 % |
+| `internal/blocklist` | 90.4 % |
 | `internal/dnsserver` | 88.4 % |
 | `internal/querylog` | 85.6 % |
 | `cmd/s-hole` | 31.7 % |
-| **module-wide** | **77.5 %** |
+| **module-wide** | **77.7 %** |
 
 The uncovered region is the `main()` bootstrap and the Windows-only SCM glue — both exercised by manual smoke tests, not unit tests.
 

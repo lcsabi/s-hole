@@ -16,12 +16,12 @@ rails.
 |--:|---|---|---|
 | 1 | Deploy to real hardware (Raspberry Pi) | High | procedure validated in a VM; awaiting hardware |
 | 2 | Tag `v0.1.0` + release workflow | High | not started |
-| 3 | Wildcard / subdomain blocking | High | not started |
+| 3 | Wildcard / subdomain blocking | High | done (CL 30) |
 | 4 | Wire up or delete `DBLogger.TopBlocked` | Medium | not started |
 | 5 | DNS-over-HTTPS upstream support | Medium | not started |
 | 6 | Hardening batch: goleak, govulncheck, empty-blocklist alarm | Medium | done (CL 29) |
 | 7 | Windows service logging (slog is lost under the SCM) | Low | not started |
-| 8 | Benchmark companions for the hot path | Low | blocked on #3 |
+| 8 | Benchmark companions for the hot path | Low | unblocked by #3 (CL 30 added `BenchmarkStore_IsBlocked_Miss`); `BenchmarkCache_Get` / `BenchmarkHandler_ServeDNS` still open |
 | 9 | Answer private-range PTR queries locally (RFC 6303) | Low | done (CL 27) |
 | 10 | Blocklist size in `/api/stats` + dashboard | Medium | done (CL 28) |
 
@@ -54,17 +54,27 @@ ghcr.io. Then cut `v0.1.0` — ideally pointing at a commit that has
 survived #1. Unlocks versioned bug reports (`s-hole -version` stops
 saying `dev`) and graduates the CHANGELOG's `[Unreleased]` section.
 
-## 3. Wildcard / subdomain blocking
+## 3. Wildcard / subdomain blocking — done (CL 30)
 
-The biggest real filtering gap: blocking `ads.example.com` does not
-block `x.ads.example.com` (the test suite pins this as intended
-behaviour today). Trackers rotate subdomains to exploit exact-match
-blockers. Sketch: in `Store.IsBlocked`, walk the parent labels
-(`a.b.c.com` → `b.c.com` → `c.com`) — O(labels) map lookups, no new
-data structure. `BenchmarkStore_IsBlocked` exists precisely to prove
-the walk doesn't regress the hot path. Design decision to settle in
-the CL: the whitelist should get the same suffix semantics, with
-whitelist-wins at every level.
+The biggest real filtering gap: blocking `ads.example.com` did not
+block `x.ads.example.com`. Trackers rotate subdomains to exploit
+exact-match blockers. **Shipped in CL 30:** `Store.IsBlocked` now walks
+the parent labels (`a.b.c.com` → `b.c.com` → `c.com`) — O(labels) map
+lookups, no new data structure, no per-query allocation.
+`BenchmarkStore_IsBlocked` proved the walk doesn't regress the hot path
+and gained a `_Miss` companion for the allowed-query worst case.
+
+Design decisions settled in the CL:
+
+- **Whitelist gets the same suffix semantics, whitelist-wins at every
+  level** (global precedence, not most-specific-wins): if the queried
+  name or any parent is whitelisted, the query is allowed even past a
+  more specific blocked parent. This is what makes the whitelist a
+  clean escape hatch for an over-broad block entry.
+- **No config knob to restore exact-match.** Exact-match was a
+  documented *gap*, not a feature; a global switch would only preserve
+  the subdomain-rotation hole. The suffix-aware whitelist is the
+  per-domain escape hatch, so no `config.yaml` change was needed.
 
 ## 4. Wire up or delete `DBLogger.TopBlocked`
 
@@ -123,10 +133,13 @@ first-class use case.
 
 ## 8. Benchmark companions
 
-Deliberately deferred until #3 lands: `BenchmarkCache_Get` and
-`BenchmarkHandler_ServeDNS` (stub ResponseWriter) alongside the
-existing `BenchmarkStore_IsBlocked`. Benchmarks nobody watches are
-suite weight; these earn their place the day the hot path changes.
+Was deferred until #3 lands; #3 landed (CL 30) and added
+`BenchmarkStore_IsBlocked_Miss` — the suffix walk's worst case (a deep
+allowed query that walks every label). Still open:
+`BenchmarkCache_Get` and `BenchmarkHandler_ServeDNS` (stub
+ResponseWriter) alongside the existing `BenchmarkStore_IsBlocked`.
+Benchmarks nobody watches are suite weight; these earn their place the
+day the hot path changes.
 
 ## 9. Answer private-range PTR queries locally
 

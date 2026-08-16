@@ -89,8 +89,10 @@ and the router-setup banner. Then, in a second terminal:
    `curl localhost:8080/readyz` → `ok` (503 means the blocklist
    download failed).
 2. **DNS behaviour** — `dig @127.0.0.1 -p 5353 doubleclick.net +short`
-   → `0.0.0.0`; `dig @127.0.0.1 -p 5353 example.com +short` → a real
-   IP; repeat the second query → same answer, near-instant (cache
+   → `0.0.0.0`; `dig @127.0.0.1 -p 5353 sub.doubleclick.net +short`
+   → `0.0.0.0` too (suffix blocking: a subdomain of a blocked domain
+   is blocked); `dig @127.0.0.1 -p 5353 example.com +short` → a real
+   IP; repeat the third query → same answer, near-instant (cache
    hit). Terminal 1 shows a `BLOCK` / `ALLOW` line per query — if a
    query produces no line, it never reached the process.
 3. **Dashboard** — open `http://localhost:8080`; the stat cards and

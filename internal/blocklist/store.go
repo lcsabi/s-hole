@@ -14,7 +14,9 @@ import (
 )
 
 // Store is a thread-safe in-memory set of blocked domains plus an in-memory
-// whitelist that overrides it. Lookups are O(1).
+// whitelist that overrides it. A lookup walks the domain's label suffixes
+// (see IsBlocked), so it costs O(labels) hash-set probes — effectively
+// constant for real domain names.
 type Store struct {
 	mu        sync.RWMutex
 	blocked   map[string]struct{}
@@ -54,18 +56,47 @@ func (s *Store) Replace(domains []string) {
 	s.mu.Unlock()
 }
 
-// IsBlocked reports whether domain is in the block set. The whitelist
-// takes precedence: a domain that appears in both is reported as not
-// blocked.
+// IsBlocked reports whether domain — or any of its parent domains — is on
+// the block set, with the whitelist overriding at every level. The lookup
+// walks the label suffixes of domain from most specific to least
+// (a.b.example.com → b.example.com → example.com → com), so a list entry of
+// "ads.example.com" now also blocks "x.ads.example.com": blocking a domain
+// blocks the whole subtree beneath it. This closes the subdomain-rotation
+// gap that exact-match blocking left open (ROADMAP #3).
+//
+// Whitelist precedence is global rather than per-level: if the queried
+// domain OR any of its parents is whitelisted, the domain is reported as not
+// blocked — even when a more specific parent sits on the block set. The
+// whitelist is therefore the escape hatch for an over-broad block entry.
+// Whitelisting "safe.doubleclick.net" lets that name (and its subtree)
+// through while "ads.doubleclick.net" stays blocked; whitelisting
+// "example.com" exempts everything under it.
+//
+// Cost is O(labels) lookups against two O(1) hash sets — no new data
+// structure and no per-query allocation (the walk reslices domain in place).
+// BenchmarkStore_IsBlocked guards the hot path against regression.
 func (s *Store) IsBlocked(domain string) bool {
-	domain = normalize(domain)
+	name := normalize(domain)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if _, ok := s.whitelist[domain]; ok {
-		return false
+	blocked := false
+	for {
+		if _, ok := s.whitelist[name]; ok {
+			// Whitelist wins at any level; stop as soon as one matches.
+			return false
+		}
+		if !blocked {
+			if _, ok := s.blocked[name]; ok {
+				// Keep walking: a broader parent could still be whitelisted.
+				blocked = true
+			}
+		}
+		i := strings.IndexByte(name, '.')
+		if i < 0 {
+			return blocked
+		}
+		name = name[i+1:]
 	}
-	_, ok := s.blocked[domain]
-	return ok
 }
 
 // AddToWhitelist adds domain to the runtime whitelist. Effective

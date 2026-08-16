@@ -44,6 +44,7 @@ the per-file layout here mirrors that intent for an open-source repo.
 | [CL 29](cls/CL-29.md) | Hardening batch: goleak, govulncheck, empty-blocklist alarm |
 | [CL 30](cls/CL-30.md) | Wildcard / subdomain blocking (suffix match) |
 | [CL 31](cls/CL-31.md) | Skip and WARN on invalid config whitelist entries |
+| [CL 32](cls/CL-32.md) | Benchmark companions for the hot path (cache, handler) |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N — title`

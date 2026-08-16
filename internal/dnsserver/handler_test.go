@@ -420,3 +420,45 @@ func buildResp(q dns.Question, ip net.IP, ttl uint32) *dns.Msg {
 	}
 	return msg
 }
+
+// BenchmarkHandler_ServeDNS guards the two hot paths the handler can serve
+// without touching the network: a blocked query (sinkhole reply) and a
+// cache hit. The forwarding path is deliberately excluded — it is bounded
+// by the upstream round-trip, not by handler code, and cannot be measured
+// without a network stub. Each sub-benchmark drives ServeDNS through a stub
+// ResponseWriter (fakeWriter); ReportAllocs surfaces per-query allocation
+// regressions in the request-routing code.
+func BenchmarkHandler_ServeDNS(b *testing.B) {
+	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+
+	b.Run("Blocked", func(b *testing.B) {
+		store := blocklist.NewStore()
+		store.Replace([]string{"example.com"})
+		h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, false)
+		w := fakeClient()
+		req := buildReq("example.com")
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			h.ServeDNS(w, req)
+		}
+	})
+
+	b.Run("Cached", func(b *testing.B) {
+		c := cache.New(1024)
+		defer c.Close()
+		c.Set(q, buildResp(q, net.IPv4(1, 2, 3, 4), 300))
+
+		store := blocklist.NewStore() // empty: query is allowed, served from cache
+		h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, c, false)
+		w := fakeClient()
+		req := buildReq("example.com")
+
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			h.ServeDNS(w, req)
+		}
+	})
+}

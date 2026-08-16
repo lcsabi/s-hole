@@ -244,3 +244,25 @@ func TestCache_CloseStopsGoroutine(t *testing.T) {
 	// the fact that Close completes without deadlocking + the goroutine's
 	// select-on-stop guarantee covers the regression.
 }
+
+// BenchmarkCache_Get guards the cache hit path — the branch that avoids an
+// upstream round-trip entirely and is therefore the whole point of the
+// cache. Its cost (and per-op allocations) is dominated by the defensive
+// msg.Copy plus decrementTTLs walk on every hit; ReportAllocs surfaces a
+// regression in either. The miss path is a bare RLock'd map lookup with no
+// allocation and needs no companion benchmark.
+func BenchmarkCache_Get(b *testing.B) {
+	c := New(1024)
+	defer c.Close()
+
+	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	c.Set(q, buildResponse(q, 300))
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, ok := c.Get(q); !ok {
+			b.Fatal("expected cache hit")
+		}
+	}
+}

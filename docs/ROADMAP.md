@@ -21,7 +21,7 @@ rails.
 | 5 | DNS-over-HTTPS upstream support | Medium | not started |
 | 6 | Hardening batch: goleak, govulncheck, empty-blocklist alarm | Medium | done (CL 29) |
 | 7 | Windows service logging (slog is lost under the SCM) | Low | not started |
-| 8 | Benchmark companions for the hot path | Low | unblocked by #3 (CL 30 added `BenchmarkStore_IsBlocked_Miss`); `BenchmarkCache_Get` / `BenchmarkHandler_ServeDNS` still open |
+| 8 | Benchmark companions for the hot path | Low | done (CL 32) |
 | 9 | Answer private-range PTR queries locally (RFC 6303) | Low | done (CL 27) |
 | 10 | Blocklist size in `/api/stats` + dashboard | Medium | done (CL 28) |
 
@@ -131,15 +131,20 @@ Route slog to a file (or the Windows Event Log) when
 target is a Linux/Pi box; promote it if the Windows service becomes a
 first-class use case.
 
-## 8. Benchmark companions
+## 8. Benchmark companions — done (CL 32)
 
 Was deferred until #3 lands; #3 landed (CL 30) and added
 `BenchmarkStore_IsBlocked_Miss` — the suffix walk's worst case (a deep
-allowed query that walks every label). Still open:
-`BenchmarkCache_Get` and `BenchmarkHandler_ServeDNS` (stub
-ResponseWriter) alongside the existing `BenchmarkStore_IsBlocked`.
-Benchmarks nobody watches are suite weight; these earn their place the
-day the hot path changes.
+allowed query that walks every label). **CL 32 closed the rest:**
+`BenchmarkCache_Get` (the hit path — the `msg.Copy` + `decrementTTLs`
+cost that `ReportAllocs` guards) and `BenchmarkHandler_ServeDNS` with
+`Blocked`/`Cached` sub-benchmarks driven through the stub
+`ResponseWriter`. The forwarding path is left unbenchmarked on purpose:
+it is bounded by the upstream round-trip, not handler code, and cannot
+be measured without a network stub. The four hot-path benchmarks now
+cover the whole in-process chain — blocklist decision → cache lookup →
+request routing — and `make bench` runs each once as a regression
+smoke.
 
 ## 9. Answer private-range PTR queries locally
 

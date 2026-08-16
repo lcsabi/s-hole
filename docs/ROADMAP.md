@@ -24,6 +24,7 @@ rails.
 | 8 | Benchmark companions for the hot path | Low | done (CL 32) |
 | 9 | Answer private-range PTR queries locally (RFC 6303) | Low | done (CL 27) |
 | 10 | Blocklist size in `/api/stats` + dashboard | Medium | done (CL 28) |
+| 11 | Install script prints the installed version/commit | Low | not started |
 
 ## 1. Deploy to real hardware
 
@@ -146,7 +147,7 @@ cover the whole in-process chain — blocklist decision → cache lookup →
 request routing — and `make bench` runs each once as a regression
 smoke.
 
-## 9. Answer private-range PTR queries locally
+## 9. Answer private-range PTR queries locally — done (CL 27)
 
 Observed during the 2026-07-12 VM deployment test: `nslookup` produces
 three log entries per lookup, and the first is a **PTR** (reverse)
@@ -170,39 +171,60 @@ reasons to answer them locally instead:
   resolvers SHOULD answer these zones locally; unbound, dnsmasq, and
   systemd-resolved all do.
 
-Sketch: in the handler, before the blocklist check, match PTR queries
-whose name falls under the RFC 6303 zones (`10.in-addr.arpa`,
+**Shipped in CL 27:** `Handler.ServeDNS` matches PTR queries whose name
+falls under the RFC 6303 zones (`10.in-addr.arpa`,
 `16.172.in-addr.arpa`–`31.172.in-addr.arpa`, `168.192.in-addr.arpa`,
-plus IPv6 ULA `d.f.ip6.arpa` and link-local) and return authoritative
-NXDOMAIN immediately — a static suffix match, no config, no new
-dependencies, hot-path cost one label comparison for non-PTR queries.
+plus IPv6 ULA and link-local) *before* the blocklist check and returns
+authoritative NXDOMAIN immediately — a static suffix match
+(`privateReverseZones`/`isPrivatePTR`), no new dependency, hot-path cost
+one label comparison for non-PTR queries.
 
-Decisions to settle in the CL: NXDOMAIN vs NODATA; whether the reply
-counts as "blocked" in stats (probably neither — a third "local"
-outcome, or simply uncounted); whether a config escape hatch is needed
-for LANs that *do* run an internal reverse zone (likely
-`local_ptr: true` default with opt-out, or defer the knob until
-someone asks). Rated Low: invisible to the user, but removes constant
-upstream chatter and an information leak.
+Decisions settled in the CL:
 
-## 10. Blocklist size in `/api/stats` + dashboard
+- **NXDOMAIN, not NODATA** — the authoritative "no such name" answer.
+- **Counted as a distinct "local" outcome, never "blocked"** —
+  `Counter.RecordLocalPTR` feeds `local_ptr_count` in `/api/stats` and
+  `shole_local_ptr_total` in `/metrics`, and the reply is excluded from
+  the cache-hit denominator.
+- **`local_ptr` config flag, default `true` with opt-out** (env
+  `S_HOLE_LOCAL_PTR`) for LANs that run their own internal reverse zone.
+
+Rated Low: invisible to the user, but removes constant upstream chatter
+and an information leak.
+
+## 10. Blocklist size in `/api/stats` + dashboard — done (CL 28)
 
 Companion to the Cache Hit Rate card (CL 25), which was free because
 the field already rode in the stats payload. Blocklist size is the
-next most useful number the dashboard cannot show: "78 469 domains" is
-the at-a-glance trust signal that the lists downloaded, parsed, and
-survived the last refresh — today it is visible only in `/metrics`
-(`shole_blocklist_size`) and the startup log line.
+next most useful number the dashboard could not show: "78 469 domains"
+is the at-a-glance trust signal that the lists downloaded, parsed, and
+survived the last refresh — before CL 28 it was visible only in
+`/metrics` (`shole_blocklist_size`) and the startup log line.
 
-Unlike CL 25 this touches Go: `store.Len()` must join the
-`/api/stats` response (either plumbed into `stats.Snapshot` or added
-in the API handler, which already holds the `*blocklist.Store` for
-`/readyz` — the handler is the lighter touch). Then a fifth display
-element in the UI; five stat cards may crowd the row, so consider a
-header chip next to uptime instead. Sync the `/api/stats` description
-in README/DESIGN if the payload shape is documented at the time.
+**Shipped in CL 28:** `store.Len()` joins the `/api/stats` response via
+the API handler (`handleStats` sets `snap.BlocklistSize` — the lighter
+touch, since the handler already holds the `*blocklist.Store` for
+`/readyz`, so `stats.Snapshot` stayed untouched), surfaced as a fifth
+"Blocklist Size" stat card on the dashboard. The `/api/stats`
+descriptions in README/DESIGN were synced with the new payload field.
 Rated Medium by the impact rubric (observability win): the number
 builds operator trust but changes no filtering behaviour.
+
+## 11. Install script prints the installed version/commit
+
+`deploy/install-linux.sh` never echoes which build it just installed, so a
+stale-binary deploy is silent: the operator `scp`s a binary, runs the
+installer, and has no signal that the running service predates the fix they
+meant to ship. This bit a real deployment — a pre-CL-30 binary was live on a
+VM, so subdomain blocking (CL 30) appeared broken until `s-hole -version`
+revealed the old commit. The version/commit is already embedded via the
+`make` ldflags (`internal/version`), so the fix is one line: have the
+installer run `"$INSTALL_BIN" -version` (or read it before `systemctl start`)
+and print it as the script's final confirmation, next to the router-setup
+block. Rated Low — pure deploy-time guard rail, no runtime behaviour change —
+but it turns an invisible class of mistake into an obvious one. A natural
+companion is a one-line `s-hole -version` check in the CONTRIBUTING deploy
+notes right after install.
 
 ## Pending decisions
 

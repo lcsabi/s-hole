@@ -29,6 +29,14 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   dropped entry fails safe (the domain stays blockable) and one bad line
   cannot take DNS down for the LAN. (CL 31)
 
+### Fixed
+- The dashboard no longer displays the DNS trailing dot on domain names. The
+  Top Blocked Domains and Recent Queries panels stripped it for display
+  (`sub.doubleclick.net.` now renders as `sub.doubleclick.net`). Queries are
+  still recorded and served over the API as the exact wire-format name; the
+  change is presentation-only, so it also cleans up rows already stored in the
+  query log. (CL 34)
+
 ### Added
 - **All-time top-blocked domains on the dashboard.** The "Top Blocked Domains"
   panel now has a "Since start / All time" toggle. "Since start" is the

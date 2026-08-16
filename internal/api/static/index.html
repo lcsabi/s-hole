@@ -411,6 +411,9 @@
     const $ = id => document.getElementById(id);
     const fmt = n => Number(n).toLocaleString();
     const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    // Strip the FQDN trailing dot for display: queries are logged as the
+    // wire-format name ("sub.doubleclick.net."), but the dot is noise in the UI.
+    const stripDot = s => String(s).replace(/\.$/, '');
 
     function setTbody(id, html) { $(id).innerHTML = html; }
 
@@ -421,7 +424,7 @@
     function renderTopDomains(domains, emptyMsg) {
       setTbody('top-domains', domains.length
         ? domains.map(e =>
-          `<tr><td class="mono">${esc(e.name)}</td><td class="muted num">${fmt(e.count)}</td></tr>`
+          `<tr><td class="mono">${esc(stripDot(e.name))}</td><td class="muted num">${fmt(e.count)}</td></tr>`
         ).join('')
         : `<tr><td colspan="2" class="empty">${emptyMsg}</td></tr>`);
       $('domains-count').textContent = domains.length ? `(${domains.length})` : '';
@@ -473,7 +476,7 @@
             return `<tr>
               <td class="muted num">${t}</td>
               <td class="mono">${esc(q.client_ip)}</td>
-              <td class="mono">${esc(q.domain)}</td>
+              <td class="mono">${esc(stripDot(q.domain))}</td>
               <td>${badge}</td>
             </tr>`;
           }).join('')

@@ -35,6 +35,12 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   they meant to ship. (CL 35)
 
 ### Fixed
+- **The query-log retention prune no longer intermittently skips under
+  concurrent writes.** The SQLite connection pool is now pinned to a single
+  connection (with a `busy_timeout` as a backstop), so the async writer and the
+  hourly prune can't collide with `SQLITE_BUSY` — which previously made the
+  prune silently skip a tick and, under the race detector, flaked a CI test. No
+  operator-facing behaviour change beyond retention now pruning reliably. (CL 38)
 - **`/api/stats` can no longer momentarily report a cache hit rate above 100 %.**
   `Snapshot` read the cache-hit counter after the total-queries counter, so a
   concurrent cache hit slipping between the two reads could push the ratio over

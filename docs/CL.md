@@ -51,6 +51,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 35](cls/CL-35.md) | Linux installer prints the installed build version/commit |
 | [CL 36](cls/CL-36.md) | Act on ultrareview findings (b/030–b/035) |
 | [CL 37](cls/CL-37.md) | Cache-hit-rate load-order fix (b/036); case-sensitivity by design (b/037) |
+| [CL 38](cls/CL-38.md) | Pin the query-log SQLite pool to one connection (b/038) |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N — title`

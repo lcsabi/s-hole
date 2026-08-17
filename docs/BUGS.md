@@ -1082,3 +1082,52 @@ observable duplication. Filtering correctness is unaffected either way. Revisit
 only if a case-insensitive-cache-with-case-preserving-response design is warranted
 (store canonical, but rewrite the response's question/owner names back to the
 client's case before sending) — more machinery than the nit justifies today.
+
+---
+
+## b/038 — querylog: retention prune races the writer on SQLITE_BUSY; pragmas apply to one pooled connection
+
+**Priority:** P2
+**Component:** querylog
+**Status:** Fixed in CL 38
+**Filed:** 2026-08-18
+
+Surfaced as an intermittent CI failure of `TestDBLogger_RetentionPruneDeletesOldRows`
+under the race detector.
+
+### Description
+
+`NewDBLogger` opened the SQLite database with `database/sql`'s default
+connection pool (multiple connections). Two goroutines write: the async batch
+writer (`run`) and the retention prune (`runPrune`, which prunes immediately on
+startup and hourly). SQLite permits only one writer at a time, and no
+`busy_timeout` was set, so when the two writers landed on different pooled
+connections the second failed *immediately* with `SQLITE_BUSY`. `prune` logs a
+WARN and returns on error, so the `DELETE` was silently skipped — old rows
+survived. In the test, the startup prune, the seed transaction, and the explicit
+`prune()` contended; one hit `SQLITE_BUSY`, so `old.com` was not deleted and the
+assertion failed with "after prune got 2 rows, want 1". The race detector's
+timing widened the window enough to make it fail on CI.
+
+A second, latent defect: the per-connection pragmas (`synchronous`,
+`cache_size`, `temp_store`, and a `busy_timeout` had one existed) were applied
+via `db.Exec` on the pool, so they stuck only to whichever pooled connection
+served that call — other connections ran without them.
+
+### Root Cause
+
+A multi-connection pool over an embedded single-writer database, with no
+`busy_timeout` to serialise contending writers and no guarantee that
+per-connection pragmas reach every connection.
+
+### Fix
+
+Pin the pool to one connection with `db.SetMaxOpenConns(1)`, so `database/sql`
+queues callers instead of letting two writers collide, and so the pragmas apply
+to the one connection that serves every query. Add `PRAGMA busy_timeout=5000`
+as defence against an external process (e.g. the `sqlite3` CLI) holding the
+lock. Verified with the previously-flaky test run 50× under `-race`, plus the
+full race suite. At home-network query volume the lost read concurrency is
+immaterial. The prune's WARN-and-skip-on-error behaviour is left as-is: with
+contention removed it no longer fires, and a genuinely failed prune is still
+best-effort (retried on the next tick).

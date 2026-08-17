@@ -161,6 +161,10 @@ func TestDBLogger_RetentionPruneDeletesOldRows(t *testing.T) {
 	// R16: with retentionDays=1, a row dated 2 days ago must be deleted
 	// by the prune goroutine. We bypass the periodic ticker by calling
 	// prune() directly on a DBLogger built with retention enabled.
+	//
+	// b/038: this flaked under -race with SQLITE_BUSY — the startup prune, the
+	// seed tx, and this explicit prune() contended across pooled connections
+	// until NewDBLogger pinned the pool to one connection (SetMaxOpenConns(1)).
 	path := filepath.Join(t.TempDir(), "queries.db")
 	db, err := NewDBLogger(path, "all", 1*time.Hour, 1)
 	if err != nil {

@@ -795,3 +795,209 @@ excluded blocks immediately, where sequential retries could not. The
 lifecycle test's timeout path now also drains and reports what
 `Start` returned, so a future bind failure names itself instead of
 masquerading as a timeout.
+
+---
+
+## b/030 — deploy: installer `systemctl start` is a no-op on upgrade
+
+**Priority:** P2
+**Component:** deploy
+**Status:** Fixed in CL 36
+**Filed:** 2026-08-17
+
+Found by the CL 35 ultrareview (finding bug_002).
+
+### Description
+
+`install-linux.sh` ends with `systemctl start s-hole`. On a fresh install this
+works. On a *re-run* to upgrade — the documented update path (ROADMAP #1: `scp`
+a new binary, re-run the installer) — `install -m 755` replaces the binary at a
+new inode but the running process keeps executing the old one, and
+`systemctl start` on an already-active unit is a no-op. The service therefore
+keeps running the **old** build while the "Installed build" box added in CL 35
+prints the **new** version. That is worse than the pre-CL-35 silence: it turns
+the stale-binary failure mode CL 35 exists to detect into a false "you are up to
+date" signal.
+
+### Root Cause
+
+`systemctl start` does not restart an active unit, and nothing else in the
+install flow (`daemon-reload`, `enable`) reacts to the binary inode change.
+
+### Fix
+
+Use `systemctl restart s-hole`. `restart` picks up the new binary on an active
+unit and is equivalent to `start` on an inactive one, so no branching is needed.
+
+---
+
+## b/031 — deploy: installer admin-UI hint misclassifies non-`0.0.0.0` LAN binds
+
+**Priority:** P3
+**Component:** deploy
+**Status:** Fixed in CL 36
+**Filed:** 2026-08-17
+
+Found by the CL 35 ultrareview (finding bug_001).
+
+### Description
+
+The end-of-install banner decides whether to print a LAN admin URL with
+`grep -qE '0\.0\.0\.0'`, matching only the literal string `0.0.0.0`. An operator
+who binds the admin UI to a specific interface (`api_listen: "192.168.1.10:8080"`),
+a bare port (`":8080"`), or the IPv6 wildcard (`"[::]:8080"`) gets the misleading
+"this machine only — set `api_listen: "0.0.0.0:8080"` for LAN access" note even
+though the UI is LAN-reachable; for the specific-IP case, following the advice
+would widen the bind. Cosmetic (installer output only) — the UI is functionally
+reachable in every case.
+
+### Root Cause
+
+The shell check tested for one literal address instead of mirroring
+`isLoopbackHost` in `cmd/s-hole/main.go` (the T4 fix it was meant to match),
+which treats only `127.*` / `::1` / `localhost` as loopback.
+
+### Fix
+
+Parse `api_listen` into host and port (stripping the YAML key, quotes, and IPv6
+brackets) and classify with a `case` that mirrors `isLoopbackHost`: an empty
+host, `0.0.0.0`, `::`, or a specific address is LAN-visible; only `127.*` /
+`::1` / `localhost` are loopback.
+
+---
+
+## b/032 — dnsserver: `isPrivatePTR` case-sensitive; mixed-case private PTR leaks upstream
+
+**Priority:** P2
+**Component:** dnsserver
+**Status:** Fixed in CL 36
+**Filed:** 2026-08-17
+
+Found by the CL 35 ultrareview (finding bug_004).
+
+### Description
+
+`isPrivatePTR` compares the query name against the all-lowercase
+`privateReverseZones` with `==` / `strings.HasSuffix`. DNS names are
+case-insensitive (RFC 1035 §2.3.3) and miekg/dns preserves the wire-format case
+verbatim, so a PTR query for `1.1.168.192.IN-ADDR.ARPA.` — as produced by a
+dns-0x20 case-randomising forwarder (Unbound `use-caps-for-id`, PowerDNS
+Recursor) chained in front of s-hole, or a mixed-case `dig` argument — bypasses
+the RFC 6303 intercept. It then misses the blocklist and cache and reaches
+`forward()`: the upstream returns NXDOMAIN (which the cache never stores), so
+every repeat leaks the internal LAN address upstream and pays a round-trip —
+exactly what CL 27 exists to prevent.
+
+### Root Cause
+
+The private-PTR path did not fold case before matching, unlike the sibling
+blocklist path (`blocklist.normalize` lowercases).
+
+### Fix
+
+`strings.ToLower(name)` after the qtype guard in `isPrivatePTR`, so the fold only
+allocates for actual PTR queries and the non-PTR hot path is untouched. Mixed-case
+regression cases added to `TestIsPrivatePTR`.
+
+---
+
+## b/033 — stats: `Snapshot` reads `total` before `localPTR`; `local_ptr_count` can exceed `total_queries`
+
+**Priority:** P2
+**Component:** stats
+**Status:** Fixed in CL 36
+**Filed:** 2026-08-17
+
+Found by the CL 35 ultrareview (finding bug_006). Same class as b/021, applied to
+a new counter pair.
+
+### Description
+
+`Counter.Snapshot` read `total` before `localPTR`. The handler records a private
+PTR as `RecordQuery` (bumps `total`) then `RecordLocalPTR` (bumps `localPTR`), so
+`localPTR` is the strictly-later counter. Reading it after `total` means a
+concurrent PTR query completing between the two atomic loads can make the observed
+`localPTR` exceed the observed `total`. `/api/stats` can then transiently show
+`local_ptr_count > total_queries`, and `forwardable = total − blocked − localPTR`
+can go negative, making the Cache Hit Rate card flash 0.0 % during PTR bursts (no
+crash — the `forwardable > 0` guard prevents the divide). Same defect as b/021
+(`blocked` read after `total`), which was fixed for `blocked` but not extended to
+`localPTR` when the local-PTR counter was added in CL 27.
+
+### Root Cause
+
+The b/021 load-order rule (read a counter that is incremented *after* `total`
+*before* `total`) was applied to `blocked` but not to `localPTR`.
+
+### Fix
+
+Read `localPTR` before `total`. The docstring's rationale was rewritten to state
+the general rule rather than the per-counter special case. Added
+`TestCounter_LocalPTRNeverExceedsTotalUnderLoad`, a concurrent regression modelled
+on the b/021 test; it passes under `-race`.
+
+---
+
+## b/034 — api: `/debug/pprof/symbol` GET-only rejects `go tool pprof` POST symbolization
+
+**Priority:** P3
+**Component:** api
+**Status:** Fixed in CL 36
+**Filed:** 2026-08-17
+
+Found by the CL 35 ultrareview (finding bug_003).
+
+### Description
+
+`/debug/pprof/symbol` was registered as `GET /debug/pprof/symbol`.
+`net/http/pprof.Symbol` reads program counters from the URL query on GET and from
+the request body on POST, and `go tool pprof` symbolizes by POSTing the PC list
+(a real profile's list does not fit in a URL). A GET-only pattern makes the mux
+answer POST with 405, so remote symbolization — the stated reason CL 20 (R35)
+exposed pprof — silently fails against the stripped binaries the Makefile ships.
+Only relevant when `enable_pprof` is on (off by default).
+
+### Root Cause
+
+The route carried a `GET` method prefix. The obvious "drop the method prefix"
+does not work: a method-less `/debug/pprof/symbol` conflicts with the GET-only
+`/debug/pprof/` prefix under the Go 1.22 mux (more specific path but more
+methods → the mux panics at registration).
+
+### Fix
+
+Register `/debug/pprof/symbol` for both GET and POST explicitly (the
+conflict-free form). Added `TestPprof_SymbolAcceptsPOST`. The route stays behind
+the `enable_pprof` opt-in, so the security posture is unchanged.
+
+---
+
+## b/035 — api (tests): DB-backed endpoint tests use a banned hardcoded flush-tick sleep
+
+**Priority:** P3
+**Component:** api (tests)
+**Status:** Fixed in CL 36
+**Filed:** 2026-08-17
+
+Found by the CL 35 ultrareview (finding bug_005).
+
+### Description
+
+`TestTopBlockedEndpoint_WithRealDB` and `TestQueriesEndpoint_WithRealDB` (added in
+CL 33) used `time.Sleep(150 * time.Millisecond)` to wait for the async SQLite
+writer to flush — the exact anti-pattern CL 21 (S3) removed from
+`internal/dnsserver/integration_test.go` and replaced with a poll loop. It is both
+slow on a healthy runner (always waits the worst case) and flaky under CI
+contention (a 50 ms flush tick plus the commit can straddle 150 ms, yielding zero
+rows and a spurious failure).
+
+### Root Cause
+
+The CL 21 (S3) convention — poll for the expected row count instead of sleeping a
+fixed interval — was not carried over to the new DB-backed tests in CL 33.
+
+### Fix
+
+Added a `waitForRows(t, db, n)` helper that polls `db.Recent` until at least `n`
+rows are committed (2 s deadline), and used it in both tests. The top-blocked test
+waits for all four rows so the per-domain counts it asserts are stable.

@@ -177,7 +177,7 @@ const (
 // captured. RecordQuery increments total, then blocked (under mu); the PTR
 // path additionally calls RecordLocalPTR after RecordQuery. So both blocked
 // and localPTR are read before total — the b/021 fix, extended to localPTR
-// (ultrareview bug_006). This keeps total ≥ blocked and total ≥ localPTR on
+// (b/033, ultrareview bug_006). This keeps total ≥ blocked and total ≥ localPTR on
 // every snapshot, so forwardable below can never go negative. The cache-hit
 // denominator excludes both blocked and localPTR because neither class ever
 // reaches the cache or upstream.

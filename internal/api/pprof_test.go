@@ -92,7 +92,7 @@ func TestPprof_CmdlineWhenEnabled(t *testing.T) {
 	}
 }
 
-// TestPprof_SymbolAcceptsPOST guards ultrareview bug_003: `go tool pprof`
+// TestPprof_SymbolAcceptsPOST guards b/034 (ultrareview bug_003): `go tool pprof`
 // symbolizes by POSTing the program-counter list to /debug/pprof/symbol, so
 // the route must not be registered GET-only (that answers POST with 405 and
 // breaks remote symbolization). A GET with no counters returns 200 and

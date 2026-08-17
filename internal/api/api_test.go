@@ -40,8 +40,9 @@ func newTestServer(t *testing.T, reloadFn func() bool) (*Server, *httptest.Serve
 
 // waitForRows polls db.Recent until at least want rows are committed by the
 // async writer, or fails after 2 s. Replaces the fixed flush-tick sleep that
-// CL 21 (S3) banned: it exits as soon as the rows land (fast on a healthy
-// runner) and tolerates a slow CI writer (no flaky under contention).
+// CL 21 (S3) banned and b/035 (ultrareview bug_005) re-flagged here: it exits
+// as soon as the rows land (fast on a healthy runner) and tolerates a slow CI
+// writer (not flaky under contention).
 func waitForRows(t *testing.T, db *querylog.DBLogger, want int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

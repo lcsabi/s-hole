@@ -90,8 +90,8 @@ func isPrivatePTR(qtype uint16, name string) bool {
 	// DNS names are case-insensitive (RFC 1035 §2.3.3) and miekg/dns preserves
 	// the wire-format case verbatim, so a mixed-case name (e.g. from a dns-0x20
 	// forwarder) must be folded before matching the lowercase zone list — the
-	// same normalisation blocklist.normalize applies. Non-PTR queries already
-	// returned above, so this allocation only ever hits actual PTR queries.
+	// same normalisation blocklist.normalize applies (b/032). Non-PTR queries
+	// already returned above, so this allocation only ever hits real PTR queries.
 	name = strings.ToLower(name)
 	for _, zone := range privateReverseZones {
 		if name == zone || strings.HasSuffix(name, "."+zone) {

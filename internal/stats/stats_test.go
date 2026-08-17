@@ -278,8 +278,8 @@ func TestCounter_BlockRateNeverExceeds100UnderLoad(t *testing.T) {
 }
 
 func TestCounter_LocalPTRNeverExceedsTotalUnderLoad(t *testing.T) {
-	// Regression for ultrareview bug_006 (the b/021 pattern applied to the
-	// local-PTR counter). The handler records a private PTR as RecordQuery
+	// Regression for b/033 (ultrareview bug_006) — the b/021 pattern applied
+	// to the local-PTR counter. The handler records a private PTR as RecordQuery
 	// then RecordLocalPTR, so localPTR is the strictly-later counter; if
 	// Snapshot read total before localPTR, a concurrent query landing between
 	// the two loads could make localPTR > total and drive forwardable

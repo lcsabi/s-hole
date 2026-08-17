@@ -91,3 +91,30 @@ func TestPprof_CmdlineWhenEnabled(t *testing.T) {
 		t.Errorf("/debug/pprof/cmdline status = %d, want 200", resp.StatusCode)
 	}
 }
+
+// TestPprof_SymbolAcceptsPOST guards ultrareview bug_003: `go tool pprof`
+// symbolizes by POSTing the program-counter list to /debug/pprof/symbol, so
+// the route must not be registered GET-only (that answers POST with 405 and
+// breaks remote symbolization). A GET with no counters returns 200 and
+// "num_symbols"; the POST here must also be accepted (not 405).
+func TestPprof_SymbolAcceptsPOST(t *testing.T) {
+	store := blocklist.NewStore()
+	store.Replace([]string{"x.com"})
+	s := New(stats.New(), nil, store, nil, func() bool { return true })
+	s.EnablePprof(true)
+	srv := httptest.NewServer(s.handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/debug/pprof/symbol", "application/octet-stream",
+		strings.NewReader("0x0"))
+	if err != nil {
+		t.Fatalf("POST /debug/pprof/symbol: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusMethodNotAllowed {
+		t.Fatalf("/debug/pprof/symbol rejected POST with 405 — go tool pprof symbolization is broken")
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/debug/pprof/symbol POST status = %d, want 200", resp.StatusCode)
+	}
+}

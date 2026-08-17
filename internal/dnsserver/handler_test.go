@@ -298,6 +298,10 @@ func TestIsPrivatePTR(t *testing.T) {
 		{"1.1.168.192.in-addr.arpa.", dns.TypePTR, true},
 		// Zone apex itself
 		{"168.192.in-addr.arpa.", dns.TypePTR, true},
+		// Mixed-case names must still match: DNS is case-insensitive and
+		// dns-0x20 forwarders randomise case (ultrareview bug_004).
+		{"1.1.168.192.IN-ADDR.ARPA.", dns.TypePTR, true},
+		{"1.1.168.192.In-Addr.Arpa.", dns.TypePTR, true},
 		// IPv6 ULA
 		{"1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.d.f.ip6.arpa.", dns.TypePTR, true},
 		{"1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.c.f.ip6.arpa.", dns.TypePTR, true},

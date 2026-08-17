@@ -35,6 +35,28 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   they meant to ship. (CL 35)
 
 ### Fixed
+- **The Linux installer now restarts the service instead of starting it**, so
+  re-running `install-linux.sh` to upgrade actually swaps the running binary.
+  `systemctl start` is a no-op on an already-active unit, so an upgrade would
+  otherwise keep running the old build while the new "Installed build" banner
+  advertised the new one — the exact stale-deploy the banner exists to catch. (CL 36)
+- **Mixed-case private-range PTR queries are now answered locally.** The RFC 6303
+  intercept matched names case-sensitively, so a query such as
+  `1.1.168.192.IN-ADDR.ARPA.` (as produced by dns-0x20 forwarders) slipped past
+  it and leaked upstream. DNS names are case-insensitive; the intercept now folds
+  case before matching, like the blocklist already did. (CL 36)
+- **`/api/stats` can no longer momentarily report `local_ptr_count` greater than
+  `total_queries`.** `Snapshot` read the two atomic counters in an order that let
+  a concurrent PTR query slip between them; it now reads the later-incremented
+  counter first (the same fix already applied to blocked-vs-total, b/021). (CL 36)
+- **`/debug/pprof/symbol` now accepts POST**, so `go tool pprof` can symbolize a
+  remote profile against a running instance (it POSTs the program-counter list).
+  The route had been registered GET-only, which answered POST with 405. Only
+  relevant when `enable_pprof` is on. (CL 36)
+- **The installer's admin-UI hint no longer misreports a LAN bind as
+  localhost-only.** It matched only the literal `0.0.0.0`; binding to a specific
+  LAN IP, a bare `:8080`, or the IPv6 wildcard now correctly prints the LAN URL,
+  mirroring the in-binary banner's loopback check. (CL 36)
 - The dashboard no longer displays the DNS trailing dot on domain names. The
   Top Blocked Domains and Recent Queries panels stripped it for display
   (`sub.doubleclick.net.` now renders as `sub.doubleclick.net`). Queries are

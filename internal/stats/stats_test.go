@@ -276,3 +276,38 @@ func TestCounter_BlockRateNeverExceeds100UnderLoad(t *testing.T) {
 	stop.Store(true)
 	wg.Wait()
 }
+
+func TestCounter_LocalPTRNeverExceedsTotalUnderLoad(t *testing.T) {
+	// Regression for ultrareview bug_006 (the b/021 pattern applied to the
+	// local-PTR counter). The handler records a private PTR as RecordQuery
+	// then RecordLocalPTR, so localPTR is the strictly-later counter; if
+	// Snapshot read total before localPTR, a concurrent query landing between
+	// the two loads could make localPTR > total and drive forwardable
+	// (total-blocked-localPTR) negative. Hammer the PTR path from many
+	// goroutines while snapshotting; assert the invariant on every read.
+	c := New()
+
+	stop := atomic.Bool{}
+	var wg sync.WaitGroup
+
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for !stop.Load() {
+				// Mirror handler.go: RecordQuery first, then RecordLocalPTR.
+				c.RecordQuery("1.1.1.1", "1.1.168.192.in-addr.arpa.", false)
+				c.RecordLocalPTR()
+			}
+		}()
+	}
+
+	for range 5000 {
+		s := c.Snapshot(0)
+		if s.LocalPTRCount > s.TotalQueries {
+			t.Fatalf("invariant violated: localPTR=%d > total=%d", s.LocalPTRCount, s.TotalQueries)
+		}
+	}
+	stop.Store(true)
+	wg.Wait()
+}

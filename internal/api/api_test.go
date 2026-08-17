@@ -38,6 +38,23 @@ func newTestServer(t *testing.T, reloadFn func() bool) (*Server, *httptest.Serve
 	return s, httpSrv
 }
 
+// waitForRows polls db.Recent until at least want rows are committed by the
+// async writer, or fails after 2 s. Replaces the fixed flush-tick sleep that
+// CL 21 (S3) banned: it exits as soon as the rows land (fast on a healthy
+// runner) and tolerates a slow CI writer (no flaky under contention).
+func waitForRows(t *testing.T, db *querylog.DBLogger, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rows, err := db.Recent(context.Background(), want+10)
+		if err == nil && len(rows) >= want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d rows to be committed", want)
+}
+
 func decode[T any](t *testing.T, body io.Reader) T {
 	t.Helper()
 	var v T
@@ -126,7 +143,10 @@ func TestQueriesEndpoint_WithRealDB(t *testing.T) {
 
 	db.Log("1.1.1.1", "first.com.", false)
 	db.Log("1.1.1.1", "second.com.", true)
-	time.Sleep(150 * time.Millisecond) // wait for the flush tick
+	// Poll until the async writer has committed both rows instead of a fixed
+	// flush-tick sleep — CL 21 (S3) banned the hardcoded time.Sleep because it
+	// is both slow on a healthy runner and flaky under CI contention.
+	waitForRows(t, db, 2)
 
 	store := blocklist.NewStore()
 	s := New(stats.New(), db, store, nil, func() bool { return true })
@@ -163,7 +183,10 @@ func TestTopBlockedEndpoint_WithRealDB(t *testing.T) {
 	db.Log("1.1.1.1", "ads.com.", true)
 	db.Log("1.1.1.1", "tracker.com.", true)
 	db.Log("1.1.1.1", "allowed.com.", false) // must not appear
-	time.Sleep(150 * time.Millisecond)       // wait for the flush tick
+	// Poll for all four rows (not a fixed flush-tick sleep, CL 21 S3) so the
+	// per-domain counts below are stable: waiting for the full count ensures
+	// both ads.com rows are committed, not just one.
+	waitForRows(t, db, 4)
 
 	store := blocklist.NewStore()
 	s := New(stats.New(), db, store, nil, func() bool { return true })

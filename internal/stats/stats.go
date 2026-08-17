@@ -171,18 +171,22 @@ const (
 
 // Snapshot returns a point-in-time summary with the top-n domains and clients.
 //
-// Load order: blocked is read under mu BEFORE total (atomic). RecordQuery
-// increments total first, then blocked under mu — the reverse read order
-// prevents observing blocked > total (b/021). localPTR is read after total:
-// RecordLocalPTR is called after RecordQuery, so total ≥ localPTR always.
-// The cache-hit denominator excludes both blocked and localPTR because
-// neither class ever reaches the cache or upstream.
+// Load order matters: every counter that a single query increments AFTER
+// total must be read BEFORE total, or a concurrent query completing between
+// two loads can make the later-incremented counter exceed the total we
+// captured. RecordQuery increments total, then blocked (under mu); the PTR
+// path additionally calls RecordLocalPTR after RecordQuery. So both blocked
+// and localPTR are read before total — the b/021 fix, extended to localPTR
+// (ultrareview bug_006). This keeps total ≥ blocked and total ≥ localPTR on
+// every snapshot, so forwardable below can never go negative. The cache-hit
+// denominator excludes both blocked and localPTR because neither class ever
+// reaches the cache or upstream.
 func (c *Counter) Snapshot(topN int) Summary {
 	c.mu.Lock()
 	blocked := c.blocked
 	c.mu.Unlock()
-	total := c.total.Load()
 	localPTR := c.localPTR.Load()
+	total := c.total.Load()
 	hits := c.cacheHit.Load()
 	blockPct := 0.0
 	if total > 0 {

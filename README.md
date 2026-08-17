@@ -407,9 +407,9 @@ Coverage by package (after `go test -cover ./...`):
 | `internal/config` | 100 % |
 | `internal/version` | 100 % |
 | `internal/cache` | 94.8 % |
-| `internal/api` | 89.2 % |
+| `internal/api` | 89.3 % |
 | `internal/blocklist` | 90.4 % |
-| `internal/dnsserver` | 88.4 % |
+| `internal/dnsserver` | 88.5 % |
 | `internal/querylog` | 85.6 % |
 | `cmd/s-hole` | 31.7 % |
 | **module-wide** | **77.8 %** |

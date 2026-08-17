@@ -42,6 +42,17 @@ const topNMaxEntries = 4096
 // would be misleading dead optimisation. Snapshot reads it back inside
 // the same lock. localPTR is atomic alongside cacheHit: it is
 // incremented after total, maintaining total ≥ localPTR at all times.
+//
+// LOAD-ORDER INVARIANT (read this before adding a counter). Every per-query
+// counter below — blocked, localPTR, cacheHit — is incremented AFTER
+// RecordQuery bumps total. Snapshot must therefore read each of them BEFORE
+// it reads total; otherwise a query completing between the two atomic loads
+// makes the counter exceed the total captured alongside it, surfacing as a
+// >100 % ratio on the dashboard. This exact mistake has regressed three
+// times: b/021 (blocked), b/033 (localPTR), b/036 (cacheHit). If you add a
+// counter that a query increments after total, load it before total in
+// Snapshot and add a `*NeverExceeds*UnderLoad` regression test next to the
+// existing three.
 type Counter struct {
 	total    atomic.Int64
 	cacheHit atomic.Int64

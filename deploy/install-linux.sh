@@ -73,7 +73,7 @@ chmod 644 /etc/systemd/system/s-hole.service
 echo "==> enabling and starting service"
 systemctl daemon-reload
 systemctl enable s-hole
-# restart, not start: on a re-run (upgrade), `install` above replaced the
+# restart, not start (b/030): on a re-run (upgrade), `install` above replaced the
 # binary at a new inode but the running process keeps executing the old one,
 # and `systemctl start` is a no-op on an already-active unit — so the old
 # build would keep running while the "Installed build" box below advertises
@@ -99,7 +99,7 @@ api_host=${api_value%:*}
 api_host=${api_host#[}
 api_host=${api_host%]}
 # Mirror isLoopbackHost in cmd/s-hole/main.go so the banner matches the
-# in-binary hint (T4): only 127.x / ::1 / localhost bind loopback-only. An
+# in-binary hint (T4; b/031): only 127.x / ::1 / localhost bind loopback-only. An
 # empty host (":8080"), 0.0.0.0, ::, or a specific LAN IP are all LAN-visible.
 case "$api_host" in
   127.*|::1|localhost) api_on_lan=false ;;

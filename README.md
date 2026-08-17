@@ -235,7 +235,7 @@ scp deploy/install-linux.sh pi@raspberrypi.local:~/
 sudo bash install-linux.sh ./s-hole-linux-arm64 ./config.yaml
 ```
 
-The installer creates a `s-hole` system user, places the binary at `/usr/local/bin/s-hole`, installs config to `/etc/s-hole/config.yaml`, and enables the service to start on boot.
+The installer creates a `s-hole` system user, places the binary at `/usr/local/bin/s-hole`, installs config to `/etc/s-hole/config.yaml`, and enables the service to start on boot. It ends by printing the installed build's version and commit — confirm it matches the binary you meant to ship (a stale `scp` is otherwise silent).
 
 After installation:
 

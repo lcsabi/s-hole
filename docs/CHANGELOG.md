@@ -28,6 +28,11 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   disabling blocking for an entire suffix, and it does not abort startup: a
   dropped entry fails safe (the domain stays blockable) and one bad line
   cannot take DNS down for the LAN. (CL 31)
+- **The Linux installer now prints the installed build.** `deploy/install-linux.sh`
+  ends with an "Installed build" box showing the version, commit, and build date
+  of the binary it just placed (`s-hole -version`). A stale `scp` was previously
+  silent — the operator had no signal that the running service predated the fix
+  they meant to ship. (CL 35)
 
 ### Fixed
 - The dashboard no longer displays the DNS trailing dot on domain names. The

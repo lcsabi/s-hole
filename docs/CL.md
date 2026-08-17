@@ -47,6 +47,7 @@ the per-file layout here mirrors that intent for an open-source repo.
 | [CL 32](cls/CL-32.md) | Benchmark companions for the hot path (cache, handler) |
 | [CL 33](cls/CL-33.md) | Wire up TopBlocked: `/api/top-blocked` + dashboard toggle |
 | [CL 34](cls/CL-34.md) | Strip the FQDN trailing dot in the dashboard |
+| [CL 35](cls/CL-35.md) | Linux installer prints the installed build version/commit |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N — title`

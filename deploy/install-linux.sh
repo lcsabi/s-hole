@@ -20,6 +20,9 @@ id -u s-hole &>/dev/null || useradd --system --no-create-home --shell /usr/sbin/
 
 echo "==> installing binary to $INSTALL_BIN"
 install -m 755 "$BINARY" "$INSTALL_BIN"
+# Capture the build identity now so the final confirmation can show which
+# build is live — a silent installer hides a stale-binary deploy.
+installed_build=$("$INSTALL_BIN" -version 2>/dev/null || true)
 
 echo "==> installing config to $CONFIG_DIR/config.yaml"
 mkdir -p "$CONFIG_DIR"
@@ -85,6 +88,15 @@ api_on_lan=false
 if echo "$api_listen" | grep -qE '0\.0\.0\.0'; then
   api_on_lan=true
 fi
+
+echo ""
+echo "┌─ Installed build ───────────────────────────────────────"
+if [[ -n "$installed_build" ]]; then
+  printf '%s\n' "$installed_build" | sed 's/^/│  /'
+else
+  echo "│  (could not read version — is this an s-hole binary?)"
+fi
+echo "└─────────────────────────────────────────────────────────"
 
 echo ""
 echo "┌─ Router setup ──────────────────────────────────────────"

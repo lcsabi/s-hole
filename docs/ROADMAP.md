@@ -24,7 +24,7 @@ rails.
 | 8 | Benchmark companions for the hot path | Low | done (CL 32) |
 | 9 | Answer private-range PTR queries locally (RFC 6303) | Low | done (CL 27) |
 | 10 | Blocklist size in `/api/stats` + dashboard | Medium | done (CL 28) |
-| 11 | Install script prints the installed version/commit | Low | not started |
+| 11 | Install script prints the installed version/commit | Low | done (CL 35) |
 
 ## 1. Deploy to real hardware
 
@@ -210,21 +210,25 @@ descriptions in README/DESIGN were synced with the new payload field.
 Rated Medium by the impact rubric (observability win): the number
 builds operator trust but changes no filtering behaviour.
 
-## 11. Install script prints the installed version/commit
+## 11. Install script prints the installed version/commit — done (CL 35)
 
-`deploy/install-linux.sh` never echoes which build it just installed, so a
-stale-binary deploy is silent: the operator `scp`s a binary, runs the
+`deploy/install-linux.sh` never echoed which build it just installed, so a
+stale-binary deploy was silent: the operator `scp`s a binary, runs the
 installer, and has no signal that the running service predates the fix they
 meant to ship. This bit a real deployment — a pre-CL-30 binary was live on a
 VM, so subdomain blocking (CL 30) appeared broken until `s-hole -version`
-revealed the old commit. The version/commit is already embedded via the
-`make` ldflags (`internal/version`), so the fix is one line: have the
-installer run `"$INSTALL_BIN" -version` (or read it before `systemctl start`)
-and print it as the script's final confirmation, next to the router-setup
-block. Rated Low — pure deploy-time guard rail, no runtime behaviour change —
-but it turns an invisible class of mistake into an obvious one. A natural
-companion is a one-line `s-hole -version` check in the CONTRIBUTING deploy
-notes right after install.
+revealed the old commit.
+
+**Shipped in CL 35:** the installer captures `"$INSTALL_BIN" -version` right
+after `install`-ing the binary (before `systemctl start`) and prints an
+"Installed build" box — version, commit, build date — as its final
+confirmation, above the router-setup block. The identity is already embedded
+via the `make` ldflags (`internal/version`); a plain `go build` without them
+prints the `dev`/`unknown` placeholders, and a binary that produces no
+`-version` output falls back to a "could not read version" line. No runtime
+behaviour changed — pure deploy-time guard rail — but it turns an invisible
+class of mistake into an obvious one. The README install section now points
+the operator at the printed build to confirm.
 
 ## Pending decisions
 

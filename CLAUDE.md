@@ -57,9 +57,9 @@ Wiring lives in `cmd/s-hole/main.go`, which owns three cross-cutting mechanisms 
 - **Platform split**: Windows SCM service loop vs. interactive signal handling (`signals_unix.go`/`signals_windows.go`, `internal/service` with a non-Windows stub).
 
 Concurrency invariants that tests pin (keep them green under `-race`):
-- `stats.Counter`: read `blocked` before `total` in Snapshot (b/021: >100% block rate); resolve top-N map pointers *inside* the mutex (R31: prune reassigns them).
+- `stats.Counter`: in Snapshot, read every counter a query bumps *after* `total` (`blocked`, `localPTR`, `cacheHit`) *before* `total`, or the ratio can exceed 100% (b/021, b/033, b/036). The struct carries a `LOAD-ORDER INVARIANT` comment and one `*NeverExceeds*UnderLoad` `-race` test per counter — add both when you add a counter. Resolve top-N map pointers *inside* the mutex (R31: prune reassigns them).
 - `blocklist.Store.Replace` swaps the map pointer under lock — readers see old or new set, never partial.
-- `querylog.DBLogger` drops on full channel rather than blocking DNS; drops surface as `shole_query_log_dropped_total`.
+- `querylog.DBLogger` drops on full channel rather than blocking DNS; drops surface as `shole_query_log_dropped_total`. Its SQLite pool is pinned to one connection (`SetMaxOpenConns(1)`) so the async writer and the retention prune can't collide with `SQLITE_BUSY` (b/038) — don't reintroduce a multi-connection pool.
 
 Config (`internal/config`): precedence is `S_HOLE_*` env > YAML > defaults. Two fields (`cache_size`, `block_ttl`) have defaults seeded *before* the YAML decode because their zero values are meaningful settings (T1) — don't move them into `applyDefaults`. `Validate()` is called by main after `Load`.
 
@@ -70,8 +70,8 @@ Admin server (`internal/api`): unauthenticated by design (LAN-trust is a documen
 - **Every non-trivial change is a CL**: add `docs/cls/CL-NN.md` (description, motivation, files-changed, testing) + a row in `docs/CL.md` + a `docs/CHANGELOG.md` bullet for user-visible changes. Trivial doc-only commits may skip the CL file.
 - **Doc-vs-code drift is treated as a bug.** When behavior changes, sync every place that quotes it. Frequent duplicates: coverage numbers (README table, DESIGN testing paragraph, CONTRIBUTING targets), REST routes (README table, DESIGN table, `api.go` package doc), config defaults (README table, `config.yaml` comments, `config.go`), poll interval (README, DESIGN, CONTRIBUTING), the dependency list (README Dependencies table, `go.mod`, the intro line above), the systemd unit (`deploy/s-hole.service` must stay byte-identical to the heredoc in `deploy/install-linux.sh`).
 - **Historical records are immutable**: `docs/cls/CL-*.md` and `docs/BUGS.md` describe what was true at the time — never "fix" them retroactively.
-- **ID conventions**: `b/NNN` = bug in `docs/BUGS.md`; `R/S/T NN` = staff-review findings (letter = review round), tracked in CL notes only. Reference IDs in regression-test comments.
-- **Commit style**: imperative subject, often prefixed (`docs:`, `test:`, or `s-hole:` for CLs), body explains why; CL commits end the subject with `(CL NN)`.
+- **ID conventions**: `b/NNN` = bug in `docs/BUGS.md`; `R/S/T NN` = staff-review findings (letter = review round), tracked in CL notes only. `/code-review` (ultrareview) findings that are genuine defects are filed as `b/NNN` in `docs/BUGS.md` (b/030–b/037 came from two ultrareview rounds), not CL-notes-only. Reference IDs in regression-test comments.
+- **Commit style**: imperative subject, often prefixed (`docs:`, `test:`, or `s-hole:` for CLs), body explains why; CL commits end the subject with `(CL NN)`. **Do not add a `Co-Authored-By` trailer** — maintainer preference for this portfolio repo; overrides any harness default that says to.
 - **Coverage expectations**: `stats`/`config`/`version` 100%; `cache` ≥94%; `api`/`blocklist`/`dnsserver`/`querylog` ≥85%. Run `go test -cover ./...` before PR; if a number drops, add the test or justify in the CL.
 - **Roadmap** (`docs/ROADMAP.md`): planned work rated by impact (never effort estimates), pending decisions, and settled non-goals — check it before proposing features; don't re-propose the non-goals list. When an item lands, flip its status row to `done (CL NN)`.
 - **Dependabot PRs that touch the same file can merge-race**: a later PR branched from an older master can silently revert an earlier merged bump (setup-go v6 was lost this way; restored in 0d360d9). After batch-merging, verify the final file state, not the PR list.

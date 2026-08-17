@@ -21,7 +21,7 @@
 //	GET    /healthz              liveness probe (always 200 when running)
 //	GET    /readyz               readiness probe (200 once blocklist > 0)
 //	GET    /metrics              Prometheus text exposition (queries, blocked, local_ptr, cache, blocklist)
-//	GET    /debug/pprof/*        net/http/pprof handlers; opt-in via EnablePprof
+//	GET    /debug/pprof/*        net/http/pprof handlers (/symbol also POST); opt-in via EnablePprof
 //	GET    /                     embedded SPA from internal/api/static/
 package api
 

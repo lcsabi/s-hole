@@ -1,7 +1,6 @@
 # s-hole
 
 [![CI](https://github.com/lcsabi/s-hole/actions/workflows/ci.yml/badge.svg)](https://github.com/lcsabi/s-hole/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/lcsabi/s-hole)](https://goreportcard.com/report/github.com/lcsabi/s-hole)
 [![Go Reference](https://pkg.go.dev/badge/github.com/lcsabi/s-hole.svg)](https://pkg.go.dev/github.com/lcsabi/s-hole)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/lcsabi/s-hole)](go.mod)
 [![License](https://img.shields.io/github/license/lcsabi/s-hole)](LICENSE)

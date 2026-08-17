@@ -1,11 +1,21 @@
 # s-hole
 
+[![CI](https://github.com/lcsabi/s-hole/actions/workflows/ci.yml/badge.svg)](https://github.com/lcsabi/s-hole/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/lcsabi/s-hole)](https://goreportcard.com/report/github.com/lcsabi/s-hole)
+[![Go Reference](https://pkg.go.dev/badge/github.com/lcsabi/s-hole.svg)](https://pkg.go.dev/github.com/lcsabi/s-hole)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/lcsabi/s-hole)](go.mod)
+[![License](https://img.shields.io/github/license/lcsabi/s-hole)](LICENSE)
+
 A lightweight, self-contained DNS sinkhole for network-wide ad and tracker blocking. Deploy it on any always-on machine, point your router's DHCP DNS field at it, and every device on the network is protected — no per-device configuration required.
 
 s-hole is intentionally small: a single binary, a single YAML config file, no runtime dependencies. The full codebase fits comfortably in an afternoon's reading.
 
+![s-hole dashboard](docs/dashboard.gif)
+
 ### Contents
 
+- [Engineering highlights](#engineering-highlights)
+- [How it's engineered](#how-its-engineered)
 - [Features](#features)
 - [Quick Start](#quick-start)
 - [Configuration](#configuration) (incl. [env-var overrides](#environment-variable-overrides))
@@ -17,7 +27,30 @@ s-hole is intentionally small: a single binary, a single YAML config file, no ru
 - [Security Notes](#security-notes)
 - [License](#license)
 
-For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/CL.md` (change-list index → `docs/cls/`), `docs/BUGS.md` (Buganizer-style bug tracker), `docs/CHANGELOG.md` (release notes), `docs/ROADMAP.md` (planned work and non-goals), and `CONTRIBUTING.md`.
+For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/CL.md` (change-list index → `docs/cls/`), `docs/BUGS.md` (bug tracker with priorities and root-cause records), `docs/CHANGELOG.md` (release notes), `docs/ROADMAP.md` (planned work and non-goals), and `CONTRIBUTING.md`.
+
+---
+
+## Engineering highlights
+
+*The parts worth reading the code for:*
+
+- **A lock-free stats hot path with a proven concurrency invariant.** Per-query counters update without locks; `Snapshot` must read every counter a query touches *after* `total` *before* it reads `total`, or a dashboard ratio can momentarily exceed 100%. I hit that exact race on three different counters, then encoded a standing load-order invariant plus a race-tested regression per counter so a fourth can't slip in. ([`internal/stats`](internal/stats))
+- **Suffix-match subdomain blocking** that walks a name's parent labels in `O(labels)` with zero per-query allocation, closing the subdomain-rotation hole that exact-match blockers leave open. ([`blocklist.Store.IsBlocked`](internal/blocklist/store.go))
+- **Resilient upstream forwarding** — UDP with automatic TCP fallback on truncation, plus a health tracker that skips recently-failed resolvers and retries them only if every other upstream also failed.
+- **RFC 6303 local PTR answering** — private-range reverse queries are answered locally instead of leaking internal LAN addressing to the upstream resolver.
+- **Deliberate non-decisions.** Case-insensitive caching was rejected because it would break dns-0x20 downstream resolvers; admin authentication was rejected in favour of a documented localhost-only scope. Knowing what *not* to build is recorded in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+- **A tiny dependency graph and pure-Go SQLite** — no CGO, so cross-compiling for four targets stays a one-liner and the binary is fully static.
+
+## How it's engineered
+
+Built with the discipline of a long-lived, multi-maintainer codebase rather than a one-shot script:
+
+- **A living design doc** ([`docs/DESIGN.md`](docs/DESIGN.md)) captures the rationale and the rejected alternatives behind each decision.
+- **Every change is a small, self-contained change-list** with motivation, files touched, and testing notes ([`docs/cls/`](docs/cls)).
+- **A bug tracker with priorities and structured root-cause/fix records** ([`docs/BUGS.md`](docs/BUGS.md)) — including entries deliberately marked *Won't Fix — by design*.
+- **Documentation drift is treated as a bug** — code and docs are updated in the same change.
+- **CI gate on every push**: `gofmt`, `go vet`, `golangci-lint`, race-enabled tests, `govulncheck`, and a four-target cross-compile. The `internal/` packages hold 85–100% line coverage (see the [table under Development](#development)).
 
 ---
 
@@ -260,6 +293,17 @@ SIGHUP is honored on every non-Windows platform; it runs the same single-flight 
 
 The systemd unit runs with `CAP_NET_BIND_SERVICE` so it can bind port 53 without running as root. `ProtectSystem=strict` and `NoNewPrivileges` are set for defence in depth.
 
+#### Operating an installed service
+
+A few things that trip people up once s-hole is running as a systemd service:
+
+- **Config is *copied*, not live-linked.** The installer copies your config to `/etc/s-hole/config.yaml` on the **first** install only — it never overwrites an existing one (it prints `config already exists — skipping`), and re-running the installer or `scp`-ing a new file to your home directory does **not** update it. To apply a config change on an installed host, edit `/etc/s-hole/config.yaml` directly (or `sudo cp your-config.yaml /etc/s-hole/config.yaml`), then `sudo systemctl restart s-hole`.
+- **`S_HOLE_*` environment overrides do not reach the service.** The systemd unit runs with a clean environment, so shell env vars only take effect when you run the binary directly. On the service, put values in `/etc/s-hole/config.yaml` (or add `Environment=` lines to the unit).
+- **`query_db` and `cache_dir` are relative to `/var/lib/s-hole`.** Relative paths resolve against the service's working directory. Because the unit sets `ProtectSystem=strict` with `ReadWritePaths=/var/lib/s-hole`, the rest of the filesystem is read-only to the service — keep both paths under `/var/lib/s-hole` (the defaults `queries.db` and `.` already do). Pointing them at `/tmp` or a home directory will silently fail to write.
+- **The query log flushes on an interval.** Newly logged queries appear in `/api/queries` and the dashboard's "All time" panel only after the next SQLite flush (`db_flush_interval`, default `30s`), not instantly. Lower it for a more responsive view.
+
+There is no bundled uninstaller yet ([roadmap #12](docs/ROADMAP.md)). To remove s-hole completely: `systemctl stop`/`disable s-hole`, delete `/etc/systemd/system/s-hole.service` and `daemon-reload`, then remove `/usr/local/bin/s-hole`, `/etc/s-hole`, `/var/lib/s-hole`, and the `s-hole` user (`userdel s-hole`). A leftover `/etc/s-hole/config.yaml` is the usual reason a fresh install seems to ignore a new config.
+
 ### Docker
 
 **1. Create a data directory and place your config in it:**
@@ -410,7 +454,7 @@ Coverage by package (after `go test -cover ./...`):
 | `internal/api` | 89.3 % |
 | `internal/blocklist` | 90.4 % |
 | `internal/dnsserver` | 88.5 % |
-| `internal/querylog` | 85.6 % |
+| `internal/querylog` | 85.7 % |
 | `cmd/s-hole` | 31.7 % |
 | **module-wide** | **77.8 %** |
 

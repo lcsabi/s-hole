@@ -156,7 +156,8 @@ Look at `docs/cls/CL-20.md` for a recent example.
 
 The repo tracks two kinds of identifiers:
 
-- `b/NNN` — a Buganizer-style bug filed in `docs/BUGS.md`.
+- `b/NNN` — a bug filed in `docs/BUGS.md` (issue-tracker style: a stable
+  ID, a priority, a component, and a root-cause/fix record).
 - `R NN` / `S NN` / `T NN` — findings from successive staff-engineer
   review rounds (the letter identifies the round). These are tracked
   in CL notes only, not in `BUGS.md`.

@@ -25,6 +25,8 @@ rails.
 | 9 | Answer private-range PTR queries locally (RFC 6303) | Low | done (CL 27) |
 | 10 | Blocklist size in `/api/stats` + dashboard | Medium | done (CL 28) |
 | 11 | Install script prints the installed version/commit | Low | done (CL 35) |
+| 12 | `uninstall-linux.sh` companion to the installer | Low | not started |
+| 13 | Persist runtime whitelist across restarts | Medium | not started |
 
 ## 1. Deploy to real hardware
 
@@ -229,6 +231,68 @@ prints the `dev`/`unknown` placeholders, and a binary that produces no
 behaviour changed — pure deploy-time guard rail — but it turns an invisible
 class of mistake into an obvious one. The README install section now points
 the operator at the printed build to confirm.
+
+## 12. `uninstall-linux.sh` companion to the installer
+
+`deploy/install-linux.sh` has no counterpart, so removing s-hole is a manual,
+error-prone sequence: stop and disable the unit, delete the unit file and
+`daemon-reload`, remove the binary, `/etc/s-hole`, `/var/lib/s-hole`, and the
+`s-hole` system user/group. A shipped installer with no uninstaller is an
+asymmetry an operator (and a reviewer) notices. Add `deploy/uninstall-linux.sh`
+that reverses the install in the correct order, with:
+
+- **A `--purge` flag** that also removes `/var/lib/s-hole` (blocklist caches and
+  the query DB). Without it, leave operator data in place.
+- **Optional restoration of stock DNS resolution.** If s-hole's deployment (or
+  the operator) disabled the `systemd-resolved` stub listener to free port 53
+  (the `DNSStubListener=no` drop-in), offer to remove that drop-in and restart
+  `systemd-resolved` — but only when the drop-in is actually present, and behind
+  a prompt/flag, since it is a system-wide change the operator may have made
+  independently of s-hole.
+- **The same reporting courtesy as the installer** — print what was removed.
+
+Rated Low: deploy-time hygiene, no runtime behaviour. It closes the
+install/uninstall asymmetry and heads off a real confusion the installer can
+cause — because it never overwrites an existing `/etc/s-hole/config.yaml`, a
+stale config left behind by a prior install silently shadows a freshly copied
+one until it is removed (documented in the README deployment notes).
+
+## 13. Persist runtime whitelist across restarts
+
+The whitelist is two-tier today: declarative entries in `config.yaml` (re-read
+on every startup) and runtime entries added via the dashboard or
+`POST /api/whitelist` (in-memory only, lost on restart — see
+`store.AddToWhitelist`). An operator who whitelists a domain from the UI and
+later restarts the service is surprised when it re-blocks. Persist runtime
+additions so they survive a restart.
+
+Design decisions to settle in the CL:
+
+- **A separate store, not a `config.yaml` rewrite.** The API must not edit
+  `config.yaml` — it carries comments, formatting, and is frequently managed by
+  version control or config management. Persist runtime entries to a dedicated
+  file in the data dir (e.g. `/var/lib/s-hole/whitelist.json`, atomic
+  temp-and-rename like the blocklist cache), **independent of `query_db`** so
+  whitelist persistence never depends on the query log being enabled. A plain,
+  inspectable, hand-editable file also keeps the "auditable in an afternoon"
+  property.
+- **Effective whitelist = config entries ∪ persisted runtime entries**, merged
+  into the store at startup.
+- **Removal must be persistent, and its semantics differ by source.**
+  `DELETE /api/whitelist` has to remove the entry from the *persistent* runtime
+  store, not just the in-memory map — otherwise a deleted entry reappears on the
+  next restart, which is a broken half-feature. A **config-sourced** entry,
+  however, cannot be removed via the API without rewriting `config.yaml` (which
+  we won't do): a `DELETE` on such an entry should be **rejected with a clear
+  message** ("defined in config.yaml — edit the config to remove it") rather
+  than silently no-op'ing or resurrecting on restart. The whitelist list
+  responses should expose each entry's source (config vs runtime) so the UI can
+  disable delete on config entries.
+- **Blocklist precedence is unchanged** — the whitelist still wins globally and
+  suffix-aware (CL 30).
+
+Rated Medium: a user-visible robustness win (the whitelist behaves the way
+operators expect across restarts) that changes no filtering semantics.
 
 ## Pending decisions
 

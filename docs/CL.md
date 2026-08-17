@@ -8,8 +8,9 @@ links to a focused file under `docs/cls/` so that:
 - Each CL renders as a properly-paginated page on GitHub.
 - New CLs add a file rather than appending to a long log.
 
-In a real Piper-based workflow each would be a separate numbered CL;
-the per-file layout here mirrors that intent for an open-source repo.
+Each change is kept small and self-contained so it can be reviewed on its
+own; the per-file layout mirrors how a large, long-lived codebase treats
+every change as a separate, numbered, reviewable unit.
 
 | CL | Topic |
 |---:|---|

@@ -1,8 +1,8 @@
 # s-hole Bug Tracker
 
-Bugs are filed against s-hole as they are discovered. Each entry follows the
-Google Buganizer convention: a monotonically increasing ID (`b/NNN`), a priority
-(P0–P3), a component, a status, and a structured description.
+Bugs are filed against s-hole as they are discovered. Each entry follows a
+consistent issue-tracker convention: a monotonically increasing ID (`b/NNN`), a
+priority (P0–P3), a component, a status, and a structured description.
 
 **Priority scale**
 

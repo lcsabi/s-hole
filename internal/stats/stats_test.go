@@ -311,3 +311,39 @@ func TestCounter_LocalPTRNeverExceedsTotalUnderLoad(t *testing.T) {
 	stop.Store(true)
 	wg.Wait()
 }
+
+func TestCounter_CacheHitRateNeverExceeds100UnderLoad(t *testing.T) {
+	// Regression for b/036 (ultrareview bug_001) — the b/021 pattern applied
+	// to the cache-hit counter. The handler records a cache hit as RecordQuery
+	// then RecordCacheHit, so cacheHit is a strictly-later counter; if Snapshot
+	// read total before cacheHit, a concurrent hit landing between the two
+	// loads could make hits exceed forwardable and drive CacheHitPct over
+	// 100 %. Every query here is an all-hit (no blocked, no localPTR), the
+	// worst case where forwardable == hits. Assert the invariant on every read.
+	c := New()
+
+	stop := atomic.Bool{}
+	var wg sync.WaitGroup
+
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for !stop.Load() {
+				// Mirror handler.go's cache-hit path: RecordQuery then RecordCacheHit.
+				c.RecordQuery("1.1.1.1", "google.com.", false)
+				c.RecordCacheHit()
+			}
+		}()
+	}
+
+	for range 5000 {
+		s := c.Snapshot(0)
+		if s.CacheHitPct > 100 {
+			t.Fatalf("CacheHitPct = %v exceeds 100%% (hits=%d total=%d blocked=%d localPTR=%d)",
+				s.CacheHitPct, s.CacheHits, s.TotalQueries, s.BlockedCount, s.LocalPTRCount)
+		}
+	}
+	stop.Store(true)
+	wg.Wait()
+}

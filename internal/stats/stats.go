@@ -175,19 +175,21 @@ const (
 // total must be read BEFORE total, or a concurrent query completing between
 // two loads can make the later-incremented counter exceed the total we
 // captured. RecordQuery increments total, then blocked (under mu); the PTR
-// path additionally calls RecordLocalPTR after RecordQuery. So both blocked
-// and localPTR are read before total — the b/021 fix, extended to localPTR
-// (b/033, ultrareview bug_006). This keeps total ≥ blocked and total ≥ localPTR on
-// every snapshot, so forwardable below can never go negative. The cache-hit
-// denominator excludes both blocked and localPTR because neither class ever
-// reaches the cache or upstream.
+// path additionally calls RecordLocalPTR after RecordQuery; the cache-hit
+// path calls RecordCacheHit after RecordQuery. So blocked, localPTR, and
+// cacheHit are all read before total — the b/021 fix, extended to localPTR
+// (b/033) and cacheHit (b/036). This keeps total ≥ blocked, total ≥ localPTR,
+// and hits ≤ forwardable on every snapshot, so forwardable below can never go
+// negative and CacheHitPct can never exceed 100 %. The cache-hit denominator
+// excludes both blocked and localPTR because neither class ever reaches the
+// cache or upstream.
 func (c *Counter) Snapshot(topN int) Summary {
 	c.mu.Lock()
 	blocked := c.blocked
 	c.mu.Unlock()
 	localPTR := c.localPTR.Load()
-	total := c.total.Load()
 	hits := c.cacheHit.Load()
+	total := c.total.Load()
 	blockPct := 0.0
 	if total > 0 {
 		blockPct = float64(blocked) / float64(total) * 100

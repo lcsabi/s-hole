@@ -35,6 +35,12 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   they meant to ship. (CL 35)
 
 ### Fixed
+- **`/api/stats` can no longer momentarily report a cache hit rate above 100 %.**
+  `Snapshot` read the cache-hit counter after the total-queries counter, so a
+  concurrent cache hit slipping between the two reads could push the ratio over
+  100 % on the dashboard's Cache Hit Rate card. It now reads the later-incremented
+  counter first — the same fix already applied to blocked-vs-total (b/021) and
+  local-PTR-vs-total (b/033). (CL 37)
 - **The Linux installer now restarts the service instead of starting it**, so
   re-running `install-linux.sh` to upgrade actually swaps the running binary.
   `systemctl start` is a no-op on an already-active unit, so an upgrade would

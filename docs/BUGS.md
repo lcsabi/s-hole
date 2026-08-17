@@ -1001,3 +1001,84 @@ fixed interval — was not carried over to the new DB-backed tests in CL 33.
 Added a `waitForRows(t, db, n)` helper that polls `db.Recent` until at least `n`
 rows are committed (2 s deadline), and used it in both tests. The top-blocked test
 waits for all four rows so the per-domain counts it asserts are stable.
+
+---
+
+## b/036 — stats: Snapshot reads `cacheHit` after `total`; CacheHitPct can transiently exceed 100 %
+
+**Priority:** P2
+**Component:** stats
+**Status:** Fixed in CL 37
+**Filed:** 2026-08-17
+
+Found by the CL 36 ultrareview (finding bug_001). Third instance of the b/021
+load-order class, after b/033.
+
+### Description
+
+`Counter.Snapshot` read `cacheHit` *after* `total`. On the cache-hit path the
+handler calls `RecordQuery` (bumps `total`) then `RecordCacheHit` (bumps
+`cacheHit`), so `cacheHit` is a strictly-later counter — the same precondition as
+`blocked` (b/021) and `localPTR` (b/033). Reading it after `total` lets a
+concurrent cache-hit query complete between the two atomic loads, so the observed
+`hits` can exceed `forwardable = total − blocked − localPTR`. `/api/stats`
+`cache_hit_pct` and the CL 25 "Cache Hit Rate" dashboard card can then transiently
+render above 100 %. No crash or data loss; `forwardable` stays non-zero on this
+path so there is no divide-by-zero.
+
+The irony: CL 36 rewrote this exact docstring to state the general rule ("every
+counter incremented after `total` must be read before `total`") while fixing
+`localPTR`, but left `cacheHit` on the wrong side of `total` — a doc-vs-code
+contradiction.
+
+### Root Cause
+
+The b/021 load-order rule was applied to `blocked` (CL 8) and `localPTR` (CL 36)
+but not to `cacheHit`, even though `cacheHit` satisfies the same
+"incremented-after-`total`" condition on every cache hit.
+
+### Fix
+
+Read `cacheHit` before `total`. The docstring now names all three later-counters
+(`blocked`, `localPTR`, `cacheHit`) as the general invariant. Added
+`TestCounter_CacheHitRateNeverExceeds100UnderLoad`, a concurrent regression
+modelled on the b/033 test; it passes under `-race`.
+
+---
+
+## b/037 — dnsserver/cache/stats/querylog: post-blocklist paths key on case-sensitive `q.Name`
+
+**Priority:** P3
+**Component:** dnsserver / cache / stats / querylog
+**Status:** Won't Fix — by design (documented in CL 37)
+**Filed:** 2026-08-17
+
+Found by the CL 36 ultrareview (finding bug_002). Sibling of b/032.
+
+### Description
+
+DNS names are case-insensitive (RFC 1035 §2.3.3) and miekg/dns preserves the
+wire-format case in `q.Name`. The blocklist and whitelist paths fold case
+(`blocklist.normalize`), so **filtering is correct regardless of case**. The
+post-blocklist bookkeeping paths do not fold: the cache key (`cache.key`), the
+in-memory top-domains tally (`stats.RecordQuery`), and the persistent query log
+(`queries.domain`, no `COLLATE NOCASE`) all key on the raw `q.Name`. So
+`Google.com.` and `google.com.` produce distinct cache entries and distinct
+dashboard rows. The only trigger is a dns-0x20 case-randomising resolver (Unbound
+`use-caps-for-id`, PowerDNS Recursor) chained *in front of* s-hole; a normal LAN
+of stub resolvers emits lowercase and never hits it.
+
+### Resolution
+
+**Working as intended — not changed.** The suggested fix (fold `q.Name` and reuse
+it for the cache key and the returned response) would make a cache hit echo a
+*different* case than the client sent, which **breaks the dns-0x20 spoofing check
+in exactly the case-randomising downstream resolvers that are the only trigger for
+this issue** — today's per-case cache entries always echo the client's exact case.
+So the case-sensitive keys are a deliberate trade-off: correct case-echo for 0x20
+downstreams, in exchange for a lower cache hit rate and possible dashboard
+duplicate rows under that uncommon topology. On a normal LAN there is no
+observable duplication. Filtering correctness is unaffected either way. Revisit
+only if a case-insensitive-cache-with-case-preserving-response design is warranted
+(store canonical, but rewrite the response's question/owner names back to the
+client's case before sending) — more machinery than the nit justifies today.

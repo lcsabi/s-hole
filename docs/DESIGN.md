@@ -2,7 +2,7 @@
 
 **Authors:** Laszlo (@lcsabi)  
 **Created:** 2026-06-23  
-**Last Updated:** 2026-07-24  
+**Last Updated:** 2026-08-18  
 **Status:** Implementation Complete
 
 ---

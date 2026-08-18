@@ -35,6 +35,13 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   they meant to ship. (CL 35)
 
 ### Fixed
+- **The Docker container starts again when a data volume is mounted.** The
+  binary lived at `/app/s-hole`, but `/app` is the declared volume and the
+  documented `-v "$(pwd)/data:/app"` bind mount shadowed it, so the container
+  died at start with `exec: "./s-hole": ... no such file or directory` — i.e.
+  the recommended deployment was broken. The binary now lives on `PATH`
+  (`/usr/local/bin/s-hole`), outside the `/app` data volume; every documented
+  `docker run` command is unchanged. (CL 39)
 - **The query-log retention prune no longer intermittently skips under
   concurrent writes.** The SQLite connection pool is now pinned to a single
   connection (with a `busy_timeout` as a backstop), so the async writer and the

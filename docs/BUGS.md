@@ -1131,3 +1131,47 @@ full race suite. At home-network query volume the lost read concurrency is
 immaterial. The prune's WARN-and-skip-on-error behaviour is left as-is: with
 contention removed it no longer fires, and a genuinely failed prune is still
 best-effort (retried on the next tick).
+
+---
+
+## b/039 — deploy: Docker binary in /app is shadowed by the documented volume mount; container cannot start
+
+**Priority:** P1
+**Component:** deploy
+**Status:** Fixed in CL 39
+**Filed:** 2026-08-18
+
+### Description
+
+The runtime image copied the binary to `/app/s-hole` (`WORKDIR /app`, `COPY
+--from=builder /build/s-hole .`, `ENTRYPOINT ["./s-hole"]`) while also declaring
+`/app` a `VOLUME`. The README's documented `docker run` mounts a host data
+directory over that same path (`-v "$(pwd)/data:/app"`). A bind mount replaces
+the directory's contents, so the mount shadowed the binary: container init
+failed with
+
+```
+exec: "./s-hole": stat ./s-hole: no such file or directory
+```
+
+Following the README exactly reproduced it — the container could not start at
+all whenever a data volume was mounted (i.e. the recommended configuration). The
+baked-in `/app/config.yaml` was shadowed by the same mechanism, but that is
+intentional (operators supply their own config in the mounted directory); only
+the binary being co-located in the volume was the defect.
+
+### Root Cause
+
+The executable was placed inside the directory that is declared a `VOLUME` and
+documented as a bind-mount target. Anything under a bind-mounted path is hidden
+by the host directory mounted over it, so the binary disappeared at runtime.
+
+### Fix
+
+Copy the binary to `/usr/local/bin/s-hole` (on `PATH`, outside `/app`) and
+change the entrypoint to `["s-hole"]`. `/app` stays the `WORKDIR` and the data
+`VOLUME`; the binary is now reachable no matter what the operator mounts over
+`/app`. Verified by rebuilding and running the previously-failing
+`-v "$(pwd)/data:/app"` command: the container starts, loads blocklists, serves
+DNS + admin UI, and writes the blocklist cache and query DB into the host
+directory.

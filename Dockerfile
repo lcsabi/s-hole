@@ -38,8 +38,17 @@ FROM alpine:3.24
 # layer.
 RUN apk add --no-cache ca-certificates
 
+# The binary lives on PATH, NOT in /app. /app is declared a VOLUME and is
+# meant to be bind-mounted to a host data directory; a bind mount replaces the
+# directory's contents, so anything under /app (a binary included) is shadowed
+# at runtime. Keeping s-hole in /usr/local/bin keeps it reachable regardless of
+# what the operator mounts over /app (b/039).
+COPY --from=builder /build/s-hole /usr/local/bin/s-hole
+
 WORKDIR /app
-COPY --from=builder /build/s-hole .
+# Baked-in default config, used only when /app is NOT bind-mounted. When an
+# operator mounts a host data directory over /app, they supply their own
+# /app/config.yaml (see the Docker section in README.md).
 COPY config.yaml .
 
 # DNS (UDP + TCP) and admin UI.
@@ -51,5 +60,5 @@ EXPOSE 8080/tcp
 # across container restarts.
 VOLUME ["/app"]
 
-ENTRYPOINT ["./s-hole"]
+ENTRYPOINT ["s-hole"]
 CMD ["-config", "/app/config.yaml"]

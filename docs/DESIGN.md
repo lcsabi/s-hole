@@ -281,7 +281,7 @@ Three deployment targets are supported:
 
 **Linux systemd** — `deploy/s-hole.service` runs as a dedicated `s-hole` system user. `AmbientCapabilities=CAP_NET_BIND_SERVICE` allows binding port 53 without root. `ProtectSystem=strict` and `NoNewPrivileges` limit the blast radius of any exploit. `deploy/install-linux.sh` automates the full installation; the systemd unit is embedded as a heredoc inside the script, so only the script itself (plus the binary and config) needs to be copied to the target machine.
 
-**Docker** — a multi-stage `Dockerfile` builds a statically linked binary (`CGO_ENABLED=0`) in a `golang:alpine` stage and copies it into an `alpine` runtime image for SSL certificate access (needed for HTTPS blocklist downloads). The `/app` directory is declared a `VOLUME` for config and database persistence.
+**Docker** — a multi-stage `Dockerfile` builds a statically linked binary (`CGO_ENABLED=0`) in a `golang:alpine` stage and copies it into an `alpine` runtime image for SSL certificate access (needed for HTTPS blocklist downloads). The binary lives on `PATH` (`/usr/local/bin/s-hole`), deliberately outside the `/app` directory, which is declared a `VOLUME` for config and database persistence — a bind mount over `/app` would otherwise shadow a binary placed there (b/039).
 
 **Cross-compilation** — a `Makefile` provides `make pi` (arm64), `make pi32` (armv7), and `make linux` (amd64) targets. All produce stripped binaries (~10–17 MB) with no host toolchain requirements beyond the Go compiler. The Makefile also exposes the standard development targets (`make check`, `test`, `test-race`, `bench`, `lint`, `fmt`, `vet`, `install`, `version`) — `make help` lists the full set.
 

@@ -289,7 +289,7 @@ mkdir -p data
 cp config.yaml data/
 ```
 
-The container runs as `/app` as its working directory and reads config from
+The container uses `/app` as its working directory and reads config from
 `/app/config.yaml`. Mounting `./data` there keeps all persistent files — the
 SQLite database, blocklist cache, and config — on the host so they survive
 container restarts and image upgrades.

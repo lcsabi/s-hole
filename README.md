@@ -294,6 +294,15 @@ The container uses `/app` as its working directory and reads config from
 SQLite database, blocklist cache, and config — on the host so they survive
 container restarts and image upgrades.
 
+For the admin dashboard to be reachable through Docker, set
+`api_listen: "0.0.0.0:8080"` in `data/config.yaml`. The default binds
+`127.0.0.1`, which inside a container answers only the container's own loopback
+— not the published port — so the dashboard would refuse connections. Container
+`0.0.0.0` does **not** mean "exposed to the world": you choose which host
+interface reaches it with the host side of the `-p …:8080` mapping (see the
+note after the run command), and the UI is unauthenticated, so scope it
+deliberately.
+
 **2. Build the image:**
 
 ```bash
@@ -353,12 +362,17 @@ docker run -d `
 > ```bash
 > ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1   # e.g. 192.168.1.10
 > ```
-> then swap the two port flags in the `docker run` above for that address:
+> then bind every published port to it — DNS *and* the admin UI, which is
+> unauthenticated and should only be offered where you intend:
 > ```bash
 >   -p 192.168.1.10:53:53/udp -p 192.168.1.10:53:53/tcp \
+>   -p 192.168.1.10:8080:8080 \
 > ```
-> The stub stays on `127.0.0.53`; s-hole owns port 53 on the LAN interface.
-> Point your router's (or clients') DNS at `192.168.1.10`.
+> The stub stays on `127.0.0.53`; s-hole owns port 53 on the LAN interface, and
+> the dashboard is reachable only at `http://192.168.1.10:8080`. Point your
+> router's (or clients') DNS at `192.168.1.10`. For a host-only dashboard, use
+> `-p 127.0.0.1:8080:8080` instead. (Either way the container's own
+> `api_listen` must be `0.0.0.0:8080`, per step 1.)
 >
 > **Alternative — turn off the stub listener** so s-hole can bind every
 > interface (`0.0.0.0:53`). Turn off *just* the stub, not the whole service:

@@ -281,16 +281,19 @@ To remove s-hole, run the bundled uninstaller as root (from the `deploy/`
 directory, or wherever you copied it):
 
 ```bash
-sudo bash uninstall-linux.sh            # keep /var/lib/s-hole (query log + caches)
-sudo bash uninstall-linux.sh --purge    # also delete /var/lib/s-hole
+sudo bash uninstall-linux.sh                     # keep /var/lib/s-hole (query log + caches)
+sudo bash uninstall-linux.sh --purge             # also delete /var/lib/s-hole
+sudo bash uninstall-linux.sh --restore-resolved  # also restore the systemd-resolved stub on :53
 ```
 
 It stops and disables the service, removes the unit, binary, config
 (`/etc/s-hole`), and the `s-hole` system user and group, then prints a summary
 of what it removed and kept. Your query history and blocklist caches in
-`/var/lib/s-hole` are preserved unless you pass `--purge`. If you had freed port
-53 by disabling the `systemd-resolved` stub, `--restore-resolved` removes that
-drop-in and restarts the resolver; add `-y` to skip the confirmation prompt.
+`/var/lib/s-hole` are preserved unless you pass `--purge`. `--restore-resolved`
+applies only if you had freed port 53 by disabling the `systemd-resolved` stub —
+it removes that drop-in and restarts the resolver. The flags combine
+(`--purge --restore-resolved` is a full teardown); add `-y` to skip the
+confirmation prompt.
 
 ### Docker
 

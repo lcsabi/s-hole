@@ -351,3 +351,14 @@ Pi-hole/AdGuard Home:
   exposing operational internals on the unauthenticated UI sits on the
   pprof end of the disclosure gradient: if ever revisited, it must be
   opt-in like `enable_pprof`.
+- **Container-aware / advertised startup banner.** In Docker the "Router
+  setup" banner prints the container's *internal* bridge IP (e.g.
+  `172.17.0.2`), not the host's — s-hole cannot know the host LAN IP or the
+  published port from inside the container. Two fixes were weighed and
+  dropped: detecting the container (`/.dockerenv`, `/proc/1/cgroup`) and
+  rewording the banner only *stops it misleading* — it still can't show the
+  right address, and the detection is a runtime-specific heuristic; an
+  `S_HOLE_ADVERTISE_IP` override is self-defeating, because an operator who
+  can supply the host IP already knows it and is unlikely to be reading
+  container startup logs at all. The README Docker section documents the
+  behaviour (use the host IP you published, ignore the banner) instead.

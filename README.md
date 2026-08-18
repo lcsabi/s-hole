@@ -297,29 +297,60 @@ For the admin dashboard to be reachable through Docker, set
 `api_listen: "0.0.0.0:8080"` in `data/config.yaml`. The default binds
 `127.0.0.1`, which inside a container answers only the container's own loopback
 — not the published port — so the dashboard would refuse connections. Container
-`0.0.0.0` does **not** mean "exposed to the world": you choose which host
-interface reaches it with the host side of the `-p …:8080` mapping (see the
-note after the run command), and the UI is unauthenticated, so scope it
-deliberately.
+`0.0.0.0` does **not** mean "exposed to the world": which host interface actually
+reaches it is decided by the `-p …:8080` mapping in step 4, and the UI is
+unauthenticated, so it is not exposed until you publish it.
 
-**2. Build the image:**
+**2. Find the host's LAN IP.**
+
+The machine running s-hole needs a stable LAN address — a static IP or a DHCP
+reservation — because it's what your router hands out to every client as the DNS
+server, and what the container binds below. Find it:
+
+```bash
+ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1   # e.g. 192.168.1.10
+```
+
+**Why bind to this address rather than publish on all interfaces?** Most Linux
+hosts run `systemd-resolved`, which already holds `127.0.0.53:53`. A bare
+`-p 53:53` publishes on `0.0.0.0` (every interface, loopback included) and
+collides with it — `docker run` fails with *"address already in use."* Binding
+to the LAN IP sidesteps the conflict (`systemd-resolved` only ever binds
+loopback, never the LAN interface) and keeps the unauthenticated dashboard off
+every other interface. (Docker Desktop for Mac/Windows has no such listener, so
+a bare `-p 53:53` works there too — but the LAN-IP form below is correct
+everywhere.)
+
+**3. Build the image:**
 
 ```bash
 docker build -t s-hole .
 ```
 
-**3. Run:**
+**4. Run** — substitute the address from step 2:
 
 ```bash
+HOST_IP=192.168.1.10          # the LAN IP from step 2
 docker run -d \
   --name s-hole \
   --restart unless-stopped \
   --cap-add=NET_BIND_SERVICE \
-  -p 53:53/udp -p 53:53/tcp \
-  -p 8080:8080 \
+  -p ${HOST_IP}:53:53/udp -p ${HOST_IP}:53:53/tcp \
+  -p ${HOST_IP}:8080:8080 \
   -v "$(pwd)/data:/app" \
   s-hole
 ```
+
+Point your router's DHCP **DNS Server** field at `${HOST_IP}`, and open the
+dashboard at `http://${HOST_IP}:8080`. For a host-only dashboard, publish it as
+`-p 127.0.0.1:8080:8080` instead.
+
+> **The startup banner shows the container's IP, not the host's.** s-hole prints
+> a "Router setup" box with a DNS-server and Admin-UI address, but from inside
+> the container it can only see its own bridge address (e.g. `172.17.0.2`) — it
+> has no way to know the host IP or the port you published. **Under Docker,
+> ignore those lines** and use `${HOST_IP}` (the address you bound above) for
+> both the router setting and the dashboard URL.
 
 After the first run `./data` will look like this:
 
@@ -336,55 +367,34 @@ To update config, edit `./data/config.yaml` and restart the container:
 docker restart s-hole
 ```
 
-**On Windows (PowerShell), use backtick for line continuation and `${PWD}` for
-the current directory:**
+**On Windows (PowerShell)**, set the variable, then use backtick for line
+continuation and `${PWD}` for the current directory:
 
 ```powershell
+$HOST_IP = "192.168.1.10"
 docker run -d `
   --name s-hole `
   --restart unless-stopped `
   --cap-add=NET_BIND_SERVICE `
-  -p 53:53/udp -p 53:53/tcp `
-  -p 8080:8080 `
+  -p "${HOST_IP}:53:53/udp" -p "${HOST_IP}:53:53/tcp" `
+  -p "${HOST_IP}:8080:8080" `
   -v "${PWD}\data:/app" `
   s-hole
 ```
 
-> **Note (Linux host): "address already in use" on port 53.** Most Linux
-> distributions run `systemd-resolved`, which listens on `127.0.0.53:53`.
-> `-p 53:53` publishes on `0.0.0.0` (every interface, loopback included), so it
-> collides with that listener and `docker run` fails. Pick one of two fixes:
->
-> **Recommended — publish on the host's LAN IP** (no system changes;
-> `systemd-resolved` keeps serving the host, s-hole serves the LAN). Find the
-> address:
-> ```bash
-> ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1   # e.g. 192.168.1.10
-> ```
-> then bind every published port to it — DNS *and* the admin UI, which is
-> unauthenticated and should only be offered where you intend:
-> ```bash
->   -p 192.168.1.10:53:53/udp -p 192.168.1.10:53:53/tcp \
->   -p 192.168.1.10:8080:8080 \
-> ```
-> The stub stays on `127.0.0.53`; s-hole owns port 53 on the LAN interface, and
-> the dashboard is reachable only at `http://192.168.1.10:8080`. Point your
-> router's (or clients') DNS at `192.168.1.10`. For a host-only dashboard, use
-> `-p 127.0.0.1:8080:8080` instead. (Either way the container's own
-> `api_listen` must be `0.0.0.0:8080`, per step 1.)
->
-> **Alternative — turn off the stub listener** so s-hole can bind every
-> interface (`0.0.0.0:53`). Turn off *just* the stub, not the whole service:
+> **Want s-hole on every interface (`0.0.0.0:53`) instead of one LAN IP?** Then
+> the `systemd-resolved` stub has to give up port 53. Turn off *just* the stub,
+> not the whole service:
 > ```bash
 > sudo mkdir -p /etc/systemd/resolved.conf.d
 > printf '[Resolve]\nDNSStubListener=no\n' | sudo tee /etc/systemd/resolved.conf.d/no-stub.conf
 > sudo systemctl restart systemd-resolved
 > ```
-> `systemd-resolved` still resolves for local programs that use NSS. But on
+> `systemd-resolved` still resolves for local programs that use NSS, but on
 > distros where `/etc/resolv.conf` points at `127.0.0.53`, releasing the stub
 > leaves anything that reads `resolv.conf` directly without a resolver — repoint
-> `/etc/resolv.conf` at s-hole (or an upstream) afterwards. Then re-run
-> `docker run`.
+> `/etc/resolv.conf` at s-hole (or an upstream) afterwards. Only then can you use
+> the bare `-p 53:53` / `-p 8080:8080` form.
 
 ### Windows (system service)
 

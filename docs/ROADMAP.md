@@ -25,7 +25,7 @@ rails.
 | 9 | Answer private-range PTR queries locally (RFC 6303) | Low | done (CL 27) |
 | 10 | Blocklist size in `/api/stats` + dashboard | Medium | done (CL 28) |
 | 11 | Install script prints the installed version/commit | Low | done (CL 35) |
-| 12 | `uninstall-linux.sh` companion to the installer | Low | not started |
+| 12 | `uninstall-linux.sh` companion to the installer | Low | done (CL 40) |
 | 13 | Persist runtime whitelist across restarts | Medium | not started |
 
 ## 1. Deploy to real hardware
@@ -232,30 +232,36 @@ behaviour changed — pure deploy-time guard rail — but it turns an invisible
 class of mistake into an obvious one. The README install section now points
 the operator at the printed build to confirm.
 
-## 12. `uninstall-linux.sh` companion to the installer
+## 12. `uninstall-linux.sh` companion to the installer — done (CL 40)
 
-`deploy/install-linux.sh` has no counterpart, so removing s-hole is a manual,
+`deploy/install-linux.sh` had no counterpart, so removing s-hole was a manual,
 error-prone sequence: stop and disable the unit, delete the unit file and
 `daemon-reload`, remove the binary, `/etc/s-hole`, `/var/lib/s-hole`, and the
 `s-hole` system user/group. A shipped installer with no uninstaller is an
-asymmetry an operator (and a reviewer) notices. Add `deploy/uninstall-linux.sh`
-that reverses the install in the correct order, with:
+asymmetry an operator (and a reviewer) notices.
+
+**Shipped in CL 40:** `deploy/uninstall-linux.sh` reverses the install in the
+correct order and prints an "Uninstall summary" box of what it removed and kept,
+mirroring the installer's reporting. Design decisions settled in the CL:
 
 - **A `--purge` flag** that also removes `/var/lib/s-hole` (blocklist caches and
-  the query DB). Without it, leave operator data in place.
-- **Optional restoration of stock DNS resolution.** If s-hole's deployment (or
-  the operator) disabled the `systemd-resolved` stub listener to free port 53
-  (the `DNSStubListener=no` drop-in), offer to remove that drop-in and restart
-  `systemd-resolved` — but only when the drop-in is actually present, and behind
-  a prompt/flag, since it is a system-wide change the operator may have made
-  independently of s-hole.
-- **The same reporting courtesy as the installer** — print what was removed.
+  the query DB). Without it, operator data is left in place (and the summary
+  points at it), because destroying query history should be an explicit opt-in.
+- **`--restore-resolved` for stock DNS resolution.** If the `DNSStubListener=no`
+  drop-in is present (created to free port 53 for s-hole), the flag removes it
+  and restarts `systemd-resolved`. Gated behind the flag rather than done
+  automatically, since it is a system-wide change the operator may have made
+  independently — without the flag the summary just notes the drop-in is still
+  there and how to remove it.
+- **A confirmation prompt** listing the destructive set before acting, with a
+  `-y`/`--yes` bypass for non-interactive use, and every removal step guarded so
+  a re-run (or a partial install) is idempotent rather than an error.
 
 Rated Low: deploy-time hygiene, no runtime behaviour. It closes the
 install/uninstall asymmetry and heads off a real confusion the installer can
 cause — because it never overwrites an existing `/etc/s-hole/config.yaml`, a
 stale config left behind by a prior install silently shadows a freshly copied
-one until it is removed (documented in the README deployment notes).
+one until it is removed (the uninstaller now removes `/etc/s-hole` for you).
 
 ## 13. Persist runtime whitelist across restarts
 

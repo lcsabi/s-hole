@@ -234,10 +234,10 @@ LAN exposure is a deliberate opt-in.
 make pi          # arm64 — Pi 4, Pi 5
 make pi32        # armv7 — Pi 2, Pi 3
 
-# Copy binary, config, and install script to the Pi:
+# Copy binary, config, and the install/uninstall scripts to the Pi:
 scp s-hole-linux-arm64 pi@raspberrypi.local:~/
 scp config.yaml pi@raspberrypi.local:~/
-scp deploy/install-linux.sh pi@raspberrypi.local:~/
+scp deploy/install-linux.sh deploy/uninstall-linux.sh pi@raspberrypi.local:~/
 
 # On the Pi — run the installer as root:
 sudo bash install-linux.sh ./s-hole-linux-arm64 ./config.yaml
@@ -277,7 +277,20 @@ A few things that trip people up once s-hole is running as a systemd service:
 - **`query_db` and `cache_dir` are relative to `/var/lib/s-hole`.** Relative paths resolve against the service's working directory. Because the unit sets `ProtectSystem=strict` with `ReadWritePaths=/var/lib/s-hole`, the rest of the filesystem is read-only to the service — keep both paths under `/var/lib/s-hole` (the defaults `queries.db` and `.` already do). Pointing them at `/tmp` or a home directory will silently fail to write.
 - **The query log flushes on an interval.** Newly logged queries appear in `/api/queries` and the dashboard's "All time" panel only after the next SQLite flush (`db_flush_interval`, default `30s`), not instantly. Lower it for a more responsive view.
 
-There is no bundled uninstaller yet ([roadmap #12](docs/ROADMAP.md)). To remove s-hole completely: `systemctl stop`/`disable s-hole`, delete `/etc/systemd/system/s-hole.service` and `daemon-reload`, then remove `/usr/local/bin/s-hole`, `/etc/s-hole`, `/var/lib/s-hole`, and the `s-hole` user (`userdel s-hole`). A leftover `/etc/s-hole/config.yaml` is the usual reason a fresh install seems to ignore a new config.
+To remove s-hole, run the bundled uninstaller as root (from the `deploy/`
+directory, or wherever you copied it):
+
+```bash
+sudo bash uninstall-linux.sh            # keep /var/lib/s-hole (query log + caches)
+sudo bash uninstall-linux.sh --purge    # also delete /var/lib/s-hole
+```
+
+It stops and disables the service, removes the unit, binary, config
+(`/etc/s-hole`), and the `s-hole` system user and group, then prints a summary
+of what it removed and kept. Your query history and blocklist caches in
+`/var/lib/s-hole` are preserved unless you pass `--purge`. If you had freed port
+53 by disabling the `systemd-resolved` stub, `--restore-resolved` removes that
+drop-in and restarts the resolver; add `-y` to skip the confirmation prompt.
 
 ### Docker
 
@@ -519,7 +532,7 @@ $env:GOOS=""; $env:GOARCH=""
 .
 ├── cmd/s-hole/        application entry point (main package)
 ├── internal/          implementation packages (not importable externally)
-├── deploy/            systemd unit + Linux install script
+├── deploy/            systemd unit + Linux install/uninstall scripts
 ├── docs/              DESIGN, CHANGELOG, BUGS, ROADMAP, and CL.md (index)
 │   └── cls/           one file per CL (CL-01.md … CL-NN.md)
 ├── .github/           CI workflows, dependabot, CODEOWNERS, PR & issue templates

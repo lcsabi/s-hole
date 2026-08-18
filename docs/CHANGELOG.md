@@ -9,6 +9,13 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
 ## [Unreleased]
 
 ### Added
+- **A Linux uninstaller, `deploy/uninstall-linux.sh`.** Reverses
+  `install-linux.sh` — stops and disables the service, removes the unit,
+  binary, config, and the `s-hole` system user/group — and prints a summary of
+  what it removed and kept. Operator data in `/var/lib/s-hole` (query log +
+  blocklist caches) is preserved unless you pass `--purge`; `--restore-resolved`
+  removes a `DNSStubListener=no` drop-in and restarts `systemd-resolved`; `-y`
+  skips the confirmation prompt. (CL 40)
 - **All-time top-blocked domains on the dashboard.** The "Top Blocked Domains"
   panel now has a "Since start / All time" toggle. "Since start" is the
   existing in-memory tally (resets when s-hole restarts); "All time" is a new

@@ -117,7 +117,7 @@ and the router-setup banner. Then, in a second terminal:
 ```
 cmd/s-hole/        application entry point (main package, signals)
 internal/          all implementation packages (not importable externally)
-deploy/            systemd unit + Linux install script
+deploy/            systemd unit + Linux install/uninstall scripts
 docs/              DESIGN, CHANGELOG, BUGS, ROADMAP, CL index
 docs/cls/          one file per CL
 .github/           CI workflows, dependabot, CODEOWNERS, templates

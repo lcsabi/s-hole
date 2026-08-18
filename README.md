@@ -19,10 +19,9 @@ s-hole is intentionally small: a single binary, a single YAML config file, no ru
 - [REST API](#rest-api)
 - [Deployment](#deployment): [Linux/Pi](#raspberry-pi--linux-systemd), [Docker](#docker), [Windows](#windows-system-service)
 - [Building from Source](#building-from-source)
-- [Engineering highlights](#engineering-highlights)
+- [Engineering highlights](#engineering-highlights): the code and the process
 - [Architecture](#architecture)
 - [Development](#development): targets, coverage, CI, fuzz, integration test
-- [How it's engineered](#how-its-engineered)
 - [Security Notes](#security-notes)
 - [License](#license)
 
@@ -436,7 +435,9 @@ $env:GOOS=""; $env:GOARCH=""
 
 ## Engineering highlights
 
-*The parts worth reading the code for:*
+*The parts worth reading the code for — and the process behind them.*
+
+**In the code:**
 
 - **A lock-free stats hot path with a proven concurrency invariant.** Per-query counters update without locks; `Snapshot` must read every counter a query touches *after* `total` *before* it reads `total`, or a dashboard ratio can momentarily exceed 100%. I hit that exact race on three different counters, then encoded a standing load-order invariant plus a race-tested regression per counter so a fourth can't slip in. ([`internal/stats`](internal/stats))
 - **Suffix-match subdomain blocking** that walks a name's parent labels in `O(labels)` with zero per-query allocation, closing the subdomain-rotation hole that exact-match blockers leave open. ([`blocklist.Store.IsBlocked`](internal/blocklist/store.go))
@@ -444,6 +445,14 @@ $env:GOOS=""; $env:GOARCH=""
 - **RFC 6303 local PTR answering** — private-range reverse queries are answered locally instead of leaking internal LAN addressing to the upstream resolver.
 - **Deliberate non-decisions.** Case-insensitive caching was rejected because it would break dns-0x20 downstream resolvers; admin authentication was rejected in favour of a documented localhost-only scope. Knowing what *not* to build is recorded in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 - **A tiny dependency graph and pure-Go SQLite** — no CGO, so cross-compiling for four targets stays a one-liner and the binary is fully static.
+
+**In the process** — built with the discipline of a long-lived, multi-maintainer codebase rather than a one-shot script:
+
+- **A living design doc** ([`docs/DESIGN.md`](docs/DESIGN.md)) captures the rationale and the rejected alternatives behind each decision.
+- **Every change is a small, self-contained change-list** with motivation, files touched, and testing notes ([`docs/cls/`](docs/cls)).
+- **A bug tracker with priorities and structured root-cause/fix records** ([`docs/BUGS.md`](docs/BUGS.md)) — including entries deliberately marked *Won't Fix — by design*.
+- **Documentation drift is treated as a bug** — code and docs are updated in the same change.
+- **CI gate on every push**: `gofmt`, `go vet`, `golangci-lint`, race-enabled tests, `govulncheck`, and a four-target cross-compile. The `internal/` packages hold 85–100% line coverage (see the [table under Development](#development)).
 
 ---
 
@@ -588,18 +597,6 @@ CI runs lint + `go mod verify` + race-enabled tests + `govulncheck` + cross-comp
 Fuzz tests live alongside the unit tests for `blocklist.ValidDomain`, `blocklist.parseHostsFormat`, and `blocklist.cacheFilename`. Run them ad-hoc with `go test -fuzz=FuzzValidDomain -fuzztime=30s ./internal/blocklist/`.
 
 A full end-to-end integration test (`internal/dnsserver/integration_test.go`) wires the store + cache + querylog + handler + DNS server + a mock UDP upstream together and exercises three real DNS queries through it — catching wiring bugs that unit tests miss.
-
----
-
-## How it's engineered
-
-Built with the discipline of a long-lived, multi-maintainer codebase rather than a one-shot script:
-
-- **A living design doc** ([`docs/DESIGN.md`](docs/DESIGN.md)) captures the rationale and the rejected alternatives behind each decision.
-- **Every change is a small, self-contained change-list** with motivation, files touched, and testing notes ([`docs/cls/`](docs/cls)).
-- **A bug tracker with priorities and structured root-cause/fix records** ([`docs/BUGS.md`](docs/BUGS.md)) — including entries deliberately marked *Won't Fix — by design*.
-- **Documentation drift is treated as a bug** — code and docs are updated in the same change.
-- **CI gate on every push**: `gofmt`, `go vet`, `golangci-lint`, race-enabled tests, `govulncheck`, and a four-target cross-compile. The `internal/` packages hold 85–100% line coverage (see the [table under Development](#development)).
 
 ---
 

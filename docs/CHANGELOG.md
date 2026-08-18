@@ -8,81 +8,6 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
 
 ## [Unreleased]
 
-### Changed
-- **Blocking now matches subdomains.** A blocklist (or whitelist) entry now
-  covers the whole subtree beneath it: `ads.example.com` blocks
-  `x.ads.example.com` as well, so trackers can no longer sidestep a list
-  entry by rotating subdomains. Lookups walk a domain's parent labels
-  (`a.b.example.com → b.example.com → example.com`) instead of requiring an
-  exact match. The whitelist is matched the same way and still wins at every
-  level, so it remains the escape hatch for an over-broad block entry —
-  whitelist `safe.doubleclick.net` (or a parent domain) to let a subtree
-  through while the rest of the blocked domain stays sinkholed. There is no
-  new configuration; the behaviour is unconditional. (CL 30)
-- **Invalid `whitelist` entries are now dropped with a `WARN`.** Because
-  whitelist matching is suffix-based (CL 30), a bare label such as a TLD
-  would silently exempt its whole subtree. At startup, `config.Load` now
-  drops any `whitelist` entry that is not a valid domain name — the same
-  `ValidDomain` check the REST `/api/whitelist` endpoint applies — and logs
-  each dropped entry at `WARN`. A typo is surfaced loudly instead of quietly
-  disabling blocking for an entire suffix, and it does not abort startup: a
-  dropped entry fails safe (the domain stays blockable) and one bad line
-  cannot take DNS down for the LAN. (CL 31)
-- **The Linux installer now prints the installed build.** `deploy/install-linux.sh`
-  ends with an "Installed build" box showing the version, commit, and build date
-  of the binary it just placed (`s-hole -version`). A stale `scp` was previously
-  silent — the operator had no signal that the running service predated the fix
-  they meant to ship. (CL 35)
-
-### Fixed
-- **The Docker container starts again when a data volume is mounted.** The
-  binary lived at `/app/s-hole`, but `/app` is the declared volume and the
-  documented `-v "$(pwd)/data:/app"` bind mount shadowed it, so the container
-  died at start with `exec: "./s-hole": ... no such file or directory` — i.e.
-  the recommended deployment was broken. The binary now lives on `PATH`
-  (`/usr/local/bin/s-hole`), outside the `/app` data volume; every documented
-  `docker run` command is unchanged. (CL 39)
-- **The query-log retention prune no longer intermittently skips under
-  concurrent writes.** The SQLite connection pool is now pinned to a single
-  connection (with a `busy_timeout` as a backstop), so the async writer and the
-  hourly prune can't collide with `SQLITE_BUSY` — which previously made the
-  prune silently skip a tick and, under the race detector, flaked a CI test. No
-  operator-facing behaviour change beyond retention now pruning reliably. (CL 38)
-- **`/api/stats` can no longer momentarily report a cache hit rate above 100 %.**
-  `Snapshot` read the cache-hit counter after the total-queries counter, so a
-  concurrent cache hit slipping between the two reads could push the ratio over
-  100 % on the dashboard's Cache Hit Rate card. It now reads the later-incremented
-  counter first — the same fix already applied to blocked-vs-total (b/021) and
-  local-PTR-vs-total (b/033). (CL 37)
-- **The Linux installer now restarts the service instead of starting it**, so
-  re-running `install-linux.sh` to upgrade actually swaps the running binary.
-  `systemctl start` is a no-op on an already-active unit, so an upgrade would
-  otherwise keep running the old build while the new "Installed build" banner
-  advertised the new one — the exact stale-deploy the banner exists to catch. (CL 36)
-- **Mixed-case private-range PTR queries are now answered locally.** The RFC 6303
-  intercept matched names case-sensitively, so a query such as
-  `1.1.168.192.IN-ADDR.ARPA.` (as produced by dns-0x20 forwarders) slipped past
-  it and leaked upstream. DNS names are case-insensitive; the intercept now folds
-  case before matching, like the blocklist already did. (CL 36)
-- **`/api/stats` can no longer momentarily report `local_ptr_count` greater than
-  `total_queries`.** `Snapshot` read the two atomic counters in an order that let
-  a concurrent PTR query slip between them; it now reads the later-incremented
-  counter first (the same fix already applied to blocked-vs-total, b/021). (CL 36)
-- **`/debug/pprof/symbol` now accepts POST**, so `go tool pprof` can symbolize a
-  remote profile against a running instance (it POSTs the program-counter list).
-  The route had been registered GET-only, which answered POST with 405. Only
-  relevant when `enable_pprof` is on. (CL 36)
-- **The installer's admin-UI hint no longer misreports a LAN bind as
-  localhost-only.** It matched only the literal `0.0.0.0`; binding to a specific
-  LAN IP, a bare `:8080`, or the IPv6 wildcard now correctly prints the LAN URL,
-  mirroring the in-binary banner's loopback check. (CL 36)
-- The dashboard no longer displays the DNS trailing dot on domain names. The
-  Top Blocked Domains and Recent Queries panels stripped it for display
-  (`sub.doubleclick.net.` now renders as `sub.doubleclick.net`). Queries are
-  still recorded and served over the API as the exact wire-format name; the
-  change is presentation-only, so it also cleans up rows already stored in the
-  query log. (CL 34)
-
 ### Added
 - **All-time top-blocked domains on the dashboard.** The "Top Blocked Domains"
   panel now has a "Since start / All time" toggle. "Since start" is the
@@ -218,6 +143,30 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   R28, plus coverage for everything new in this release).
 
 ### Changed
+- **Blocking now matches subdomains.** A blocklist (or whitelist) entry now
+  covers the whole subtree beneath it: `ads.example.com` blocks
+  `x.ads.example.com` as well, so trackers can no longer sidestep a list
+  entry by rotating subdomains. Lookups walk a domain's parent labels
+  (`a.b.example.com → b.example.com → example.com`) instead of requiring an
+  exact match. The whitelist is matched the same way and still wins at every
+  level, so it remains the escape hatch for an over-broad block entry —
+  whitelist `safe.doubleclick.net` (or a parent domain) to let a subtree
+  through while the rest of the blocked domain stays sinkholed. There is no
+  new configuration; the behaviour is unconditional. (CL 30)
+- **Invalid `whitelist` entries are now dropped with a `WARN`.** Because
+  whitelist matching is suffix-based (CL 30), a bare label such as a TLD
+  would silently exempt its whole subtree. At startup, `config.Load` now
+  drops any `whitelist` entry that is not a valid domain name — the same
+  `ValidDomain` check the REST `/api/whitelist` endpoint applies — and logs
+  each dropped entry at `WARN`. A typo is surfaced loudly instead of quietly
+  disabling blocking for an entire suffix, and it does not abort startup: a
+  dropped entry fails safe (the domain stays blockable) and one bad line
+  cannot take DNS down for the LAN. (CL 31)
+- **The Linux installer now prints the installed build.** `deploy/install-linux.sh`
+  ends with an "Installed build" box showing the version, commit, and build date
+  of the binary it just placed (`s-hole -version`). A stale `scp` was previously
+  silent — the operator had no signal that the running service predated the fix
+  they meant to ship. (CL 35)
 - Dependency refresh via Dependabot: `alpine` 3.24 base image,
   `golang.org/x/sys` v0.47.0, and CI action majors (checkout v7,
   cache v6, setup-go v6, golangci-lint-action v9).
@@ -248,6 +197,53 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   `/metrics` endpoint can surface cache statistics.
 
 ### Fixed
+- **The Docker container starts again when a data volume is mounted.** The
+  binary lived at `/app/s-hole`, but `/app` is the declared volume and the
+  documented `-v "$(pwd)/data:/app"` bind mount shadowed it, so the container
+  died at start with `exec: "./s-hole": ... no such file or directory` — i.e.
+  the recommended deployment was broken. The binary now lives on `PATH`
+  (`/usr/local/bin/s-hole`), outside the `/app` data volume; every documented
+  `docker run` command is unchanged. (CL 39)
+- **The query-log retention prune no longer intermittently skips under
+  concurrent writes.** The SQLite connection pool is now pinned to a single
+  connection (with a `busy_timeout` as a backstop), so the async writer and the
+  hourly prune can't collide with `SQLITE_BUSY` — which previously made the
+  prune silently skip a tick and, under the race detector, flaked a CI test. No
+  operator-facing behaviour change beyond retention now pruning reliably. (CL 38)
+- **`/api/stats` can no longer momentarily report a cache hit rate above 100 %.**
+  `Snapshot` read the cache-hit counter after the total-queries counter, so a
+  concurrent cache hit slipping between the two reads could push the ratio over
+  100 % on the dashboard's Cache Hit Rate card. It now reads the later-incremented
+  counter first — the same fix already applied to blocked-vs-total (b/021) and
+  local-PTR-vs-total (b/033). (CL 37)
+- **The Linux installer now restarts the service instead of starting it**, so
+  re-running `install-linux.sh` to upgrade actually swaps the running binary.
+  `systemctl start` is a no-op on an already-active unit, so an upgrade would
+  otherwise keep running the old build while the new "Installed build" banner
+  advertised the new one — the exact stale-deploy the banner exists to catch. (CL 36)
+- **Mixed-case private-range PTR queries are now answered locally.** The RFC 6303
+  intercept matched names case-sensitively, so a query such as
+  `1.1.168.192.IN-ADDR.ARPA.` (as produced by dns-0x20 forwarders) slipped past
+  it and leaked upstream. DNS names are case-insensitive; the intercept now folds
+  case before matching, like the blocklist already did. (CL 36)
+- **`/api/stats` can no longer momentarily report `local_ptr_count` greater than
+  `total_queries`.** `Snapshot` read the two atomic counters in an order that let
+  a concurrent PTR query slip between them; it now reads the later-incremented
+  counter first (the same fix already applied to blocked-vs-total, b/021). (CL 36)
+- **`/debug/pprof/symbol` now accepts POST**, so `go tool pprof` can symbolize a
+  remote profile against a running instance (it POSTs the program-counter list).
+  The route had been registered GET-only, which answered POST with 405. Only
+  relevant when `enable_pprof` is on. (CL 36)
+- **The installer's admin-UI hint no longer misreports a LAN bind as
+  localhost-only.** It matched only the literal `0.0.0.0`; binding to a specific
+  LAN IP, a bare `:8080`, or the IPv6 wildcard now correctly prints the LAN URL,
+  mirroring the in-binary banner's loopback check. (CL 36)
+- The dashboard no longer displays the DNS trailing dot on domain names. The
+  Top Blocked Domains and Recent Queries panels stripped it for display
+  (`sub.doubleclick.net.` now renders as `sub.doubleclick.net`). Queries are
+  still recorded and served over the API as the exact wire-format name; the
+  change is presentation-only, so it also cleans up rows already stored in the
+  query log. (CL 34)
 - The shipped sample `config.yaml` is back to conservative defaults —
   `query_db: "queries.db"` (SQLite logging on) and `api_listen:
   "127.0.0.1:8080"` (localhost only). A first-hardware deployment's

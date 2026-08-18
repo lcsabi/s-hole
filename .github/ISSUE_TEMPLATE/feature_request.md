@@ -22,8 +22,8 @@ assignees: ""
 
 ## Scope check
 
-<!-- DESIGN.md lists explicit non-goals (DoH termination, router-side
-     deployment, wildcard blocking, DNSSEC validation, per-client policy,
-     admin UI authentication, negative caching). Please confirm your request
-     doesn't fall under one of those, or argue why the non-goal should be
-     revisited. -->
+<!-- DESIGN.md lists explicit non-goals (DoH/DoT termination, router-side
+     deployment, DNSSEC validation, per-client policy, admin UI authentication,
+     negative caching), and docs/ROADMAP.md records further "deliberately not
+     planned" items. Please confirm your request doesn't fall under one of
+     those, or argue why the non-goal should be revisited. -->

@@ -69,8 +69,8 @@ touching `ValidDomain`, `parseHostsFormat`, or `cacheFilename`.
 
 ### Manual smoke test
 
-Unit tests cover the packages; this five-minute pass exercises the
-running binary end-to-end. Worth doing before a release tag or after
+Unit tests cover the packages; this seven-step pass (about five minutes)
+exercises the running binary end-to-end. Worth doing before a release tag or after
 touching startup, shutdown, or anything in the query path. Port 5353
 avoids both the privileged-port bind and the local resolver's claim on
 port 53 (`systemd-resolved` holds `127.0.0.53:53` on most distros).

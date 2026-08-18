@@ -43,7 +43,7 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
 - **Cross-platform** — single binary for Windows, Linux x86-64, Linux arm64 (Pi 4/5), Linux armv7 (Pi 2/3)
 - **Windows Service** — installs as an auto-start system service with one command
 - **Linux systemd** — ships a hardened unit file with `CAP_NET_BIND_SERVICE` (no root required at runtime)
-- **Docker** — multi-stage image, ~25 MB
+- **Docker** — multi-stage image, ~33 MB
 
 ---
 
@@ -342,19 +342,36 @@ docker run -d `
   s-hole
 ```
 
-> **Note (Linux host):** port 53 is often already occupied by
-> `systemd-resolved`'s stub listener. If `docker run` fails with
-> "address already in use", turn off just the stub — do **not** disable
-> the whole service (on distros where `/etc/resolv.conf` points at the
-> stub address, that kills the host's own DNS resolution):
+> **Note (Linux host): "address already in use" on port 53.** Most Linux
+> distributions run `systemd-resolved`, which listens on `127.0.0.53:53`.
+> `-p 53:53` publishes on `0.0.0.0` (every interface, loopback included), so it
+> collides with that listener and `docker run` fails. Pick one of two fixes:
+>
+> **Recommended — publish on the host's LAN IP** (no system changes;
+> `systemd-resolved` keeps serving the host, s-hole serves the LAN). Find the
+> address:
+> ```bash
+> ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1   # e.g. 192.168.1.10
+> ```
+> then swap the two port flags in the `docker run` above for that address:
+> ```bash
+>   -p 192.168.1.10:53:53/udp -p 192.168.1.10:53:53/tcp \
+> ```
+> The stub stays on `127.0.0.53`; s-hole owns port 53 on the LAN interface.
+> Point your router's (or clients') DNS at `192.168.1.10`.
+>
+> **Alternative — turn off the stub listener** so s-hole can bind every
+> interface (`0.0.0.0:53`). Turn off *just* the stub, not the whole service:
 > ```bash
 > sudo mkdir -p /etc/systemd/resolved.conf.d
 > printf '[Resolve]\nDNSStubListener=no\n' | sudo tee /etc/systemd/resolved.conf.d/no-stub.conf
 > sudo systemctl restart systemd-resolved
 > ```
-> `systemd-resolved` keeps resolving for the host; only the
-> `127.0.0.53:53` listener is released. Then re-run the `docker run`
-> command.
+> `systemd-resolved` still resolves for local programs that use NSS. But on
+> distros where `/etc/resolv.conf` points at `127.0.0.53`, releasing the stub
+> leaves anything that reads `resolv.conf` directly without a resolver — repoint
+> `/etc/resolv.conf` at s-hole (or an upstream) afterwards. Then re-run
+> `docker run`.
 
 ### Windows (system service)
 

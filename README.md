@@ -19,10 +19,10 @@ s-hole is intentionally small: a single binary, a single YAML config file, no ru
 - [REST API](#rest-api)
 - [Deployment](#deployment): [Linux/Pi](#raspberry-pi--linux-systemd), [Docker](#docker), [Windows](#windows-system-service)
 - [Building from Source](#building-from-source)
-- [Development](#development): targets, coverage, CI, fuzz, integration test
-- [How it's engineered](#how-its-engineered)
 - [Engineering highlights](#engineering-highlights)
 - [Architecture](#architecture)
+- [Development](#development): targets, coverage, CI, fuzz, integration test
+- [How it's engineered](#how-its-engineered)
 - [Security Notes](#security-notes)
 - [License](#license)
 
@@ -403,68 +403,6 @@ $env:GOOS=""; $env:GOARCH=""
 
 ---
 
-## Development
-
-The `Makefile` is the canonical entry point for every routine task. Run `make help` for the full list. The most useful targets:
-
-```bash
-make check       # gofmt + go vet + golangci-lint + go test
-make test        # plain test run
-make test-race   # tests under the race detector (CGO toolchain required)
-make bench       # one iteration of each benchmark
-make lint        # golangci-lint
-make vuln        # govulncheck — scan deps + code for known CVEs
-make fmt         # gofmt -s -w
-make install     # go install into $GOBIN
-make version     # print the version that the next build would embed
-```
-
-Coverage by package (after `go test -cover ./...`):
-
-| Package | Coverage |
-|---|---|
-| `internal/stats` | 100 % |
-| `internal/config` | 100 % |
-| `internal/version` | 100 % |
-| `internal/cache` | 94.8 % |
-| `internal/api` | 89.3 % |
-| `internal/blocklist` | 90.4 % |
-| `internal/dnsserver` | 88.5 % |
-| `internal/querylog` | 85.7 % |
-| `cmd/s-hole` | 31.7 % |
-| **module-wide** | **77.8 %** |
-
-The uncovered region is the `main()` bootstrap and the Windows-only SCM glue — both exercised by manual smoke tests, not unit tests.
-
-The binary reports its build identity at any time:
-
-```
-$ s-hole -version
-s-hole v1.0.0
-  commit:  ab12cd3
-  built:   2026-06-24T12:00:00Z
-  go:      go1.25.0
-  os/arch: linux/amd64
-```
-
-CI runs lint + `go mod verify` + race-enabled tests + `govulncheck` + cross-compile for `linux/{amd64,arm64,armv7}` and `windows/amd64` on every push and PR — see `.github/workflows/ci.yml`. The race-enabled run also exercises `go.uber.org/goleak`, which fails the goroutine-heavy packages (cache, querylog, dnsserver) if any goroutine outlives its tests. Dependabot keeps Go modules, GitHub Actions, and the Docker base image up to date.
-
-Fuzz tests live alongside the unit tests for `blocklist.ValidDomain`, `blocklist.parseHostsFormat`, and `blocklist.cacheFilename`. Run them ad-hoc with `go test -fuzz=FuzzValidDomain -fuzztime=30s ./internal/blocklist/`.
-
-A full end-to-end integration test (`internal/dnsserver/integration_test.go`) wires the store + cache + querylog + handler + DNS server + a mock UDP upstream together and exercises three real DNS queries through it — catching wiring bugs that unit tests miss.
-
----
-
-## How it's engineered
-
-Built with the discipline of a long-lived, multi-maintainer codebase rather than a one-shot script:
-
-- **A living design doc** ([`docs/DESIGN.md`](docs/DESIGN.md)) captures the rationale and the rejected alternatives behind each decision.
-- **Every change is a small, self-contained change-list** with motivation, files touched, and testing notes ([`docs/cls/`](docs/cls)).
-- **A bug tracker with priorities and structured root-cause/fix records** ([`docs/BUGS.md`](docs/BUGS.md)) — including entries deliberately marked *Won't Fix — by design*.
-- **Documentation drift is treated as a bug** — code and docs are updated in the same change.
-- **CI gate on every push**: `gofmt`, `go vet`, `golangci-lint`, race-enabled tests, `govulncheck`, and a four-target cross-compile. The `internal/` packages hold 85–100% line coverage (see the [table under Development](#development)).
-
 ## Engineering highlights
 
 *The parts worth reading the code for:*
@@ -567,6 +505,70 @@ The "afternoon's reading" claim extends to the dependency graph: four direct mod
 | `golang.org/x/sys` | Windows Service Control Manager integration |
 
 The indirect modules in `go.mod` are almost all pulled in by the pure-Go SQLite port; none are used directly. Everything else is deliberately hand-rolled or omitted — the Prometheus exposition is written by hand rather than importing `client_golang`, the web UI is framework-free embedded HTML/CSS/JS, and the systemd integration is a static unit file rather than a service library. The reasoning behind each choice (and the alternatives rejected) is in `docs/DESIGN.md`. New dependencies need discussion first — see `CONTRIBUTING.md`.
+
+---
+
+## Development
+
+The `Makefile` is the canonical entry point for every routine task. Run `make help` for the full list. The most useful targets:
+
+```bash
+make check       # gofmt + go vet + golangci-lint + go test
+make test        # plain test run
+make test-race   # tests under the race detector (CGO toolchain required)
+make bench       # one iteration of each benchmark
+make lint        # golangci-lint
+make vuln        # govulncheck — scan deps + code for known CVEs
+make fmt         # gofmt -s -w
+make install     # go install into $GOBIN
+make version     # print the version that the next build would embed
+```
+
+Coverage by package (after `go test -cover ./...`):
+
+| Package | Coverage |
+|---|---|
+| `internal/stats` | 100 % |
+| `internal/config` | 100 % |
+| `internal/version` | 100 % |
+| `internal/cache` | 94.8 % |
+| `internal/api` | 89.3 % |
+| `internal/blocklist` | 90.4 % |
+| `internal/dnsserver` | 88.5 % |
+| `internal/querylog` | 85.7 % |
+| `cmd/s-hole` | 31.7 % |
+| **module-wide** | **77.8 %** |
+
+The uncovered region is the `main()` bootstrap and the Windows-only SCM glue — both exercised by manual smoke tests, not unit tests.
+
+The binary reports its build identity at any time:
+
+```
+$ s-hole -version
+s-hole v1.0.0
+  commit:  ab12cd3
+  built:   2026-06-24T12:00:00Z
+  go:      go1.25.0
+  os/arch: linux/amd64
+```
+
+CI runs lint + `go mod verify` + race-enabled tests + `govulncheck` + cross-compile for `linux/{amd64,arm64,armv7}` and `windows/amd64` on every push and PR — see `.github/workflows/ci.yml`. The race-enabled run also exercises `go.uber.org/goleak`, which fails the goroutine-heavy packages (cache, querylog, dnsserver) if any goroutine outlives its tests. Dependabot keeps Go modules, GitHub Actions, and the Docker base image up to date.
+
+Fuzz tests live alongside the unit tests for `blocklist.ValidDomain`, `blocklist.parseHostsFormat`, and `blocklist.cacheFilename`. Run them ad-hoc with `go test -fuzz=FuzzValidDomain -fuzztime=30s ./internal/blocklist/`.
+
+A full end-to-end integration test (`internal/dnsserver/integration_test.go`) wires the store + cache + querylog + handler + DNS server + a mock UDP upstream together and exercises three real DNS queries through it — catching wiring bugs that unit tests miss.
+
+---
+
+## How it's engineered
+
+Built with the discipline of a long-lived, multi-maintainer codebase rather than a one-shot script:
+
+- **A living design doc** ([`docs/DESIGN.md`](docs/DESIGN.md)) captures the rationale and the rejected alternatives behind each decision.
+- **Every change is a small, self-contained change-list** with motivation, files touched, and testing notes ([`docs/cls/`](docs/cls)).
+- **A bug tracker with priorities and structured root-cause/fix records** ([`docs/BUGS.md`](docs/BUGS.md)) — including entries deliberately marked *Won't Fix — by design*.
+- **Documentation drift is treated as a bug** — code and docs are updated in the same change.
+- **CI gate on every push**: `gofmt`, `go vet`, `golangci-lint`, race-enabled tests, `govulncheck`, and a four-target cross-compile. The `internal/` packages hold 85–100% line coverage (see the [table under Development](#development)).
 
 ---
 

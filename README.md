@@ -367,20 +367,26 @@ To update config, edit `./data/config.yaml` and restart the container:
 docker restart s-hole
 ```
 
-**On Windows (PowerShell)**, set the variable, then use backtick for line
-continuation and `${PWD}` for the current directory:
+**On Windows (Docker Desktop)**, the host has no `systemd-resolved` stub on port
+53, so the conflict above does not apply and you can publish on all interfaces
+with the bare form. Use backtick for line continuation and `${PWD}` for the
+current directory:
 
 ```powershell
-$HOST_IP = "192.168.1.10"
 docker run -d `
   --name s-hole `
   --restart unless-stopped `
   --cap-add=NET_BIND_SERVICE `
-  -p "${HOST_IP}:53:53/udp" -p "${HOST_IP}:53:53/tcp" `
-  -p "${HOST_IP}:8080:8080" `
+  -p 53:53/udp -p 53:53/tcp `
+  -p 8080:8080 `
   -v "${PWD}\data:/app" `
   s-hole
 ```
+
+This publishes the unauthenticated dashboard on every interface. To keep it
+host-only use `-p 127.0.0.1:8080:8080`, or pin it to one address by prefixing
+the port with that IP as in the Linux command. Point your router at the Windows
+machine's LAN IP — not the container address the startup banner prints.
 
 > **Want s-hole on every interface (`0.0.0.0:53`) instead of one LAN IP?** Then
 > the `systemd-resolved` stub has to give up port 53. Turn off *just* the stub,

@@ -290,6 +290,16 @@ Design decisions to settle in the CL:
   disable delete on config entries.
 - **Blocklist precedence is unchanged** — the whitelist still wins globally and
   suffix-aware (CL 30).
+- **Companion: show the whitelist size on the dashboard.** Surface the current
+  count near the whitelist controls in the actions panel — a small `(N)` label
+  matching the `(N)` on the Top Blocked / Top Clients headers, not a full stat
+  card (the number is usually 0–few). The count already exists via
+  `store.WhitelistLen()` / `shole_whitelist_size` (R34); the work is adding a
+  `whitelist_size` field to the `/api/stats` payload the way `blocklist_size`
+  rides along (CL 28) and rendering it. Folded in here because #13 already
+  reworks this panel for the config-vs-runtime source display, so it is nearly
+  free — but it does not strictly depend on persistence and could land
+  standalone earlier (mirroring the Blocklist Size card, CL 28) if wanted.
 
 Rated Medium: a user-visible robustness win (the whitelist behaves the way
 operators expect across restarts) that changes no filtering semantics.

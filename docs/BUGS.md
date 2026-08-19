@@ -1247,3 +1247,34 @@ best-effort container knobs, so a per-typo WARN on every restart is noise, and
 the only invariant is that a bad env var never blocks startup. The docstring now
 also notes why the invalid-whitelist path in `Load` does WARN (a dropped
 whitelist entry can widen blocking to a whole subtree).
+
+---
+
+## b/042 — docs: CL-32/33/34.md ended with leaked tool-call XML tags
+
+**Priority:** P3
+**Component:** docs
+**Status:** Fixed (trailing tags trimmed; see Fix)
+**Filed:** 2026-08-19
+
+### Description
+
+`docs/cls/CL-32.md`, `docs/cls/CL-33.md`, and `docs/cls/CL-34.md` each ended with
+stray `</content>` and `</invoke>` tags. These are Write tool-call serialization
+that leaked into the files when the CLs were authored, not intended Markdown. On
+GitHub they render as literal text at the bottom of each CL page, which
+contradicts the `CL.md` promise that each CL "renders as a properly-paginated page
+on GitHub". Found by ultrareview.
+
+### Root Cause
+
+Tool-call output was copied into the file bodies at authoring time. No Markdown
+linter runs in CI, so nothing caught it.
+
+### Fix
+
+Trim the trailing tag lines (two from CL-32, three each from CL-33 and CL-34); no
+other content changed. CL files are immutable historical records, so this edit
+was a one-time exception, approved by the maintainer, on the grounds that the
+tags are accidental serialization garbage and never part of the record's content.
+The narrative and decisions of each CL are untouched.

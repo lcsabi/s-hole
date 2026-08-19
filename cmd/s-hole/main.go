@@ -9,8 +9,8 @@
 //   - construct the blocklist store, stats counter, query loggers, DNS
 //     response cache, DNS handler, and DNS server
 //   - construct the single-flight reload closure and the admin API server
-//     (which exposes /healthz, /readyz, /metrics, and — opt-in via
-//     enable_pprof — /debug/pprof/* alongside the REST API)
+//     (which exposes /healthz, /readyz, /metrics, and, opt-in via
+//     enable_pprof, /debug/pprof/* alongside the REST API)
 //   - launch background tickers for stats printing and blocklist refresh,
 //     both panic-recovered
 //   - either enter the Windows SCM event loop (service mode) or block on
@@ -18,8 +18,8 @@
 //
 // Signals: SIGINT and SIGTERM trigger a clean shutdown. On non-Windows
 // builds, SIGHUP triggers a blocklist refresh through the same
-// single-flight closure used by the periodic timer and POST /api/reload —
-// see signals_unix.go.
+// single-flight closure used by the periodic timer and POST /api/reload.
+// See signals_unix.go.
 //
 // Shutdown is funnelled through a single doStop closure used by both the
 // signal handler and the Windows SCM stop control; this keeps the
@@ -281,7 +281,7 @@ func main() {
 	// Signal handler for interactive (non-service) use.
 	//
 	// SIGINT/SIGTERM trigger a clean shutdown; SIGHUP (Unix only) triggers
-	// a blocklist refresh — the conventional "reload config" gesture for
+	// a blocklist refresh, the conventional "reload config" gesture for
 	// long-running daemons. Operators expect `kill -HUP $(pidof s-hole)`
 	// to work without needing the admin API enabled.
 	sigs := make(chan os.Signal, 1)
@@ -329,7 +329,7 @@ func main() {
 //
 // The Admin UI line honors where the API server is actually bound: with
 // the localhost-only default, advertising http://<lan-ip>:8080 would be
-// a lie — every other device gets connection-refused — so the banner
+// a lie (every other device gets connection-refused), so the banner
 // points at 127.0.0.1 and says so (T4).
 func printNetworkHint(dnsPort, apiHost, apiPort string) {
 	addrs, err := net.InterfaceAddrs()
@@ -415,7 +415,7 @@ func buildMultiLogger(fl *querylog.FileLogger, db *querylog.DBLogger) dnsserver.
 // runTicker invokes fn on a fixed interval until ctx is cancelled. Used
 // for the stats printer and the periodic blocklist refresh. doStop
 // cancels the application-wide context before tearing down dependent
-// subsystems so these tickers exit cleanly — without that, the goroutines
+// subsystems so these tickers exit cleanly. Without that, the goroutines
 // would have to be reclaimed implicitly by os.Exit, which is fragile if
 // this code is ever embedded in a larger binary.
 //
@@ -439,7 +439,7 @@ func runTickerOnce(fn func()) {
 	defer func() {
 		if r := recover(); r != nil {
 			// Include the full stack so a panic that fires in the field
-			// is diagnosable from the log stream alone — without one,
+			// is diagnosable from the log stream alone. Without one,
 			// recover() swallows the only signal.
 			slog.Error("ticker fn panic recovered",
 				"panic", r,

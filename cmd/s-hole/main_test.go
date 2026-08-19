@@ -111,7 +111,7 @@ func TestPrintNetworkHint_EmitsBanner(t *testing.T) {
 
 func TestPrintNetworkHint_LoopbackAPIPointsAtLocalhost(t *testing.T) {
 	// T4 regression: with the localhost-only api_listen default, the
-	// banner must not advertise http://<lan-ip>:8080 — that URL is
+	// banner must not advertise http://<lan-ip>:8080. That URL is
 	// connection-refused for every other device on the LAN.
 	t.Setenv("S_HOLE_LOG_FORMAT", "")
 	t.Setenv("S_HOLE_ASCII_BANNER", "")
@@ -206,7 +206,7 @@ func TestRunTickerOnce_RecoversFromPanic(t *testing.T) {
 
 func TestRunTickerOnce_LogsPanicWithStack(t *testing.T) {
 	// R45 regression. The panic-recovery log line must include the panic
-	// value AND a goroutine stack — without the stack, a panic in the
+	// value AND a goroutine stack. Without the stack, a panic in the
 	// field is undiagnosable from logs alone. We swap slog's default
 	// handler with one writing to a buffer, then assert the captured
 	// output mentions both the panic message and a stack-trace marker.
@@ -233,7 +233,7 @@ func TestRunTickerOnce_LogsPanicWithStack(t *testing.T) {
 
 func TestRunTicker_StopsOnContextCancel(t *testing.T) {
 	// S8 regression. runTicker must exit promptly when its context is
-	// cancelled — otherwise the goroutine leaks past doStop and we are
+	// cancelled. Otherwise the goroutine leaks past doStop and we are
 	// back to relying on os.Exit to reclaim it.
 	calls := atomic.Int32{}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -257,7 +257,7 @@ func TestRunTicker_StopsOnContextCancel(t *testing.T) {
 	}
 
 	if calls.Load() == 0 {
-		t.Fatal("runTicker fired no ticks before cancel — interval may be too short")
+		t.Fatal("runTicker fired no ticks before cancel: interval may be too short")
 	}
 
 	// Cancellation must stop the tick stream entirely; one more grace

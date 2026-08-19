@@ -65,7 +65,7 @@ type Logger interface {
 var privateReverseZones = []string{
 	// 10.0.0.0/8
 	"10.in-addr.arpa.",
-	// 172.16.0.0/12 (second octet 16–31)
+	// 172.16.0.0/12 (second octet 16-31)
 	"16.172.in-addr.arpa.", "17.172.in-addr.arpa.", "18.172.in-addr.arpa.",
 	"19.172.in-addr.arpa.", "20.172.in-addr.arpa.", "21.172.in-addr.arpa.",
 	"22.172.in-addr.arpa.", "23.172.in-addr.arpa.", "24.172.in-addr.arpa.",

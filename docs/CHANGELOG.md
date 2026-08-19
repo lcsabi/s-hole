@@ -150,6 +150,10 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   R28, plus coverage for everything new in this release).
 
 ### Changed
+- **Dashboard panel order.** The Actions panel (reload blocklists, whitelist a
+  domain) now sits above the Recent Queries log instead of below it. Actions
+  keeps a stable, reachable position, and the always-growing query log moves to
+  the bottom of the page. (CL 41)
 - **Blocking now matches subdomains.** A blocklist (or whitelist) entry now
   covers the whole subtree beneath it: `ads.example.com` blocks
   `x.ads.example.com` as well, so trackers can no longer sidestep a list

@@ -222,7 +222,7 @@ The per-domain and per-client tally maps are capped at 4 096 entries each. When 
 An HTTP server (default `127.0.0.1:8080`, localhost only) serves two things:
 
 1. **REST API.** JSON endpoints backed by `stats.Snapshot`, `querylog.DBLogger.Recent`, and `blocklist.Store` methods.
-2. **Web UI.** A single-page dashboard embedded in the binary via `//go:embed`. It polls `/api/stats` and `/api/queries` every 3 seconds and renders stat cards, top domain/client tables, a recent query log, and an actions panel (blocklist reload, whitelist add). The Top Blocked Domains panel has a "Since start / All time" toggle: "Since start" reads the in-memory `top_domains` tally from `/api/stats` (resets on restart, caps at `topNMaxEntries`), while "All time" polls `/api/top-blocked` for the persistent SQLite tally.
+2. **Web UI.** A single-page dashboard embedded in the binary via `//go:embed`. It polls `/api/stats` and `/api/queries` every 3 seconds and renders stat cards, top domain/client tables, an actions panel (blocklist reload, whitelist add), and a recent query log. The Top Blocked Domains panel has a "Since start / All time" toggle: "Since start" reads the in-memory `top_domains` tally from `/api/stats` (resets on restart, caps at `topNMaxEntries`), while "All time" polls `/api/top-blocked` for the persistent SQLite tally.
 
 The web UI has no external dependencies (no CDN, no framework). It is pure HTML/CSS/JS and works without an internet connection.
 

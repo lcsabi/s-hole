@@ -54,6 +54,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 38](cls/CL-38.md) | Pin the query-log SQLite pool to one connection (b/038) |
 | [CL 39](cls/CL-39.md) | Move the Docker binary out of the /app volume (b/039) |
 | [CL 40](cls/CL-40.md) | Add deploy/uninstall-linux.sh companion to the installer (roadmap #12) |
+| [CL 41](cls/CL-41.md) | Move Recent Queries below Actions on the dashboard |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

@@ -377,6 +377,18 @@
   </div>
 
   <div class="full panel">
+    <div class="panel-hd">Actions</div>
+    <div class="actions-body">
+      <button class="btn-secondary" onclick="reloadBlocklists()">↺ Reload Blocklists</button>
+      <form onsubmit="addWhitelist(event)" style="display:flex;gap:8px;align-items:center">
+        <input id="wl-input" type="text" placeholder="domain to whitelist…">
+        <button type="submit" class="btn-primary">+ Whitelist</button>
+      </form>
+      <span id="action-msg" class="action-msg"></span>
+    </div>
+  </div>
+
+  <div class="full panel" style="margin-bottom:32px">
     <div class="panel-hd">Recent Queries</div>
     <table>
       <thead>
@@ -393,18 +405,6 @@
         </tr>
       </tbody>
     </table>
-  </div>
-
-  <div class="full panel" style="margin-bottom:32px">
-    <div class="panel-hd">Actions</div>
-    <div class="actions-body">
-      <button class="btn-secondary" onclick="reloadBlocklists()">↺ Reload Blocklists</button>
-      <form onsubmit="addWhitelist(event)" style="display:flex;gap:8px;align-items:center">
-        <input id="wl-input" type="text" placeholder="domain to whitelist…">
-        <button type="submit" class="btn-primary">+ Whitelist</button>
-      </form>
-      <span id="action-msg" class="action-msg"></span>
-    </div>
   </div>
 
   <script>

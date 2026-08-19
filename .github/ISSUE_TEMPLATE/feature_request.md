@@ -14,7 +14,7 @@ assignees: ""
 ## Proposal
 
 <!-- Optional. If you have a specific implementation in mind, sketch it
-     here — config knob, new endpoint, etc. -->
+     here: config knob, new endpoint, etc. -->
 
 ## Alternatives
 

@@ -237,7 +237,7 @@ func TestServeDNS_UpstreamFailureProducesServfail(t *testing.T) {
 
 func TestServeDNS_WriteSinkholeErrorIsLogged(t *testing.T) {
 	// Confirm the writeSinkhole error branch is exercised when the
-	// ResponseWriter fails. We don't capture log output here — the
+	// ResponseWriter fails. We don't capture log output here; the
 	// purpose is to drive the branch for coverage and ensure the
 	// handler doesn't panic.
 	store := blocklist.NewStore()
@@ -290,7 +290,7 @@ func TestIsPrivatePTR(t *testing.T) {
 		qtype uint16
 		want  bool
 	}{
-		// RFC 1918 IPv4 — private
+		// RFC 1918 IPv4, private
 		{"1.0.0.10.in-addr.arpa.", dns.TypePTR, true},
 		{"255.255.0.10.in-addr.arpa.", dns.TypePTR, true},
 		{"1.1.16.172.in-addr.arpa.", dns.TypePTR, true},
@@ -308,12 +308,12 @@ func TestIsPrivatePTR(t *testing.T) {
 		// IPv6 link-local
 		{"1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.e.f.ip6.arpa.", dns.TypePTR, true},
 		{"1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.b.e.f.ip6.arpa.", dns.TypePTR, true},
-		// Public range — must not match
+		// Public range, must not match
 		{"4.3.2.1.in-addr.arpa.", dns.TypePTR, false},
 		{"8.8.8.8.in-addr.arpa.", dns.TypePTR, false},
 		// 172.15 is NOT in 172.16/12
 		{"1.1.15.172.in-addr.arpa.", dns.TypePTR, false},
-		// Same name but wrong qtype — must not match
+		// Same name but wrong qtype, must not match
 		{"1.0.0.10.in-addr.arpa.", dns.TypeA, false},
 		{"1.0.0.10.in-addr.arpa.", dns.TypeAAAA, false},
 	}
@@ -427,7 +427,7 @@ func buildResp(q dns.Question, ip net.IP, ttl uint32) *dns.Msg {
 
 // BenchmarkHandler_ServeDNS guards the two hot paths the handler can serve
 // without touching the network: a blocked query (sinkhole reply) and a
-// cache hit. The forwarding path is deliberately excluded — it is bounded
+// cache hit. The forwarding path is deliberately excluded; it is bounded
 // by the upstream round-trip, not by handler code, and cannot be measured
 // without a network stub. Each sub-benchmark drives ServeDNS through a stub
 // ResponseWriter (fakeWriter); ReportAllocs surfaces per-query allocation

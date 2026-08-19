@@ -18,7 +18,7 @@ jobs:
         # Action v8+ installs golangci-lint v2, required by the
         # version:"2" config schema and a Go-1.25 module target. Action
         # v6 installed v1.64.x, which is built with an older Go and
-        # refuses to load the config at all — see CL 24 addendum.
+        # refuses to load the config at all; see CL 24 addendum.
         uses: golangci/golangci-lint-action@v9
         with:
           version: latest
@@ -50,7 +50,7 @@ jobs:
         run: go test -race -count=1 ./...
       - name: Benchmarks (smoke)
         # Runs each benchmark once so a build-time regression in the
-        # benchmark body is caught here — not a perf measurement.
+        # benchmark body is caught here, not a perf measurement.
         run: go test -run=^$ -bench=. -benchtime=1x ./...
 
   vuln:

@@ -61,7 +61,7 @@ func TestNewFileLogger_FallsBackToStdoutOnBadPath(t *testing.T) {
 	if l.f != os.Stdout {
 		t.Errorf("FileLogger.f = %v, want os.Stdout", l.f)
 	}
-	// Close should be a no-op when writing to stdout — verify it does
+	// Close should be a no-op when writing to stdout; verify it does
 	// not panic and returns nil.
 	if err := l.Close(); err != nil {
 		t.Errorf("Close on stdout-backed FileLogger returned %v", err)

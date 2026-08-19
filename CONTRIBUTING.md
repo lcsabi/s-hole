@@ -1,8 +1,8 @@
 # Contributing to s-hole
 
-Thanks for considering a contribution. s-hole is intentionally small —
-a single binary, a single YAML config, no runtime dependencies — and
-this guide explains the conventions that keep it that way.
+Thanks for considering a contribution. s-hole is intentionally small: a
+single binary, a single YAML config, and no runtime dependencies. This
+guide explains the conventions that keep it that way.
 
 ## Reporting issues
 
@@ -76,7 +76,7 @@ avoids both the privileged-port bind and the local resolver's claim on
 port 53 (`systemd-resolved` holds `127.0.0.53:53` on most distros).
 
 ```bash
-# Terminal 1 — build and run; this terminal is also the live query log.
+# Terminal 1: build and run; this terminal is also the live query log.
 go build -o /tmp/s-hole ./cmd/s-hole
 S_HOLE_LISTEN=:5353 S_HOLE_QUERY_DB=/tmp/q.db S_HOLE_CACHE_DIR=/tmp \
   /tmp/s-hole -config config.yaml
@@ -85,29 +85,29 @@ S_HOLE_LISTEN=:5353 S_HOLE_QUERY_DB=/tmp/q.db S_HOLE_CACHE_DIR=/tmp \
 Expect: `blocklist updated total=…`, two `dns listener started` lines,
 and the router-setup banner. Then, in a second terminal:
 
-1. **Probes** — `curl localhost:8080/healthz` → `ok`;
+1. **Probes.** `curl localhost:8080/healthz` → `ok`;
    `curl localhost:8080/readyz` → `ok` (503 means the blocklist
    download failed).
-2. **DNS behaviour** — `dig @127.0.0.1 -p 5353 doubleclick.net +short`
+2. **DNS behaviour.** `dig @127.0.0.1 -p 5353 doubleclick.net +short`
    → `0.0.0.0`; `dig @127.0.0.1 -p 5353 sub.doubleclick.net +short`
    → `0.0.0.0` too (suffix blocking: a subdomain of a blocked domain
    is blocked); `dig @127.0.0.1 -p 5353 example.com +short` → a real
    IP; repeat the third query → same answer, near-instant (cache
-   hit). Terminal 1 shows a `BLOCK` / `ALLOW` line per query — if a
+   hit). Terminal 1 shows a `BLOCK` / `ALLOW` line per query; if a
    query produces no line, it never reached the process.
-3. **Dashboard** — open `http://localhost:8080`; the stat cards and
+3. **Dashboard.** Open `http://localhost:8080`; the stat cards and
    recent-queries table should reflect step 2 within one poll (~3 s).
-4. **Whitelist round-trip** — query a blocked domain, `POST
+4. **Whitelist round-trip.** Query a blocked domain, `POST
    /api/whitelist` with `{"domain":"…"}`, query again (now resolves),
    `DELETE /api/whitelist?domain=…`, query again (blocked again).
    Do one add via the dashboard's actions panel to cover the UI path.
-5. **Reload single-flight** — two immediate
+5. **Reload single-flight.** Two immediate
    `curl -X POST localhost:8080/api/reload` calls: the first returns
    `"reload triggered"`, the second `"reload already in progress"`.
-6. **Stats vs. metrics** — `curl localhost:8080/api/stats` and
+6. **Stats vs. metrics.** `curl localhost:8080/api/stats` and
    `curl localhost:8080/metrics`; blocked/total/cache numbers must
    agree with what you just did.
-7. **Persistence + shutdown** — Ctrl+C: expect the final stats print
+7. **Persistence + shutdown.** Ctrl+C: expect the final stats print
    and a clean exit. Restart: `/api/queries?limit=10` still shows the
    pre-restart rows, and startup is faster (blocklists load from the
    disk cache).
@@ -125,7 +125,7 @@ docs/cls/          one file per CL
 
 All implementation packages live under `internal/` so the public API
 surface is just `cmd/s-hole`. If you find yourself wanting to expose a
-package, please open a discussion first — the `internal/` boundary is
+package, please open a discussion first; the `internal/` boundary is
 load-bearing for the "auditable in an afternoon" goal.
 
 ## Pull-request conventions
@@ -156,9 +156,9 @@ Look at `docs/cls/CL-20.md` for a recent example.
 
 The repo tracks two kinds of identifiers:
 
-- `b/NNN` — a bug filed in `docs/BUGS.md` (issue-tracker style: a stable
+- `b/NNN`: a bug filed in `docs/BUGS.md` (issue-tracker style: a stable
   ID, a priority, a component, and a root-cause/fix record).
-- `R NN` / `S NN` / `T NN` — findings from successive staff-engineer
+- `R NN` / `S NN` / `T NN`: findings from successive staff-engineer
   review rounds (the letter identifies the round). These are tracked
   in CL notes only, not in `BUGS.md`.
 
@@ -195,16 +195,32 @@ missing test or note in the CL why the drop is acceptable.
 - Don't pull in a new dependency without discussion. The full `go.sum`
   fits on a single screen and we'd like to keep it that way.
 
+## Writing style
+
+Docs, code comments, and commit messages follow a house style inspired by
+Simplified Technical English: short active sentences, plain words, one idea per
+sentence. Two hard rules:
+
+- **No em-dashes (`—`).** Use a period, colon, semicolon, or parentheses
+  instead. Before a PR, `grep -n '—'` on the files you changed should return
+  nothing.
+- **Procedures read as instructions.** Put the condition before the command, use
+  the imperative, and keep each step to one action.
+
+Design rationale can stay nuanced; the goal is clarity, not mechanical brevity.
+The immutable historical records (`docs/cls/CL-*.md`, `docs/BUGS.md`) are exempt,
+and new CL titles use `# CL N: title` (a colon, not an em-dash).
+
 ## Doc-vs-code drift is treated as a bug
 
 If you change observable behaviour, the relevant doc must change with
 it. The audit-and-sync conventions are:
 
-- `README.md` — operator-facing surface (CLI flags, env vars, REST
+- `README.md`: operator-facing surface (CLI flags, env vars, REST
   endpoints, deployment).
-- `docs/DESIGN.md` — design rationale (why we did it this way).
-- `docs/CHANGELOG.md` — one bullet per user-visible change.
-- `docs/cls/CL-NN.md` — the full CL record.
+- `docs/DESIGN.md`: design rationale (why we did it this way).
+- `docs/CHANGELOG.md`: one bullet per user-visible change.
+- `docs/cls/CL-NN.md`: the full CL record.
 
 A PR that updates code without the matching doc lines will be sent
 back for adjustment.

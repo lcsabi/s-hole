@@ -15,8 +15,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleReady is a readiness probe. It returns 200 once the blocklist
-// has at least one domain — i.e. the process is actually filtering
-// queries — and 503 otherwise. Kubernetes routes traffic away from a
+// has at least one domain, i.e. the process is actually filtering
+// queries, and 503 otherwise. Kubernetes routes traffic away from a
 // pod that fails this check, which is the right behaviour while the
 // initial blocklist download is still in flight.
 func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {

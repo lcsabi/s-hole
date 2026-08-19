@@ -3,11 +3,11 @@
 //
 // total and cacheHit are atomic and updated lock-free on the hot path.
 // blocked is mutex-guarded because RecordQuery's critical section
-// already takes the lock to update the top-domain tally — promoting it
+// already takes the lock to update the top-domain tally; promoting it
 // to atomic would be redundant and misleading. Snapshot reads blocked
 // inside the same mutex and reads total/cacheHit lock-free.
 //
-// Top-N maps are protected by the mutex and capped at topNMaxEntries —
+// Top-N maps are protected by the mutex and capped at topNMaxEntries;
 // when exceeded, the bottom half is pruned so memory stays bounded
 // under long-running operation. The map *pointers* are read inside the
 // lock by topN so a concurrent reassignment in RecordQuery does not
@@ -28,7 +28,7 @@ import (
 
 // topNMaxEntries caps the per-domain and per-client tally maps so a
 // long-running process does not accumulate every unique key forever.
-// When a map exceeds this, prune() drops the least-frequent half —
+// When a map exceeds this, prune() drops the least-frequent half,
 // preserving high-traffic entries that operators care about. The chosen
 // size is comfortably above any home-network domain diversity (~80 B
 // per key × 4 096 ≈ 320 KiB per map) while bounded against pathological
@@ -38,13 +38,13 @@ const topNMaxEntries = 4096
 // Counter aggregates query statistics across the lifetime of the process.
 // total and cacheHit are atomic and updated lock-free on the hot path.
 // blocked is mutex-guarded (incremented inside RecordQuery's critical
-// section alongside the top-domain map update) — making it atomic too
+// section alongside the top-domain map update). Making it atomic too
 // would be misleading dead optimisation. Snapshot reads it back inside
 // the same lock. localPTR is atomic alongside cacheHit: it is
 // incremented after total, maintaining total ≥ localPTR at all times.
 //
 // LOAD-ORDER INVARIANT (read this before adding a counter). Every per-query
-// counter below — blocked, localPTR, cacheHit — is incremented AFTER
+// counter below (blocked, localPTR, cacheHit) is incremented AFTER
 // RecordQuery bumps total. Snapshot must therefore read each of them BEFORE
 // it reads total; otherwise a query completing between the two atomic loads
 // makes the counter exceed the total captured alongside it, surfacing as a
@@ -115,8 +115,8 @@ func (c *Counter) RecordQuery(clientIP, domain string, blocked bool) {
 		c.topDomains[domain]++
 	}
 	// Cap the maps so a long-running process does not accumulate every
-	// unique key forever. We prune lazily — only when a map exceeds the
-	// cap — so the steady-state hot path stays at one map[++].
+	// unique key forever. We prune lazily, only when a map exceeds the
+	// cap, so the steady-state hot path stays at one map[++].
 	if len(c.topClients) > topNMaxEntries {
 		c.topClients = pruneBottomHalf(c.topClients)
 	}
@@ -134,7 +134,7 @@ func (c *Counter) RecordQuery(clientIP, domain string, blocked bool) {
 // We sort key/value pairs and keep the top len/2 rather than thresholding
 // by value: when every count is equal (the pathological "every key seen
 // once" case) thresholding would keep every entry and leave the map
-// unbounded — see the regression test
+// unbounded; see the regression test
 // TestCounter_TopNMapsAreBounded.
 func pruneBottomHalf(m map[string]int64) map[string]int64 {
 	type kv struct {
@@ -170,7 +170,7 @@ func (c *Counter) RecordLocalPTR() {
 
 // topNTarget selects which of the two tally maps Snapshot/topN reads.
 // We pass an enum rather than the map pointer itself so the map header is
-// read under c.mu — see R31. Reading c.topDomains as a function argument
+// read under c.mu; see R31. Reading c.topDomains as a function argument
 // races against the c.topDomains = pruneBottomHalf(...) write that
 // RecordQuery performs while it holds the lock.
 type topNTarget int
@@ -188,7 +188,7 @@ const (
 // captured. RecordQuery increments total, then blocked (under mu); the PTR
 // path additionally calls RecordLocalPTR after RecordQuery; the cache-hit
 // path calls RecordCacheHit after RecordQuery. So blocked, localPTR, and
-// cacheHit are all read before total — the b/021 fix, extended to localPTR
+// cacheHit are all read before total, the b/021 fix, extended to localPTR
 // (b/033) and cacheHit (b/036). This keeps total ≥ blocked, total ≥ localPTR,
 // and hits ≤ forwardable on every snapshot, so forwardable below can never go
 // negative and CacheHitPct can never exceed 100 %. The cache-hit denominator

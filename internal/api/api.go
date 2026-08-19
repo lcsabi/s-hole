@@ -1,7 +1,7 @@
 // Package api implements the admin REST API and serves the embedded web UI.
 //
 // The HTTP server runs on a separate port from the DNS server (default
-// 127.0.0.1:8080 — localhost only; set api_listen to "0.0.0.0:8080" to
+// 127.0.0.1:8080, localhost only; set api_listen to "0.0.0.0:8080" to
 // expose to the LAN) and exposes JSON endpoints backed by the stats,
 // querylog, and blocklist subsystems. The server is unauthenticated and
 // intended for LAN-only deployment; conservative HTTP server timeouts
@@ -144,7 +144,7 @@ func (s *Server) handler() http.Handler {
 	sub, err := fs.Sub(staticFiles, "static")
 	if err != nil {
 		// Build-time impossible: the embed.FS contains a "static" subtree.
-		// Treat as fatal — this should never fire in a released binary.
+		// Treat as fatal; this should never fire in a released binary.
 		logger.Error("embedded static FS missing 'static' subtree", "err", err)
 		panic(err)
 	}
@@ -162,7 +162,7 @@ func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
 // defaultQueriesLimit and maxQueriesLimit bound the ?limit= parameter on
 // /api/queries. The cap keeps a stray `?limit=10000000` from marshalling
 // the entire history table into one JSON response on the unauthenticated
-// admin port — the same defense-in-depth reasoning as maxRequestBytes.
+// admin port; the same defense-in-depth reasoning as maxRequestBytes.
 const (
 	defaultQueriesLimit = 50
 	maxQueriesLimit     = 1000
@@ -204,7 +204,7 @@ func (s *Server) handleQueries(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleTopBlocked serves the all-time most-blocked domains from the SQLite
-// query log — the persistent, unpruned companion to the in-memory
+// query log, the persistent, unpruned companion to the in-memory
 // top_domains list in /api/stats (which resets on restart and caps at
 // topNMaxEntries). When query logging is disabled (s.db == nil) it returns an
 // empty list rather than an error, so the dashboard's "All time" toggle

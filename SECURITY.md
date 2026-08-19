@@ -40,7 +40,7 @@ In scope:
 Out of scope:
 
 - Issues that depend on the operator running the binary as `root` or
-  exposing the admin API to the public internet — both are explicitly
+  exposing the admin API to the public internet; both are explicitly
   warned against in `README.md`.
 - Reports against third-party blocklist content; s-hole treats lists as
   untrusted input but cannot vouch for what they contain.
@@ -62,7 +62,7 @@ Out of scope:
   alphanumerics + `.-_` only).
 - **systemd unit** ships with `NoNewPrivileges`, `ProtectSystem=strict`,
   `ProtectHome=true`, `CapabilityBoundingSet=CAP_NET_BIND_SERVICE`.
-- **No CGO** — the binary is statically linked, so a libc or
+- **No CGO.** The binary is statically linked, so a libc or
   `libsystemd` vulnerability cannot reach the s-hole process.
 
 For the full design discussion of these mitigations, see

@@ -21,7 +21,7 @@ id -u s-hole &>/dev/null || useradd --system --no-create-home --shell /usr/sbin/
 echo "==> installing binary to $INSTALL_BIN"
 install -m 755 "$BINARY" "$INSTALL_BIN"
 # Capture the build identity now so the final confirmation can show which
-# build is live — a silent installer hides a stale-binary deploy.
+# build is live; a silent installer hides a stale-binary deploy.
 installed_build=$("$INSTALL_BIN" -version 2>/dev/null || true)
 
 echo "==> installing config to $CONFIG_DIR/config.yaml"
@@ -30,7 +30,7 @@ if [[ ! -f "$CONFIG_DIR/config.yaml" ]]; then
   install -m 640 -o root -g s-hole "$CONFIG_SRC" "$CONFIG_DIR/config.yaml"
   echo "    (edit $CONFIG_DIR/config.yaml before starting)"
 else
-  echo "    (config already exists — skipping)"
+  echo "    (config already exists, skipping)"
 fi
 
 echo "==> creating data directory $DATA_DIR"
@@ -75,7 +75,7 @@ systemctl daemon-reload
 systemctl enable s-hole
 # restart, not start (b/030): on a re-run (upgrade), `install` above replaced the
 # binary at a new inode but the running process keeps executing the old one,
-# and `systemctl start` is a no-op on an already-active unit — so the old
+# and `systemctl start` is a no-op on an already-active unit, so the old
 # build would keep running while the "Installed build" box below advertises
 # the new one. `restart` picks up the new binary and is equivalent to `start`
 # on a fresh install (an inactive unit is simply started).
@@ -111,7 +111,7 @@ echo "┌─ Installed build ─────────────────
 if [[ -n "$installed_build" ]]; then
   printf '%s\n' "$installed_build" | sed 's/^/│  /'
 else
-  echo "│  (could not read version — is this an s-hole binary?)"
+  echo "│  (could not read version; is this an s-hole binary?)"
 fi
 echo "└─────────────────────────────────────────────────────────"
 
@@ -127,7 +127,7 @@ for ip in $(hostname -I); do
   fi
 done
 if ! $api_on_lan; then
-  echo "│  Admin UI   → http://127.0.0.1:${api_port} (this machine only —"
+  echo "│  Admin UI   → http://127.0.0.1:${api_port} (this machine only;"
   echo "│               set api_listen: \"0.0.0.0:${api_port}\" for LAN access)"
 fi
 echo "└─────────────────────────────────────────────────────────"

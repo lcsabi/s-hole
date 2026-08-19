@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Uninstalls the s-hole systemd service from Linux — reverses install-linux.sh.
+# Uninstalls the s-hole systemd service from Linux. Reverses install-linux.sh.
 # Run as root: sudo bash uninstall-linux.sh [--purge] [--restore-resolved] [-y]
 set -euo pipefail
 
@@ -49,7 +49,7 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
-# Show the plan before touching anything — an uninstaller changes system
+# Show the plan before touching anything; an uninstaller changes system
 # state, so the destructive set should be explicit and confirmable.
 echo "This will:"
 echo "  - stop and disable the s-hole service"
@@ -144,18 +144,18 @@ if [[ -f "$RESOLVED_DROPIN" ]]; then
     systemctl restart systemd-resolved 2>/dev/null || true
     removed+=("$RESOLVED_DROPIN (systemd-resolved restarted)")
   else
-    kept+=("$RESOLVED_DROPIN — DNSStubListener=no drop-in; pass --restore-resolved to remove")
+    kept+=("$RESOLVED_DROPIN: DNSStubListener=no drop-in; pass --restore-resolved to remove")
   fi
 fi
 
-# Summary — the same reporting courtesy as the installer.
+# Summary: the same reporting courtesy as the installer.
 echo ""
 echo "┌─ Uninstall summary ─────────────────────────────────────"
 if [[ ${#removed[@]} -gt 0 ]]; then
   echo "│  Removed:"
   for item in "${removed[@]}"; do echo "│    - $item"; done
 else
-  echo "│  Nothing to remove — s-hole did not appear to be installed."
+  echo "│  Nothing to remove; s-hole did not appear to be installed."
 fi
 if [[ ${#kept[@]} -gt 0 ]]; then
   echo "│  Kept:"

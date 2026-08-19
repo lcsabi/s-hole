@@ -21,7 +21,7 @@ func TestLoad_EmptyAppliesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load empty: %v", err)
 	}
-	// ":53" is the dual-stack wildcard — IPv4-only "0.0.0.0:53" would
+	// ":53" is the dual-stack wildcard; IPv4-only "0.0.0.0:53" would
 	// silently drop IPv6 clients on dual-stack LANs.
 	if cfg.Listen != ":53" {
 		t.Errorf("Listen default = %q, want :53 (dual-stack)", cfg.Listen)
@@ -142,7 +142,7 @@ func TestFilterWhitelist(t *testing.T) {
 	// Whitelist entries are suffix-matched (CL 30): a bare label like a TLD
 	// would exempt its whole subtree. filterWhitelist drops invalid entries
 	// (Load WARNs on them) instead of aborting startup, and a dropped entry
-	// fails safe — the domain stays blockable.
+	// fails safe: the domain stays blockable.
 	in := []string{"safe.doubleclick.net", "com", "example.com", "bad host"}
 	valid, dropped := filterWhitelist(in)
 
@@ -296,9 +296,9 @@ func TestApplyEnvOverrides_AllStringFields(t *testing.T) {
 }
 
 func TestApplyEnvOverrides_EnablePprof(t *testing.T) {
-	// Only 1/true/yes turn pprof on. Everything else — including an env
-	// var explicitly set to the empty string (LookupEnv ok=true, value="")
-	// — leaves it at the default false.
+	// Only 1/true/yes turn pprof on. Everything else, including an env
+	// var explicitly set to the empty string (LookupEnv ok=true, value=""),
+	// leaves it at the default false.
 	cases := []struct {
 		value string
 		want  bool

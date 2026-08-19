@@ -54,7 +54,7 @@ func (s *Server) Start() error {
 // blocked in Start will observe both servers as cleanly stopped.
 // Errors are logged rather than returned: by the time Shutdown runs the
 // process is exiting, and "server not started" (the main failure mode)
-// is not actionable — but it should not vanish silently either.
+// is not actionable, but it should not vanish silently either.
 func (s *Server) Shutdown() {
 	if err := s.udp.Shutdown(); err != nil {
 		logger.Warn("udp listener shutdown", "err", err)

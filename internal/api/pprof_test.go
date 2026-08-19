@@ -11,8 +11,8 @@ import (
 )
 
 // TestPprof_OffByDefault is the security-critical assertion: the pprof
-// surface — which exposes goroutine stacks, heap layouts, and binary
-// symbols — must not be reachable unless the operator explicitly opted
+// surface, which exposes goroutine stacks, heap layouts, and binary
+// symbols, must not be reachable unless the operator explicitly opted
 // in. SECURITY.md promises this; this test enforces it.
 func TestPprof_OffByDefault(t *testing.T) {
 	_, srv := newTestServer(t, nil)
@@ -112,7 +112,7 @@ func TestPprof_SymbolAcceptsPOST(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusMethodNotAllowed {
-		t.Fatalf("/debug/pprof/symbol rejected POST with 405 — go tool pprof symbolization is broken")
+		t.Fatalf("/debug/pprof/symbol rejected POST with 405; go tool pprof symbolization is broken")
 	}
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("/debug/pprof/symbol POST status = %d, want 200", resp.StatusCode)

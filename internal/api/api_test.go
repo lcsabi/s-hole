@@ -118,7 +118,7 @@ func TestListenAndServe_LifecycleAndShutdown(t *testing.T) {
 
 func TestShutdown_BeforeListenIsNoOp(t *testing.T) {
 	// If the caller calls Shutdown without ever calling ListenAndServe,
-	// the helper must not panic — s.httpServer is nil at that point.
+	// the helper must not panic; s.httpServer is nil at that point.
 	store := blocklist.NewStore()
 	s := New(stats.New(), nil, store, nil, func() bool { return true })
 	if err := s.Shutdown(context.Background()); err != nil {
@@ -126,7 +126,7 @@ func TestShutdown_BeforeListenIsNoOp(t *testing.T) {
 	}
 }
 
-// queriesResponse mirrors the JSON shape returned by /api/queries — kept
+// queriesResponse mirrors the JSON shape returned by /api/queries, kept
 // local so the test does not depend on api package internals.
 type queriesResponse struct {
 	Queries []querylog.QueryRow `json:"queries"`
@@ -145,7 +145,7 @@ func TestQueriesEndpoint_WithRealDB(t *testing.T) {
 	db.Log("1.1.1.1", "first.com.", false)
 	db.Log("1.1.1.1", "second.com.", true)
 	// Poll until the async writer has committed both rows instead of a fixed
-	// flush-tick sleep — CL 21 (S3) banned the hardcoded time.Sleep because it
+	// flush-tick sleep; CL 21 (S3) banned the hardcoded time.Sleep because it
 	// is both slow on a healthy runner and flaky under CI contention.
 	waitForRows(t, db, 2)
 
@@ -213,7 +213,7 @@ func TestTopBlockedEndpoint_WithRealDB(t *testing.T) {
 
 func TestTopBlockedEndpoint_NoDBReturnsEmpty(t *testing.T) {
 	// With query logging disabled (db == nil) the endpoint must return an
-	// empty list and 200, not an error — the dashboard "All time" toggle
+	// empty list and 200, not an error; the dashboard "All time" toggle
 	// then shows an empty panel rather than failing.
 	_, srv := newTestServer(t, nil) // newTestServer passes db == nil
 	resp, err := http.Get(srv.URL + "/api/top-blocked")
@@ -325,7 +325,7 @@ func TestWriteJSON_LogsEncoderErrors(t *testing.T) {
 	// The encoder error path is hard to drive via a real HTTP call
 	// because json.NewEncoder succeeds on every JSON-encodable type.
 	// Inject a ResponseWriter whose Write always errors instead. The
-	// purpose is coverage + no panic — the actual log line is verified
+	// purpose is coverage + no panic; the actual log line is verified
 	// by inspection in the slog handler.
 	defer func() {
 		if r := recover(); r != nil {
@@ -359,7 +359,7 @@ func TestReadinessEndpoint_503BeforeBlocklist(t *testing.T) {
 	// Fresh store with no entries: /readyz must return 503 so a
 	// container orchestrator routes traffic away while the initial
 	// blocklist download is still in flight. This is the Kubernetes
-	// readiness contract — see DESIGN.md "Observability" section.
+	// readiness contract; see DESIGN.md "Observability" section.
 	store := blocklist.NewStore() // empty
 	s := New(stats.New(), nil, store, nil, func() bool { return true })
 	srv := httptest.NewServer(s.handler())
@@ -655,6 +655,6 @@ func TestReload_ConcurrentCallsCollapse(t *testing.T) {
 	if triggered.Load() == 50 {
 		// Possible but unlikely; if the goroutine releases the lock
 		// between every TryLock attempt we never observe contention.
-		t.Log("note: no contention observed — single-flight gate ran serially")
+		t.Log("note: no contention observed; single-flight gate ran serially")
 	}
 }

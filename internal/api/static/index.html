@@ -306,32 +306,32 @@
   <header>
     <div class="logo"><span class="dot">◉</span>s-hole</div>
     <div class="meta">
-      uptime <strong id="uptime">—</strong>
+      uptime <strong id="uptime">–</strong>
       &nbsp;·&nbsp;
-      refreshed <span id="last-refresh">—</span>
+      refreshed <span id="last-refresh">–</span>
     </div>
   </header>
 
   <div class="cards">
     <div class="card">
       <div class="card-label">Total Queries</div>
-      <div class="card-value num" id="stat-total">—</div>
+      <div class="card-value num" id="stat-total">–</div>
     </div>
     <div class="card">
       <div class="card-label">Blocked</div>
-      <div class="card-value num red" id="stat-blocked">—</div>
+      <div class="card-value num red" id="stat-blocked">–</div>
     </div>
     <div class="card">
       <div class="card-label">Block Rate</div>
-      <div class="card-value num" id="stat-pct">—</div>
+      <div class="card-value num" id="stat-pct">–</div>
     </div>
     <div class="card">
       <div class="card-label">Cache Hit Rate</div>
-      <div class="card-value num" id="stat-cache">—</div>
+      <div class="card-value num" id="stat-cache">–</div>
     </div>
     <div class="card">
       <div class="card-label">Blocklist Size</div>
-      <div class="card-value num" id="stat-blocklist">—</div>
+      <div class="card-value num" id="stat-blocklist">–</div>
     </div>
   </div>
 
@@ -435,7 +435,7 @@
     async function refreshTopDomainsAllTime() {
       try {
         const { domains } = await fetch('/api/top-blocked?limit=10').then(r => r.json());
-        renderTopDomains(domains || [], 'No blocked queries recorded — ensure query_db is set in config.yaml');
+        renderTopDomains(domains || [], 'No blocked queries recorded. Ensure query_db is set in config.yaml');
       } catch (e) { console.error('top-blocked fetch failed:', e); }
     }
 
@@ -480,7 +480,7 @@
               <td>${badge}</td>
             </tr>`;
           }).join('')
-          : '<tr><td colspan="4" class="empty">No queries logged — ensure query_db is set in config.yaml</td></tr>');
+          : '<tr><td colspan="4" class="empty">No queries logged. Ensure query_db is set in config.yaml</td></tr>');
       } catch (e) { console.error('queries fetch failed:', e); }
     }
 

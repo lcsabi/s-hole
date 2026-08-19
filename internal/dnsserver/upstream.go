@@ -23,7 +23,7 @@ const upstreamCooldown = 30 * time.Second
 // upstreamTracker remembers when each configured upstream last failed.
 // Forward consults it: an upstream whose last failure is within
 // upstreamCooldown is skipped on the first sweep. If every upstream is in
-// cooldown, the tracker is bypassed and every upstream is tried once —
+// cooldown, the tracker is bypassed and every upstream is tried once;
 // failing to do that would make all queries fail just because the
 // preferred upstream is briefly down.
 type upstreamTracker struct {
@@ -93,7 +93,7 @@ func forwardWith(ctx context.Context, req *dns.Msg, upstreams []string, tracker 
 
 	// Second sweep: every non-cooldown upstream we tried in sweep 1 has
 	// failed. Now retry the ones that were in cooldown *at function
-	// entry* — those are upstreams that failed within the last 30 s on
+	// entry*: those are upstreams that failed within the last 30 s on
 	// some prior call, not the ones that just failed in sweep 1 above.
 	//
 	// We deliberately keep the entry-time `now` here rather than refreshing
@@ -122,7 +122,7 @@ func forwardWith(ctx context.Context, req *dns.Msg, upstreams []string, tracker 
 
 // exchange performs one UDP exchange with upstream, retrying once over
 // TCP when the reply comes back truncated (TC bit set). Without the
-// retry, the truncated answer would be relayed verbatim — and because
+// retry, the truncated answer would be relayed verbatim, and because
 // queries arriving over TCP are also forwarded over UDP, the client's
 // own TCP fallback would loop straight back into the same truncated
 // reply, dead-ending the fallback chain documented in DESIGN.md (T2).

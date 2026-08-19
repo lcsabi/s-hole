@@ -15,7 +15,7 @@ import (
 
 // Store is a thread-safe in-memory set of blocked domains plus an in-memory
 // whitelist that overrides it. A lookup walks the domain's label suffixes
-// (see IsBlocked), so it costs O(labels) hash-set probes — effectively
+// (see IsBlocked), so it costs O(labels) hash-set probes, effectively
 // constant for real domain names.
 type Store struct {
 	mu        sync.RWMutex
@@ -45,7 +45,7 @@ func (s *Store) SetWhitelist(domains []string) {
 }
 
 // Replace atomically swaps the blocked set. Concurrent IsBlocked calls
-// see either the old set or the new set — never a partial update.
+// see either the old set or the new set, never a partial update.
 func (s *Store) Replace(domains []string) {
 	next := make(map[string]struct{}, len(domains))
 	for _, d := range domains {
@@ -56,7 +56,7 @@ func (s *Store) Replace(domains []string) {
 	s.mu.Unlock()
 }
 
-// IsBlocked reports whether domain — or any of its parent domains — is on
+// IsBlocked reports whether domain (or any of its parent domains) is on
 // the block set, with the whitelist overriding at every level. The lookup
 // walks the label suffixes of domain from most specific to least
 // (a.b.example.com → b.example.com → example.com → com), so a list entry of
@@ -66,13 +66,13 @@ func (s *Store) Replace(domains []string) {
 //
 // Whitelist precedence is global rather than per-level: if the queried
 // domain OR any of its parents is whitelisted, the domain is reported as not
-// blocked — even when a more specific parent sits on the block set. The
+// blocked, even when a more specific parent sits on the block set. The
 // whitelist is therefore the escape hatch for an over-broad block entry.
 // Whitelisting "safe.doubleclick.net" lets that name (and its subtree)
 // through while "ads.doubleclick.net" stays blocked; whitelisting
 // "example.com" exempts everything under it.
 //
-// Cost is O(labels) lookups against two O(1) hash sets — no new data
+// Cost is O(labels) lookups against two O(1) hash sets, with no new data
 // structure and no per-query allocation (the walk reslices domain in place).
 // BenchmarkStore_IsBlocked guards the hot path against regression.
 func (s *Store) IsBlocked(domain string) bool {
@@ -138,7 +138,7 @@ func (s *Store) Len() int {
 }
 
 // WhitelistLen returns the number of domains in the runtime whitelist.
-// Cheap counterpart to GetWhitelist for the /metrics scrape path — see
+// Cheap counterpart to GetWhitelist for the /metrics scrape path; see
 // R34. Lock-held read; runs in O(1).
 func (s *Store) WhitelistLen() int {
 	s.mu.RLock()

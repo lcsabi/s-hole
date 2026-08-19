@@ -39,7 +39,7 @@ func TestShort_ReturnsAllThreeFields(t *testing.T) {
 
 func TestDefaults_AreSafePlaceholders(t *testing.T) {
 	// When the binary is built via `go build` without -ldflags, the three
-	// fields must default to non-empty strings — empty values would break
+	// fields must default to non-empty strings; empty values would break
 	// the slog startup line and the -version output.
 	if Version == "" || Commit == "" || BuildDate == "" {
 		t.Errorf("placeholder vars empty: version=%q commit=%q date=%q",

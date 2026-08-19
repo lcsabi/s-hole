@@ -5,7 +5,7 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/lcsabi/s-hole)](go.mod)
 [![License](https://img.shields.io/github/license/lcsabi/s-hole)](LICENSE)
 
-A lightweight, self-contained DNS sinkhole for network-wide ad and tracker blocking. Deploy it on any always-on machine, point your router's DHCP DNS field at it, and every device on the network is protected — no per-device configuration required.
+A lightweight, self-contained DNS sinkhole for network-wide ad and tracker blocking. Deploy it on any always-on machine, point your router's DHCP DNS field at it, and every device on the network is protected, with no per-device configuration required.
 
 s-hole is intentionally small: a single binary, a single YAML config file, no runtime dependencies. The full codebase fits comfortably in an afternoon's reading.
 
@@ -14,6 +14,7 @@ s-hole is intentionally small: a single binary, a single YAML config file, no ru
 ### Contents
 
 - [Features](#features)
+- [Scope & limitations](#scope--limitations)
 - [Quick Start](#quick-start)
 - [Configuration](#configuration) (incl. [env-var overrides](#environment-variable-overrides))
 - [REST API](#rest-api)
@@ -31,18 +32,31 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
 
 ## Features
 
-- **Network-wide blocking** — blocks ads and trackers at the DNS layer before any connection is established
-- **Subdomain (suffix) blocking** — a blocked domain blocks its whole subtree, so `ads.example.com` also covers `x.ads.example.com`; trackers can't dodge a list entry by rotating subdomains
-- **Community blocklists** — downloads and auto-refreshes hosts-file or plain-domain lists from any URL
-- **DNS response cache** — serves repeat queries from memory; typical cache hit rates of 40–70% reduce upstream load and latency
-- **Dual query log** — plain-text file for `grep`/`tail` and a SQLite database for historical queries
-- **Admin web UI** — live stats, top blocked domains, recent query log, whitelist management; auto-refreshes every 3 seconds
-- **REST API** — all UI data available as JSON; suitable for scripting and future integrations
-- **Configurable sinkhole mode** — return `0.0.0.0` (default, silent failure) or `NXDOMAIN`
-- **Cross-platform** — single binary for Windows, Linux x86-64, Linux arm64 (Pi 4/5), Linux armv7 (Pi 2/3)
-- **Windows Service** — installs as an auto-start system service with one command
-- **Linux systemd** — ships a hardened unit file with `CAP_NET_BIND_SERVICE` (no root required at runtime)
-- **Docker** — multi-stage image, ~33 MB
+- **Network-wide blocking.** Blocks ads and trackers at the DNS layer, before any connection is established.
+- **Subdomain (suffix) blocking.** A blocked domain blocks its whole subtree, so `ads.example.com` also covers `x.ads.example.com`. Trackers cannot dodge a list entry by rotating subdomains.
+- **Community blocklists.** Downloads and auto-refreshes hosts-file or plain-domain lists from any URL.
+- **DNS response cache.** Serves repeat queries from memory. Typical cache hit rates of 40–70% reduce upstream load and latency.
+- **Dual query log.** A plain-text file for `grep` and `tail`, plus a SQLite database for historical queries.
+- **Admin web UI.** Live stats, top blocked domains, recent query log, and whitelist management. Auto-refreshes every 3 seconds.
+- **REST API.** All UI data is available as JSON, ready for scripting and future integrations.
+- **Configurable sinkhole mode.** Returns `0.0.0.0` (the default, a silent failure) or `NXDOMAIN`.
+- **Cross-platform.** A single binary for Windows, Linux x86-64, Linux arm64 (Pi 4/5), and Linux armv7 (Pi 2/3).
+- **Windows Service.** Installs as an auto-start system service with one command.
+- **Linux systemd.** Ships a hardened unit file with `CAP_NET_BIND_SERVICE`, so it needs no root at runtime.
+- **Docker.** A multi-stage image of about 33 MB.
+
+---
+
+## Scope & limitations
+
+- **DNS blocking is domain-granular.** It blocks third-party ad and tracker
+  networks and device telemetry well, but it cannot touch ads served from the
+  same domain as the content. Run a browser content blocker alongside it for
+  the first-party and element-level filtering it cannot do.
+- s-hole matches on the queried name and does not follow CNAME chains, so a
+  cloaked tracker disguised as a first-party subdomain can slip past a
+  blocklist entry. Following those chains (CNAME deep-inspection) is on the
+  roadmap.
 
 ---
 
@@ -81,7 +95,7 @@ In your router's DHCP settings, set the **DNS Server** field to the IP address o
 Keep a fallback upstream DNS as the secondary DNS entry (e.g. `1.1.1.1`) in case s-hole is unavailable.
 
 > **IPv6 networks:** on a dual-stack LAN, routers typically advertise a
-> DNS server over IPv6 as well (via RA/RDNSS or DHCPv6) — and many
+> DNS server over IPv6 as well (via RA/RDNSS or DHCPv6), and many
 > clients *prefer* it. If that advertisement still points at the router
 > or your ISP, dual-stack devices will quietly bypass s-hole for most
 > queries and the ads come back. Either disable the router's IPv6 DNS
@@ -109,14 +123,14 @@ dig @<s-hole-ip> google.com +short        # expected: a real IP address
 ```
 
 These commands address s-hole explicitly, so they work even before the
-router change above. Network-wide blocking — devices being filtered
-without naming the server — only begins once DHCP hands out s-hole's
+router change above. Network-wide blocking (devices being filtered
+without naming the server) only begins once DHCP hands out s-hole's
 address and clients renew their leases.
 
 If a query times out, check s-hole's log (stdout, or
 `journalctl -u s-hole -f` under systemd): every query that reaches the
 process produces one `ALLOW`/`BLOCK` line. A missing line means the
-query never arrived — look at the network path (firewall, wrong IP,
+query never arrived. Look at the network path (firewall, wrong IP,
 client tool) rather than at s-hole.
 
 ---
@@ -150,7 +164,7 @@ All configuration lives in `config.yaml`. Every field has a safe default; an emp
 
 ```yaml
 upstreams:
-  - "9.9.9.9:53"     # Quad9 — privacy-focused, malware-blocking
+  - "9.9.9.9:53"     # Quad9, privacy-focused and malware-blocking
 whitelist:
   - "api.example.com"
 log_queries: blocked
@@ -177,7 +191,7 @@ For container deployments where editing `config.yaml` requires a re-bind-mount, 
 | `S_HOLE_RETENTION_DAYS` | `query_db_retention_days` (integer) |
 | `S_HOLE_ENABLE_PPROF` | `enable_pprof` (`1`/`true`/`yes` enable) |
 | `S_HOLE_LOCAL_PTR` | `local_ptr` (`1`/`true`/`yes` keep on; `0`/`false`/`no` opt out) |
-| `S_HOLE_LOG_FORMAT` | `text` (default) or `json` — controls slog handler |
+| `S_HOLE_LOG_FORMAT` | Slog handler format: `text` (default) or `json` |
 | `S_HOLE_ASCII_BANNER` | set to `1` to use ASCII box-drawing on the startup banner |
 
 ### Recommended config for Raspberry Pi
@@ -192,7 +206,7 @@ log_queries: blocked        # skip logging allowed queries to save writes
 
 ## REST API
 
-The admin web UI is served at **`http://127.0.0.1:8080`** by default — localhost only, so a fresh install is not reachable from the LAN. Set `api_listen: "0.0.0.0:8080"` in `config.yaml` (or `S_HOLE_API_LISTEN=...`) to expose it. All data is also available as JSON.
+The admin web UI is served at **`http://127.0.0.1:8080`** by default. This is localhost only, so a fresh install is not reachable from the LAN. Set `api_listen: "0.0.0.0:8080"` in `config.yaml` (or `S_HOLE_API_LISTEN=...`) to expose it. All data is also available as JSON.
 
 | Method | Endpoint | Description |
 |---|---|---|
@@ -200,13 +214,13 @@ The admin web UI is served at **`http://127.0.0.1:8080`** by default — localho
 | `GET` | `/api/queries?limit=N` | Last N queries from SQLite, newest first (default: 50, max: 1000) |
 | `GET` | `/api/top-blocked?limit=N` | All-time most-blocked domains from SQLite (default: 50, max: 1000); empty when `query_db` is unset |
 | `GET` | `/api/whitelist` | List all runtime-whitelisted domains |
-| `POST` | `/api/whitelist` | Add a domain — body: `{"domain": "example.com"}` |
+| `POST` | `/api/whitelist` | Add a domain. Body: `{"domain": "example.com"}` |
 | `DELETE` | `/api/whitelist?domain=…` | Remove a domain from the runtime whitelist |
-| `POST` | `/api/reload` | Trigger an immediate blocklist refresh — de-duplicated via single-flight mutex (returns `"reload already in progress"` if one is running) |
-| `GET`  | `/healthz` | Liveness probe — always 200 OK while the HTTP server is responsive |
-| `GET`  | `/readyz` | Readiness probe — 200 OK once the blocklist has loaded at least one entry; 503 otherwise |
+| `POST` | `/api/reload` | Trigger an immediate blocklist refresh. De-duplicated via a single-flight mutex; returns `"reload already in progress"` if one is already running |
+| `GET`  | `/healthz` | Liveness probe. Always 200 OK while the HTTP server is responsive |
+| `GET`  | `/readyz` | Readiness probe. 200 OK once the blocklist has loaded at least one entry, 503 otherwise |
 | `GET`  | `/metrics` | Prometheus text exposition: `shole_queries_total`, `shole_blocked_total`, `shole_local_ptr_total`, `shole_cache_hits_total`, `shole_cache_misses_total`, `shole_cache_size`, `shole_blocklist_size`, `shole_whitelist_size`, `shole_query_log_dropped_total` |
-| `GET`  | `/debug/pprof/*` | Standard Go pprof endpoints — registered **only** when `enable_pprof: true` is set in config (or `S_HOLE_ENABLE_PPROF=1`). Pair with `api_listen: "127.0.0.1:8080"`. |
+| `GET`  | `/debug/pprof/*` | Standard Go pprof endpoints. Registered **only** when `enable_pprof: true` is set in config (or `S_HOLE_ENABLE_PPROF=1`). Pair with `api_listen: "127.0.0.1:8080"`. |
 
 Runtime whitelist changes take effect immediately but do not persist across restarts. To make a whitelist entry permanent, add it to `config.yaml`.
 
@@ -214,7 +228,7 @@ Runtime whitelist changes take effect immediately but do not persist across rest
 
 ## Deployment
 
-The Quick Start runs s-hole as a foreground process — it lives exactly
+The Quick Start runs s-hole as a foreground process. It lives exactly
 as long as your terminal session and dies with a reboot, a crash, or a
 logout. That's fine for evaluation, but once your router points the LAN
 at s-hole, every device's internet depends on it. Deployment registers
@@ -223,27 +237,27 @@ SCM, or Docker's restart policy) starts it at boot, restarts it if it
 crashes, and runs it detached from any user session.
 
 If you want the admin dashboard reachable from other devices, set
-`api_listen: "0.0.0.0:8080"` in `config.yaml` **before** installing —
-the default binds localhost only, and the UI is unauthenticated, so
+`api_listen: "0.0.0.0:8080"` in `config.yaml` **before** installing.
+The default binds localhost only, and the UI is unauthenticated, so
 LAN exposure is a deliberate opt-in.
 
 ### Raspberry Pi / Linux (systemd)
 
 ```bash
 # Cross-compile on your development machine:
-make pi          # arm64 — Pi 4, Pi 5
-make pi32        # armv7 — Pi 2, Pi 3
+make pi          # arm64 (Pi 4, Pi 5)
+make pi32        # armv7 (Pi 2, Pi 3)
 
 # Copy binary, config, and the install/uninstall scripts to the Pi:
 scp s-hole-linux-arm64 pi@raspberrypi.local:~/
 scp config.yaml pi@raspberrypi.local:~/
 scp deploy/install-linux.sh deploy/uninstall-linux.sh pi@raspberrypi.local:~/
 
-# On the Pi — run the installer as root:
+# On the Pi, run the installer as root:
 sudo bash install-linux.sh ./s-hole-linux-arm64 ./config.yaml
 ```
 
-The installer creates a `s-hole` system user, places the binary at `/usr/local/bin/s-hole`, installs config to `/etc/s-hole/config.yaml`, and enables the service to start on boot. It ends by printing the installed build's version and commit — confirm it matches the binary you meant to ship (a stale `scp` is otherwise silent).
+The installer creates a `s-hole` system user, places the binary at `/usr/local/bin/s-hole`, installs config to `/etc/s-hole/config.yaml`, and enables the service to start on boot. It ends by printing the installed build's version and commit. Confirm it matches the binary you meant to ship, since a stale `scp` is otherwise silent.
 
 After installation:
 
@@ -272,9 +286,9 @@ The systemd unit runs with `CAP_NET_BIND_SERVICE` so it can bind port 53 without
 
 A few things that trip people up once s-hole is running as a systemd service:
 
-- **Config is *copied*, not live-linked.** The installer copies your config to `/etc/s-hole/config.yaml` on the **first** install only — it never overwrites an existing one (it prints `config already exists — skipping`), and re-running the installer or `scp`-ing a new file to your home directory does **not** update it. To apply a config change on an installed host, edit `/etc/s-hole/config.yaml` directly (or `sudo cp your-config.yaml /etc/s-hole/config.yaml`), then `sudo systemctl restart s-hole`.
+- **Config is *copied*, not live-linked.** The installer copies your config to `/etc/s-hole/config.yaml` on the **first** install only. It never overwrites an existing one (it prints `config already exists, skipping`), and re-running the installer or `scp`-ing a new file to your home directory does **not** update it. To apply a config change on an installed host, edit `/etc/s-hole/config.yaml` directly (or `sudo cp your-config.yaml /etc/s-hole/config.yaml`), then `sudo systemctl restart s-hole`.
 - **`S_HOLE_*` environment overrides do not reach the service.** The systemd unit runs with a clean environment, so shell env vars only take effect when you run the binary directly. On the service, put values in `/etc/s-hole/config.yaml` (or add `Environment=` lines to the unit).
-- **`query_db` and `cache_dir` are relative to `/var/lib/s-hole`.** Relative paths resolve against the service's working directory. Because the unit sets `ProtectSystem=strict` with `ReadWritePaths=/var/lib/s-hole`, the rest of the filesystem is read-only to the service — keep both paths under `/var/lib/s-hole` (the defaults `queries.db` and `.` already do). Pointing them at `/tmp` or a home directory will silently fail to write.
+- **`query_db` and `cache_dir` are relative to `/var/lib/s-hole`.** Relative paths resolve against the service's working directory. Because the unit sets `ProtectSystem=strict` with `ReadWritePaths=/var/lib/s-hole`, the rest of the filesystem is read-only to the service. Keep both paths under `/var/lib/s-hole` (the defaults `queries.db` and `.` already do). Pointing them at `/tmp` or a home directory will silently fail to write.
 - **The query log flushes on an interval.** Newly logged queries appear in `/api/queries` and the dashboard's "All time" panel only after the next SQLite flush (`db_flush_interval`, default `30s`), not instantly. Lower it for a more responsive view.
 
 To remove s-hole, run the bundled uninstaller as root (from the `deploy/`
@@ -290,8 +304,8 @@ It stops and disables the service, removes the unit, binary, config
 (`/etc/s-hole`), and the `s-hole` system user and group, then prints a summary
 of what it removed and kept. Your query history and blocklist caches in
 `/var/lib/s-hole` are preserved unless you pass `--purge`. `--restore-resolved`
-applies only if you had freed port 53 by disabling the `systemd-resolved` stub —
-it removes that drop-in and restarts the resolver. The flags combine
+applies only if you had freed port 53 by disabling the `systemd-resolved` stub.
+It removes that drop-in and restarts the resolver. The flags combine
 (`--purge --restore-resolved` is a full teardown); add `-y` to skip the
 confirmation prompt.
 
@@ -305,22 +319,22 @@ cp config.yaml data/
 ```
 
 The container uses `/app` as its working directory and reads config from
-`/app/config.yaml`. Mounting `./data` there keeps all persistent files — the
-SQLite database, blocklist cache, and config — on the host so they survive
+`/app/config.yaml`. Mounting `./data` there keeps all persistent files (the
+SQLite database, blocklist cache, and config) on the host so they survive
 container restarts and image upgrades.
 
 For the admin dashboard to be reachable through Docker, set
 `api_listen: "0.0.0.0:8080"` in `data/config.yaml`. The default binds
-`127.0.0.1`, which inside a container answers only the container's own loopback
-— not the published port — so the dashboard would refuse connections. Container
+`127.0.0.1`, which inside a container answers only the container's own loopback,
+not the published port, so the dashboard would refuse connections. Container
 `0.0.0.0` does **not** mean "exposed to the world": which host interface actually
 reaches it is decided by the `-p …:8080` mapping in step 4, and the UI is
 unauthenticated, so it is not exposed until you publish it.
 
 **2. Find the host's LAN IP.**
 
-The machine running s-hole needs a stable LAN address — a static IP or a DHCP
-reservation — because it's what your router hands out to every client as the DNS
+The machine running s-hole needs a stable LAN address, a static IP or a DHCP
+reservation, because it's what your router hands out to every client as the DNS
 server, and what the container binds below. Find it:
 
 ```bash
@@ -330,11 +344,11 @@ ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1   # e.g. 192.16
 **Why bind to this address rather than publish on all interfaces?** Most Linux
 hosts run `systemd-resolved`, which already holds `127.0.0.53:53`. A bare
 `-p 53:53` publishes on `0.0.0.0` (every interface, loopback included) and
-collides with it — `docker run` fails with *"address already in use."* Binding
+collides with it, and `docker run` fails with *"address already in use."* Binding
 to the LAN IP sidesteps the conflict (`systemd-resolved` only ever binds
 loopback, never the LAN interface) and keeps the unauthenticated dashboard off
 every other interface. (Docker Desktop for Mac/Windows has no such listener, so
-a bare `-p 53:53` works there too — but the LAN-IP form below is correct
+a bare `-p 53:53` works there too, but the LAN-IP form below is correct
 everywhere.)
 
 **3. Build the image:**
@@ -343,7 +357,7 @@ everywhere.)
 docker build -t s-hole .
 ```
 
-**4. Run** — substitute the address from step 2:
+**4. Run** (substitute the address from step 2):
 
 ```bash
 HOST_IP=192.168.1.10          # the LAN IP from step 2
@@ -363,7 +377,7 @@ dashboard at `http://${HOST_IP}:8080`. For a host-only dashboard, publish it as
 
 > **The startup banner shows the container's IP, not the host's.** s-hole prints
 > a "Router setup" box with a DNS-server and Admin-UI address, but from inside
-> the container it can only see its own bridge address (e.g. `172.17.0.2`) — it
+> the container it can only see its own bridge address (e.g. `172.17.0.2`). It
 > has no way to know the host IP or the port you published. **Under Docker,
 > ignore those lines** and use `${HOST_IP}` (the address you bound above) for
 > both the router setting and the dashboard URL.
@@ -402,7 +416,7 @@ docker run -d `
 This publishes the unauthenticated dashboard on every interface. To keep it
 host-only use `-p 127.0.0.1:8080:8080`, or pin it to one address by prefixing
 the port with that IP as in the Linux command. Point your router at the Windows
-machine's LAN IP — not the container address the startup banner prints.
+machine's LAN IP, not the container address the startup banner prints.
 
 > **Want s-hole on every interface (`0.0.0.0:53`) instead of one LAN IP?** Then
 > the `systemd-resolved` stub has to give up port 53. Turn off *just* the stub,
@@ -414,7 +428,7 @@ machine's LAN IP — not the container address the startup banner prints.
 > ```
 > `systemd-resolved` still resolves for local programs that use NSS, but on
 > distros where `/etc/resolv.conf` points at `127.0.0.53`, releasing the stub
-> leaves anything that reads `resolv.conf` directly without a resolver — repoint
+> leaves anything that reads `resolv.conf` directly without a resolver. Repoint
 > `/etc/resolv.conf` at s-hole (or an upstream) afterwards. Only then can you use
 > the bare `-p 53:53` / `-p 8080:8080` form.
 
@@ -453,7 +467,7 @@ make linux       # Linux amd64
 make clean
 ```
 
-All targets produce a statically linked binary with debug info stripped (`-ldflags="-s -w"`). No CGO is required — `modernc.org/sqlite` is a pure Go SQLite port.
+All targets produce a statically linked binary with debug info stripped (`-ldflags="-s -w"`). No CGO is required, because `modernc.org/sqlite` is a pure Go SQLite port.
 
 On Windows without `make`, use PowerShell:
 
@@ -467,23 +481,23 @@ $env:GOOS=""; $env:GOARCH=""
 
 ## Engineering highlights
 
-*The parts worth reading the code for — and the process behind them.*
+*The parts worth reading the code for, and the process behind them.*
 
 **In the code:**
 
 - **A lock-free stats hot path with a proven concurrency invariant.** Per-query counters update without locks; `Snapshot` must read every counter a query touches *after* `total` *before* it reads `total`, or a dashboard ratio can momentarily exceed 100%. I hit that exact race on three different counters, then encoded a standing load-order invariant plus a race-tested regression per counter so a fourth can't slip in. ([`internal/stats`](internal/stats))
 - **Suffix-match subdomain blocking** that walks a name's parent labels in `O(labels)` with zero per-query allocation, closing the subdomain-rotation hole that exact-match blockers leave open. ([`blocklist.Store.IsBlocked`](internal/blocklist/store.go))
-- **Resilient upstream forwarding** — UDP with automatic TCP fallback on truncation, plus a health tracker that skips recently-failed resolvers and retries them only if every other upstream also failed.
-- **RFC 6303 local PTR answering** — private-range reverse queries are answered locally instead of leaking internal LAN addressing to the upstream resolver.
+- **Resilient upstream forwarding.** UDP with automatic TCP fallback on truncation, plus a health tracker that skips recently-failed resolvers and retries them only if every other upstream also failed.
+- **RFC 6303 local PTR answering.** Private-range reverse queries are answered locally instead of leaking internal LAN addressing to the upstream resolver.
 - **Deliberate non-decisions.** Case-insensitive caching was rejected because it would break dns-0x20 downstream resolvers; admin authentication was rejected in favour of a documented localhost-only scope. Knowing what *not* to build is recorded in [`docs/ROADMAP.md`](docs/ROADMAP.md).
-- **A tiny dependency graph and pure-Go SQLite** — no CGO, so cross-compiling for four targets stays a one-liner and the binary is fully static.
+- **A tiny dependency graph and pure-Go SQLite.** No CGO, so cross-compiling for four targets stays a one-liner and the binary is fully static.
 
-**In the process** — built with the discipline of a long-lived, multi-maintainer codebase rather than a one-shot script:
+**In the process,** built with the discipline of a long-lived, multi-maintainer codebase rather than a one-shot script:
 
 - **A living design doc** ([`docs/DESIGN.md`](docs/DESIGN.md)) captures the rationale and the rejected alternatives behind each decision.
 - **Every change is a small, self-contained change-list** with motivation, files touched, and testing notes ([`docs/cls/`](docs/cls)).
-- **A bug tracker with priorities and structured root-cause/fix records** ([`docs/BUGS.md`](docs/BUGS.md)) — including entries deliberately marked *Won't Fix — by design*.
-- **Documentation drift is treated as a bug** — code and docs are updated in the same change.
+- **A bug tracker with priorities and structured root-cause/fix records** ([`docs/BUGS.md`](docs/BUGS.md)), including entries deliberately marked *Won't Fix (by design)*.
+- **Documentation drift is treated as a bug.** Code and docs are updated in the same change.
 - **CI gate on every push**: `gofmt`, `go vet`, `golangci-lint`, race-enabled tests, `govulncheck`, and a four-target cross-compile. The `internal/` packages hold 85–100% line coverage (see the [table under Development](#development)).
 
 ---
@@ -567,16 +581,16 @@ All implementation packages live under `internal/` so they cannot be imported by
 
 ### Dependencies
 
-The "afternoon's reading" claim extends to the dependency graph: four direct modules linked into the binary, chosen where hand-rolling would be a source of subtle bugs and skipped everywhere else. (A fifth direct module, `go.uber.org/goleak`, is test-only — it runs the suite under a goroutine-leak check and is never compiled into the shipped binary.)
+The "afternoon's reading" claim extends to the dependency graph: four direct modules linked into the binary, chosen where hand-rolling would be a source of subtle bugs and skipped everywhere else. (A fifth direct module, `go.uber.org/goleak`, is test-only. It runs the suite under a goroutine-leak check and is never compiled into the shipped binary.)
 
 | Module | Why it's a dependency |
 |---|---|
-| `github.com/miekg/dns` | Complete RFC-compliant DNS codec, server, and client — rolling our own would be a correctness minefield |
+| `github.com/miekg/dns` | Complete RFC-compliant DNS codec, server, and client; rolling our own would be a correctness minefield |
 | `modernc.org/sqlite` | Pure-Go SQLite for the query log; no CGO, so cross-compilation stays a one-liner |
 | `gopkg.in/yaml.v3` | Parses `config.yaml` |
 | `golang.org/x/sys` | Windows Service Control Manager integration |
 
-The indirect modules in `go.mod` are almost all pulled in by the pure-Go SQLite port; none are used directly. Everything else is deliberately hand-rolled or omitted — the Prometheus exposition is written by hand rather than importing `client_golang`, the web UI is framework-free embedded HTML/CSS/JS, and the systemd integration is a static unit file rather than a service library. The reasoning behind each choice (and the alternatives rejected) is in `docs/DESIGN.md`. New dependencies need discussion first — see `CONTRIBUTING.md`.
+The indirect modules in `go.mod` are almost all pulled in by the pure-Go SQLite port; none are used directly. Everything else is deliberately hand-rolled or omitted. The Prometheus exposition is written by hand rather than importing `client_golang`, the web UI is framework-free embedded HTML/CSS/JS, and the systemd integration is a static unit file rather than a service library. The reasoning behind each choice (and the alternatives rejected) is in `docs/DESIGN.md`. New dependencies need discussion first; see `CONTRIBUTING.md`.
 
 ---
 
@@ -590,7 +604,7 @@ make test        # plain test run
 make test-race   # tests under the race detector (CGO toolchain required)
 make bench       # one iteration of each benchmark
 make lint        # golangci-lint
-make vuln        # govulncheck — scan deps + code for known CVEs
+make vuln        # govulncheck: scan deps + code for known CVEs
 make fmt         # gofmt -s -w
 make install     # go install into $GOBIN
 make version     # print the version that the next build would embed
@@ -611,7 +625,7 @@ Coverage by package (after `go test -cover ./...`):
 | `cmd/s-hole` | 31.7 % |
 | **module-wide** | **77.8 %** |
 
-The uncovered region is the `main()` bootstrap and the Windows-only SCM glue — both exercised by manual smoke tests, not unit tests.
+The uncovered region is the `main()` bootstrap and the Windows-only SCM glue, both exercised by manual smoke tests, not unit tests.
 
 The binary reports its build identity at any time:
 
@@ -624,11 +638,11 @@ s-hole v1.0.0
   os/arch: linux/amd64
 ```
 
-CI runs lint + `go mod verify` + race-enabled tests + `govulncheck` + cross-compile for `linux/{amd64,arm64,armv7}` and `windows/amd64` on every push and PR — see `.github/workflows/ci.yml`. The race-enabled run also exercises `go.uber.org/goleak`, which fails the goroutine-heavy packages (cache, querylog, dnsserver) if any goroutine outlives its tests. Dependabot keeps Go modules, GitHub Actions, and the Docker base image up to date.
+CI runs lint + `go mod verify` + race-enabled tests + `govulncheck` + cross-compile for `linux/{amd64,arm64,armv7}` and `windows/amd64` on every push and PR; see `.github/workflows/ci.yml`. The race-enabled run also exercises `go.uber.org/goleak`, which fails the goroutine-heavy packages (cache, querylog, dnsserver) if any goroutine outlives its tests. Dependabot keeps Go modules, GitHub Actions, and the Docker base image up to date.
 
 Fuzz tests live alongside the unit tests for `blocklist.ValidDomain`, `blocklist.parseHostsFormat`, and `blocklist.cacheFilename`. Run them ad-hoc with `go test -fuzz=FuzzValidDomain -fuzztime=30s ./internal/blocklist/`.
 
-A full end-to-end integration test (`internal/dnsserver/integration_test.go`) wires the store + cache + querylog + handler + DNS server + a mock UDP upstream together and exercises three real DNS queries through it — catching wiring bugs that unit tests miss.
+A full end-to-end integration test (`internal/dnsserver/integration_test.go`) wires the store + cache + querylog + handler + DNS server + a mock UDP upstream together and exercises three real DNS queries through it, catching wiring bugs that unit tests miss.
 
 ---
 
@@ -643,4 +657,4 @@ A full end-to-end integration test (`internal/dnsserver/integration_test.go`) wi
 
 ## License
 
-[MIT](LICENSE) — see the `LICENSE` file for the full text.
+[MIT](LICENSE). See the `LICENSE` file for the full text.

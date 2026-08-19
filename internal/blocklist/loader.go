@@ -25,7 +25,7 @@ const maxBodyBytes = 256 << 20 // 256 MB
 // Update downloads (or loads from cache) all lists and replaces the store.
 // If every configured URL fails (network outage, all servers down), the
 // existing block set is preserved rather than being replaced with an empty
-// slice — otherwise a transient outage would silently unblock every ad until
+// slice; otherwise a transient outage would silently unblock every ad until
 // the next successful refresh.
 func Update(store *Store, urls []string, cacheDir string) error {
 	var all []string
@@ -56,14 +56,14 @@ func Update(store *Store, urls []string, cacheDir string) error {
 
 // warnIfEmpty raises a loud alarm when the block set is empty after an
 // update. An empty store means s-hole is answering queries but blocking
-// nothing — typically a first run that could reach no blocklist URL (and had
+// nothing, typically a first run that could reach no blocklist URL (and had
 // no disk cache to fall back on), or a source that returned 200 but parsed to
 // zero valid domains. /readyz reports this as 503, but that signal is easy to
 // miss on a headless box, so the state is surfaced here at WARN as well.
 func warnIfEmpty(store *Store) {
 	if store.Len() == 0 {
-		logger.Warn("block set is EMPTY: s-hole is running but blocking no domains — " +
-			"check the blocklist URLs and network connectivity")
+		logger.Warn("block set is EMPTY: s-hole is running but blocking no domains. " +
+			"Check the blocklist URLs and network connectivity")
 	}
 }
 
@@ -139,7 +139,7 @@ func loadFromFile(path string) ([]string, error) {
 // parseHostsFormat handles both hosts-file format ("0.0.0.0 domain.com")
 // and plain domain-per-line format. Tokens that fail ValidDomain are
 // silently dropped to keep one malformed list line from polluting the
-// store — see R14.
+// store; see R14.
 func parseHostsFormat(r io.Reader) ([]string, error) {
 	var domains []string
 	scanner := bufio.NewScanner(r)

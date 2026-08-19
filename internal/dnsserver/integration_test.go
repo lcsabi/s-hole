@@ -13,18 +13,18 @@ import (
 	"github.com/miekg/dns"
 )
 
-// TestIntegration_FullPipeline wires the whole production stack — store +
-// cache + querylog (real SQLite) + handler + DNS server + mock upstream
-// — and runs three real DNS queries against it:
+// TestIntegration_FullPipeline wires the whole production stack: store +
+// cache + querylog (real SQLite) + handler + DNS server + mock upstream,
+// and runs three real DNS queries against it:
 //
 //  1. a blocked domain (expects 0.0.0.0)
 //  2. an allowed domain (expects the upstream's answer, cached)
 //  3. the same allowed domain again (expects cache hit)
 //
 // Then it asserts the SQLite log captured all three queries with the
-// right blocked flags. This catches wiring bugs unit tests miss — a
+// right blocked flags. This catches wiring bugs unit tests miss: a
 // constructor arg in the wrong order, a nil store, an unused upstream
-// list, an incorrect logger fan-out — without standing up the full
+// list, or an incorrect logger fan-out, without standing up the full
 // `cmd/s-hole` binary.
 func TestIntegration_FullPipeline(t *testing.T) {
 	// --- Mock upstream that answers any A query with 9.9.9.9 ---
@@ -67,7 +67,7 @@ func TestIntegration_FullPipeline(t *testing.T) {
 		<-startErr
 	})
 
-	// waitForUDP sent one probe query through the handler — it hits the
+	// waitForUDP sent one probe query through the handler; it hits the
 	// upstream and gets counted. Reset the counters here so the
 	// per-query assertions below speak about the queries the test
 	// actually issues, not the probe.
@@ -134,7 +134,7 @@ func TestIntegration_FullPipeline(t *testing.T) {
 	// Poll rather than sleep a hardcoded interval: the writer goroutine
 	// flushes every 30 ms in this test, but a CI runner under contention
 	// can stretch that to hundreds of milliseconds. We try for up to 2 s
-	// before giving up — healthy runners finish in well under 50 ms.
+	// before giving up; healthy runners finish in well under 50 ms.
 	var rows []querylog.QueryRow
 	const wantRows = 4 // 1 probe + 3 test queries
 	deadline := time.Now().Add(2 * time.Second)

@@ -56,5 +56,5 @@ every change as a separate, numbered, reviewable unit.
 | [CL 40](cls/CL-40.md) | Add deploy/uninstall-linux.sh companion to the installer (roadmap #12) |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
-here. The per-CL file should start with a top-level `# CL N — title`
+here. The per-CL file should start with a top-level `# CL N: title`
 heading so the rendered page has a sensible title.

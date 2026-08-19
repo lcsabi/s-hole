@@ -85,7 +85,7 @@ func TestStore_SubdomainBlocking(t *testing.T) {
 // TestStore_WhitelistSuffixSemantics pins the "whitelist wins at every level"
 // rule (ROADMAP #3): whitelisting a domain exempts it and its whole subtree,
 // even when a more specific parent is on the block set, and the exemption is
-// surgical — sibling subtrees stay blocked.
+// surgical: sibling subtrees stay blocked.
 func TestStore_WhitelistSuffixSemantics(t *testing.T) {
 	s := NewStore()
 	s.Replace([]string{"doubleclick.net", "ads.example.com"})

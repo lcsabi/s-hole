@@ -159,7 +159,7 @@ func TestFetchList_Non200FallsBackToStaleCache(t *testing.T) {
 
 func TestUpdate_PreservesStoreOnFullFailure(t *testing.T) {
 	// Regression for b/024: if every URL fails AND there is no usable
-	// cache, Update must not call store.Replace(nil) — it must preserve
+	// cache, Update must not call store.Replace(nil); it must preserve
 	// the existing block set.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "down", http.StatusServiceUnavailable)
@@ -186,7 +186,7 @@ func TestUpdate_EmptyBlockSetWarns(t *testing.T) {
 	// A reachable source that returns 200 but only comments parses to zero
 	// domains. Update must NOT report an error (the source responded), but it
 	// must raise the empty-block-set alarm so an operator notices s-hole is
-	// running with nothing to block — otherwise the "blocklist updated
+	// running with nothing to block; otherwise the "blocklist updated
 	// total=0" Info line would look like a normal refresh.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte("# only comments, no domains\n\n"))
@@ -277,7 +277,7 @@ func TestValidDomain(t *testing.T) {
 		{"a-b.example.com", true},
 		{"_dmarc.example.com", true},
 		{"", false},
-		{"example", false}, // no dot — bare TLD
+		{"example", false}, // no dot, bare TLD
 		{"has space.com", false},
 		{"slash/path.com", false},
 		{"control\x00char.com", false},

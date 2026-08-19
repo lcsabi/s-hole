@@ -17,7 +17,7 @@ ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
 
-# CGO_ENABLED=0: modernc.org/sqlite is pure Go — no C toolchain needed.
+# CGO_ENABLED=0: modernc.org/sqlite is pure Go, so no C toolchain is needed.
 # -ldflags="-s -w": strip debug info to reduce binary size (~40%).
 # Version metadata is injected via -X so the binary can report its identity
 # at runtime (use `s-hole -version`).
@@ -33,7 +33,7 @@ FROM alpine:3.24
 
 # ca-certificates: required for HTTPS blocklist downloads.
 # Container logs default to UTC (matches log/slog), so tzdata is not
-# pulled in — saves ~30 MB of image size. Operators who want local-time
+# pulled in, which saves ~30 MB of image size. Operators who want local-time
 # timestamps in their logs can install tzdata themselves in a downstream
 # layer.
 RUN apk add --no-cache ca-certificates

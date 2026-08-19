@@ -27,7 +27,7 @@ func TestNewServer_FieldsSet(t *testing.T) {
 // TestServer_ShutdownBeforeStartIsSafe pins the never-started path:
 // Shutdown must not panic when the listeners were never bound. miekg/dns
 // returns "server not started" errors there, which Shutdown logs and
-// swallows (CL 24) — this also covers those error-logging branches.
+// swallows (CL 24); this also covers those error-logging branches.
 func TestServer_ShutdownBeforeStartIsSafe(t *testing.T) {
 	h := dns.HandlerFunc(func(w dns.ResponseWriter, _ *dns.Msg) {})
 	s := NewServer("127.0.0.1:5301", h)
@@ -70,7 +70,7 @@ func TestServer_StartShutdownLifecycle(t *testing.T) {
 	go func() { startErr <- srv.Start() }()
 
 	// Give the listeners a beat to come up. On failure, surface what
-	// Start returned — a bind error looks identical to a probe timeout
+	// Start returned; a bind error looks identical to a probe timeout
 	// otherwise (this masked b/029).
 	if err := waitForUDP(addr, 2*time.Second); err != nil {
 		srv.Shutdown()
@@ -100,7 +100,7 @@ func TestServer_StartShutdownLifecycle(t *testing.T) {
 	select {
 	case err := <-startErr:
 		// Start may return nil (clean shutdown) or a "use of closed network
-		// connection"-style error depending on platform — both indicate the
+		// connection"-style error depending on platform; both indicate the
 		// listener actually stopped.
 		_ = err
 	case <-time.After(3 * time.Second):
@@ -116,7 +116,7 @@ func TestServer_StartShutdownLifecycle(t *testing.T) {
 // (b/029): Windows reserves large contiguous port ranges per protocol
 // (Hyper-V/WSL dynamic exclusions; `netsh int ipv4 show
 // excludedportrange`), and the sequential ephemeral allocator of one
-// protocol routinely parks inside a block excluded for the other — a
+// protocol routinely parks inside a block excluded for the other; a
 // port that `:0` hands out for TCP can be UDP-forbidden and vice
 // versa, and sequential retries stay stuck in the same block. Random
 // probes in a range below the dynamic-reservation area (49152+) escape

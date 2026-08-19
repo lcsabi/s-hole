@@ -10,8 +10,8 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
 
 ### Added
 - **A Linux uninstaller, `deploy/uninstall-linux.sh`.** Reverses
-  `install-linux.sh` — stops and disables the service, removes the unit,
-  binary, config, and the `s-hole` system user/group — and prints a summary of
+  `install-linux.sh`. It stops and disables the service, removes the unit,
+  binary, config, and the `s-hole` system user/group, and prints a summary of
   what it removed and kept. Operator data in `/var/lib/s-hole` (query log +
   blocklist caches) is preserved unless you pass `--purge`; `--restore-resolved`
   removes a `DNSStubListener=no` drop-in and restarts `systemd-resolved`; `-y`
@@ -24,7 +24,7 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   (default 50, max 1000), which returns an empty list when `query_db` is not
   configured. (CL 33)
 - s-hole now logs a loud `WARN` whenever a blocklist update leaves the block
-  set empty — a fresh run that could reach no source, or a source that
+  set empty: a fresh run that could reach no source, or a source that
   responded but parsed to zero domains. Previously an empty result after a
   reachable source looked like a normal refresh in the logs, so "running but
   blocking nothing" could go unnoticed. (CL 29)
@@ -45,20 +45,20 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   appears as `local_ptr_count` in `/api/stats` and `shole_local_ptr_total` in
   `/metrics`. The `S_HOLE_LOCAL_PTR` environment variable overrides the config.
 - The dashboard shows a fourth stat card, **Cache Hit Rate**, bound to
-  the `cache_hit_pct` value the UI already polls from `/api/stats` —
+  the `cache_hit_pct` value the UI already polls from `/api/stats`,
   the number that tells you whether `cache_size` fits your network.
 - `CLAUDE.md` at the repo root gives AI coding assistants the
   canonical commands, hot-path architecture, concurrency invariants,
   and process conventions up front.
 - `docs/ROADMAP.md` collects planned work (release workflow, subdomain
-  blocking, DoH upstreams, hardening batch), pending decisions, and —
-  equally deliberately — the non-goals, so future reviews don't
+  blocking, DoH upstreams, hardening batch), pending decisions, and,
+  equally deliberately, the non-goals, so future reviews don't
   re-propose them.
 - `CONTRIBUTING.md` documents a seven-step manual smoke-test workflow
   (probes → DNS behaviour → dashboard → whitelist round-trip → reload
   → stats/metrics cross-check → persistence + shutdown) for release
   verification.
-- `runTicker` now honors a context for clean shutdown — background
+- `runTicker` now honors a context for clean shutdown: background
   tickers (stats print, blocklist refresh) exit when `doStop` cancels
   the application-wide context instead of being implicitly reclaimed
   by `os.Exit`. New `TestRunTicker_StopsOnContextCancel` regression.
@@ -78,9 +78,9 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
 - `/debug/pprof/*` endpoints behind `enable_pprof: true` (or
   `S_HOLE_ENABLE_PPROF=1`). Off by default. Required for live CPU/heap
   profiling during incident response.
-- `shole_query_log_dropped_total` metric and `DBLogger.Dropped()` —
+- `shole_query_log_dropped_total` metric and `DBLogger.Dropped()`;
   operators now see when the query log channel overflows under load.
-- `Store.WhitelistLen()` — O(1) counterpart to `Len()` for the
+- `Store.WhitelistLen()`, an O(1) counterpart to `Len()` for the
   `/metrics` scrape path.
 - Full-stack integration test wiring store + cache + querylog + handler
   + DNS server + mock upstream through three real queries.
@@ -119,7 +119,7 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
 - `/healthz` liveness endpoint (R4).
 - `/metrics` Prometheus exposition with counters for queries, blocks,
   cache hits/misses, cache size, blocklist size, whitelist size (R3).
-  Hand-rolled exposition format — no new dependencies.
+  Hand-rolled exposition format, no new dependencies.
 - Environment-variable overrides for every commonly-tuned config field
   via `S_HOLE_*` (R5). See README for the full list.
 - Upstream health tracking with a 30-second cooldown for failing
@@ -134,7 +134,7 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   do not fall back to legacy DNS (R12).
 - Per-domain validator (`blocklist.ValidDomain`) used both by the
   loader and by the whitelist POST endpoint (R13, R14).
-- Atomic blocklist cache writes via `.tmp` + rename — torn writes
+- Atomic blocklist cache writes via `.tmp` + rename: torn writes
   during a network drop or process kill no longer leave a half-written
   cache file (R9).
 - Top-N maps in `stats.Counter` are capped at 4096 entries; the bottom
@@ -156,15 +156,15 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   entry by rotating subdomains. Lookups walk a domain's parent labels
   (`a.b.example.com → b.example.com → example.com`) instead of requiring an
   exact match. The whitelist is matched the same way and still wins at every
-  level, so it remains the escape hatch for an over-broad block entry —
+  level, so it remains the escape hatch for an over-broad block entry:
   whitelist `safe.doubleclick.net` (or a parent domain) to let a subtree
   through while the rest of the blocked domain stays sinkholed. There is no
   new configuration; the behaviour is unconditional. (CL 30)
 - **Invalid `whitelist` entries are now dropped with a `WARN`.** Because
   whitelist matching is suffix-based (CL 30), a bare label such as a TLD
   would silently exempt its whole subtree. At startup, `config.Load` now
-  drops any `whitelist` entry that is not a valid domain name — the same
-  `ValidDomain` check the REST `/api/whitelist` endpoint applies — and logs
+  drops any `whitelist` entry that is not a valid domain name (the same
+  `ValidDomain` check the REST `/api/whitelist` endpoint applies) and logs
   each dropped entry at `WARN`. A typo is surfaced loudly instead of quietly
   disabling blocking for an entire suffix, and it does not abort startup: a
   dropped entry fails safe (the domain stays blockable) and one bad line
@@ -172,7 +172,7 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
 - **The Linux installer now prints the installed build.** `deploy/install-linux.sh`
   ends with an "Installed build" box showing the version, commit, and build date
   of the binary it just placed (`s-hole -version`). A stale `scp` was previously
-  silent — the operator had no signal that the running service predated the fix
+  silent: the operator had no signal that the running service predated the fix
   they meant to ship. (CL 35)
 - Dependency refresh via Dependabot: `alpine` 3.24 base image,
   `golang.org/x/sys` v0.47.0, and CI action majors (checkout v7,
@@ -189,7 +189,7 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
 - DESIGN's "Alternatives Considered" no longer claims Windows is the
   first-class platform. Linux is the primary deployment target; the
   Windows SCM path is the secondary supported platform.
-- Default `api_listen` is now `127.0.0.1:8080` — operators who want
+- Default `api_listen` is now `127.0.0.1:8080`; operators who want
   LAN access must opt in explicitly (R18). Pre-existing configs that
   set `api_listen: "0.0.0.0:8080"` are unaffected.
 - Implementation package `internal/dns` renamed to `internal/dnsserver`
@@ -207,27 +207,27 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
 - **The Docker container starts again when a data volume is mounted.** The
   binary lived at `/app/s-hole`, but `/app` is the declared volume and the
   documented `-v "$(pwd)/data:/app"` bind mount shadowed it, so the container
-  died at start with `exec: "./s-hole": ... no such file or directory` — i.e.
+  died at start with `exec: "./s-hole": ... no such file or directory`, i.e.
   the recommended deployment was broken. The binary now lives on `PATH`
   (`/usr/local/bin/s-hole`), outside the `/app` data volume; every documented
   `docker run` command is unchanged. (CL 39)
 - **The query-log retention prune no longer intermittently skips under
   concurrent writes.** The SQLite connection pool is now pinned to a single
   connection (with a `busy_timeout` as a backstop), so the async writer and the
-  hourly prune can't collide with `SQLITE_BUSY` — which previously made the
+  hourly prune can't collide with `SQLITE_BUSY`, which previously made the
   prune silently skip a tick and, under the race detector, flaked a CI test. No
   operator-facing behaviour change beyond retention now pruning reliably. (CL 38)
 - **`/api/stats` can no longer momentarily report a cache hit rate above 100 %.**
   `Snapshot` read the cache-hit counter after the total-queries counter, so a
   concurrent cache hit slipping between the two reads could push the ratio over
   100 % on the dashboard's Cache Hit Rate card. It now reads the later-incremented
-  counter first — the same fix already applied to blocked-vs-total (b/021) and
+  counter first, the same fix already applied to blocked-vs-total (b/021) and
   local-PTR-vs-total (b/033). (CL 37)
 - **The Linux installer now restarts the service instead of starting it**, so
   re-running `install-linux.sh` to upgrade actually swaps the running binary.
   `systemctl start` is a no-op on an already-active unit, so an upgrade would
   otherwise keep running the old build while the new "Installed build" banner
-  advertised the new one — the exact stale-deploy the banner exists to catch. (CL 36)
+  advertised the new one, the exact stale-deploy the banner exists to catch. (CL 36)
 - **Mixed-case private-range PTR queries are now answered locally.** The RFC 6303
   intercept matched names case-sensitively, so a query such as
   `1.1.168.192.IN-ADDR.ARPA.` (as produced by dns-0x20 forwarders) slipped past
@@ -251,13 +251,13 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   still recorded and served over the API as the exact wire-format name; the
   change is presentation-only, so it also cleans up rows already stored in the
   query log. (CL 34)
-- The shipped sample `config.yaml` is back to conservative defaults —
+- The shipped sample `config.yaml` is back to conservative defaults:
   `query_db: "queries.db"` (SQLite logging on) and `api_listen:
   "127.0.0.1:8080"` (localhost only). A first-hardware deployment's
   `""` / `0.0.0.0:8080` working values had been committed by accident,
   which would have exposed the unauthenticated admin UI to the LAN out
   of the box.
-- The CI lint job passes again — two stacked problems: the
+- The CI lint job passes again after two stacked problems: the
   `golangci-lint-action@v6` pin installs golangci-lint v1, which
   cannot even load a `version: "2"` config targeting Go 1.25 (bumped
   to `@v8`, which installs v2); and once v2 actually runs, it lacks
@@ -268,7 +268,7 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   golangci-lint v2.
 - `deploy/install-linux.sh` no longer advertises `http://<lan-ip>:8080`
   for the admin UI when `api_listen` is left at the localhost-only
-  default — the shell-script counterpart of the T4 banner fix. It now
+  default; the shell-script counterpart of the T4 banner fix. It now
   reads `api_listen` from the installed config and prints either the
   LAN URLs or a localhost note with the opt-in instruction.
 - README's Docker port-conflict note no longer recommends disabling
@@ -279,7 +279,7 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
 - `cache_size: 0` in the YAML file now actually disables the DNS
   response cache, as documented. Previously the post-decode default
   silently turned 0 back into 2000; only the `S_HOLE_CACHE_SIZE=0` env
-  override worked (T1). `block_ttl: 0` is likewise honored now — it
+  override worked (T1). `block_ttl: 0` is likewise honored now: it
   tells clients not to cache sinkhole replies.
 - Truncated upstream replies (TC bit) are retried over TCP against the
   same upstream before being returned, so large answers (DNSSEC, big
@@ -293,10 +293,10 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   no longer aborts parsing of the entire list; the parser tolerates
   lines up to 1 MiB and keeps dropping garbage per-line as before (T5).
 - The startup banner no longer advertises `http://<lan-ip>:8080` for
-  the admin UI when `api_listen` is bound to localhost (the default) —
+  the admin UI when `api_listen` is bound to localhost (the default);
   it prints `http://127.0.0.1:8080 (this machine only)` instead (T4).
 - Integration test no longer relies on a hardcoded 150 ms sleep to
-  wait for the SQLite flush tick — it polls for up to 2 s. Fast on
+  wait for the SQLite flush tick; it polls for up to 2 s. Fast on
   healthy CI, robust under load.
 - `reloadFn` defer order collapsed into a single closure so the
   mutex is released before the WaitGroup signals done, matching
@@ -306,7 +306,7 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   `RecordQuery`. The race detector previously fired when prune and
   snapshot collided.
 - `querylog.DBLogger.run()` no longer uses a magic literal `100` for
-  the per-batch flush trigger — both the cap *and* the trigger now
+  the per-batch flush trigger; both the cap *and* the trigger now
   reference the same `flushBatchSize` constant.
 - `panic` recovery in `runTickerOnce` now logs the full goroutine stack
   via `debug.Stack()` so a panic in the field is diagnosable from

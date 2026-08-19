@@ -67,7 +67,7 @@ type Config struct {
 	// EnablePprof exposes net/http/pprof handlers under /debug/pprof/ on
 	// the admin HTTP server. Off by default; only enable when investigating
 	// a running incident, and only when the admin server is bound to
-	// localhost — pprof reveals enough internal state to be useful to an
+	// localhost; pprof reveals enough internal state to be useful to an
 	// attacker who can reach it.
 	EnablePprof bool `yaml:"enable_pprof"`
 	// LocalPTR enables local authoritative NXDOMAIN replies for PTR queries
@@ -82,7 +82,7 @@ type Config struct {
 // Defaults for the two fields whose zero value is itself a meaningful
 // setting (cache_size 0 disables the cache; block_ttl 0 disables client
 // caching of sinkhole replies). They are seeded onto the struct before
-// the YAML decode — a post-decode fixup cannot tell an explicit 0 in the
+// the YAML decode; a post-decode fixup cannot tell an explicit 0 in the
 // file apart from an absent key, and would silently re-apply the default
 // (finding T1). All other defaults live in applyDefaults.
 const (
@@ -111,7 +111,7 @@ func Load(path string) (*Config, error) {
 		LocalPTR:  true,
 	}
 	// An empty file decodes to io.EOF; we treat that as "no overrides" and
-	// fall through to applyDefaults — the README states an empty config is
+	// fall through to applyDefaults; the README states an empty config is
 	// valid.
 	if err := yaml.NewDecoder(f).Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
 		return nil, err

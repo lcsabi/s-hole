@@ -131,7 +131,7 @@ func TestDBLogger_CloseFlushesPending(t *testing.T) {
 	// Regression for b/005: entries enqueued just before Close must be
 	// persisted; Close waits on the WaitGroup.
 	path := filepath.Join(t.TempDir(), "queries.db")
-	db, err := NewDBLogger(path, "all", 1*time.Hour, 0) // long interval — only drain on Close fires
+	db, err := NewDBLogger(path, "all", 1*time.Hour, 0) // long interval, only drain on Close fires
 	if err != nil {
 		t.Fatalf("NewDBLogger: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestDBLogger_RetentionPruneDeletesOldRows(t *testing.T) {
 	// by the prune goroutine. We bypass the periodic ticker by calling
 	// prune() directly on a DBLogger built with retention enabled.
 	//
-	// b/038: this flaked under -race with SQLITE_BUSY — the startup prune, the
+	// b/038: this flaked under -race with SQLITE_BUSY; the startup prune, the
 	// seed tx, and this explicit prune() contended across pooled connections
 	// until NewDBLogger pinned the pool to one connection (SetMaxOpenConns(1)).
 	path := filepath.Join(t.TempDir(), "queries.db")
@@ -199,7 +199,7 @@ func TestDBLogger_RetentionPruneDeletesOldRows(t *testing.T) {
 func TestDBLogger_DroppedOnChannelOverflow(t *testing.T) {
 	// With a tiny channel and a slow flush (1h interval) the buffer
 	// fills up quickly. The logger must drop entries silently rather
-	// than block the caller — that would deadlock the DNS hot path —
+	// than block the caller (that would deadlock the DNS hot path),
 	// and it must *count* the drops so /metrics can surface back-pressure.
 	path := filepath.Join(t.TempDir(), "queries.db")
 	db, err := NewDBLogger(path, "all", 1*time.Hour, 0) // long flush → no draining
@@ -221,7 +221,7 @@ func TestDBLogger_DroppedOnChannelOverflow(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Log() blocked under back-pressure — channel must drop on full")
+		t.Fatal("Log() blocked under back-pressure; channel must drop on full")
 	}
 
 	// Pushed 5000 entries into a 1000-slot channel that's not draining;

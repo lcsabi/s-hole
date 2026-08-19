@@ -106,7 +106,7 @@ func TestCache_KeyIncludesQclass(t *testing.T) {
 
 func TestCache_KeyDistinguishesUnknownTypes(t *testing.T) {
 	// T6 regression: two distinct qtypes without a mnemonic in
-	// dns.TypeToString must not collide on one cache key — a bare map
+	// dns.TypeToString must not collide on one cache key; a bare map
 	// lookup rendered both as "" and let them serve each other's answers.
 	q1 := dns.Question{Name: "example.com.", Qtype: 64001, Qclass: dns.ClassINET}
 	q2 := dns.Question{Name: "example.com.", Qtype: 64002, Qclass: dns.ClassINET}
@@ -245,7 +245,7 @@ func TestCache_CloseStopsGoroutine(t *testing.T) {
 	// select-on-stop guarantee covers the regression.
 }
 
-// BenchmarkCache_Get guards the cache hit path — the branch that avoids an
+// BenchmarkCache_Get guards the cache hit path, the branch that avoids an
 // upstream round-trip entirely and is therefore the whole point of the
 // cache. Its cost (and per-op allocations) is dominated by the defensive
 // msg.Copy plus decrementTTLs walk on every hit; ReportAllocs surfaces a

@@ -102,7 +102,7 @@ func NewMulti(loggers ...Logger) *Multi {
 	return &Multi{loggers: loggers}
 }
 
-// Log calls Log on every wrapped logger. Sequential, not parallel — the
+// Log calls Log on every wrapped logger. Sequential, not parallel; the
 // underlying loggers are non-blocking so this is cheap.
 func (m *Multi) Log(clientIP, domain string, blocked bool) {
 	for _, l := range m.loggers {

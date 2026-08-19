@@ -10,7 +10,7 @@
 // UDP and TCP listeners run in parallel; clients fall back to TCP
 // automatically when a UDP reply is truncated. On the upstream side the
 // forwarder mirrors that fallback: a truncated UDP reply is retried over TCP
-// against the same upstream before being returned — see exchange in upstream.go.
+// against the same upstream before being returned; see exchange in upstream.go.
 //
 // The handler mirrors the client's EDNS0 OPT pseudo-record on sinkhole
 // replies so clients that advertise EDNS0 do not fall back to legacy DNS.
@@ -74,9 +74,9 @@ var privateReverseZones = []string{
 	"31.172.in-addr.arpa.",
 	// 192.168.0.0/16
 	"168.192.in-addr.arpa.",
-	// fc00::/7 ULA — covers fc::/8 and fd::/8
+	// fc00::/7 ULA, covers fc::/8 and fd::/8
 	"c.f.ip6.arpa.", "d.f.ip6.arpa.",
-	// fe80::/10 link-local — third nibble is 8, 9, a, or b
+	// fe80::/10 link-local, third nibble is 8, 9, a, or b
 	"8.e.f.ip6.arpa.", "9.e.f.ip6.arpa.", "a.e.f.ip6.arpa.", "b.e.f.ip6.arpa.",
 }
 
@@ -89,7 +89,7 @@ func isPrivatePTR(qtype uint16, name string) bool {
 	}
 	// DNS names are case-insensitive (RFC 1035 §2.3.3) and miekg/dns preserves
 	// the wire-format case verbatim, so a mixed-case name (e.g. from a dns-0x20
-	// forwarder) must be folded before matching the lowercase zone list — the
+	// forwarder) must be folded before matching the lowercase zone list; the
 	// same normalisation blocklist.normalize applies (b/032). Non-PTR queries
 	// already returned above, so this allocation only ever hits real PTR queries.
 	name = strings.ToLower(name)
@@ -177,7 +177,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
-	// Serve from cache if available — avoids upstream round-trip entirely.
+	// Serve from cache if available; avoids upstream round-trip entirely.
 	if h.cache != nil {
 		if cached, ok := h.cache.Get(q); ok {
 			cached.Id = req.Id
@@ -226,7 +226,7 @@ func (h *Handler) writeSinkhole(w dns.ResponseWriter, req *dns.Msg, q dns.Questi
 		return
 	}
 
-	// Default: "zero" — return 0.0.0.0 / ::
+	// Default: "zero" returns 0.0.0.0 / ::
 	switch q.Qtype {
 	case dns.TypeA:
 		resp.Answer = append(resp.Answer, &dns.A{
@@ -239,7 +239,7 @@ func (h *Handler) writeSinkhole(w dns.ResponseWriter, req *dns.Msg, q dns.Questi
 			AAAA: net.IPv6zero,
 		})
 	}
-	// For MX, TXT, etc. return NOERROR with no answer — clients won't retry.
+	// For MX, TXT, etc. return NOERROR with no answer; clients won't retry.
 	if err := w.WriteMsg(resp); err != nil {
 		logger.Warn("write sinkhole reply failed", "err", err, "domain", q.Name)
 	}

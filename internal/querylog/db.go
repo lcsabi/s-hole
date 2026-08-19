@@ -66,7 +66,7 @@ type DBLogger struct {
 // pragmas applied on every open. WAL + synchronous=NORMAL dramatically reduces
 // write amplification on flash/SD storage compared to the default journal mode.
 // busy_timeout makes a statement wait for a held lock instead of failing
-// immediately with SQLITE_BUSY — defence against an external process (e.g. the
+// immediately with SQLITE_BUSY; defence against an external process (e.g. the
 // sqlite3 CLI) touching the file; internal contention is already removed by
 // SetMaxOpenConns(1) in NewDBLogger (b/038). These per-connection pragmas
 // (all but journal_mode, which is stored in the file) reliably apply because
@@ -92,7 +92,7 @@ func NewDBLogger(path, logQueries string, flushInterval time.Duration, retention
 	}
 	// Serialise all access through one connection (b/038). SQLite allows a
 	// single writer at a time; with the default multi-connection pool the
-	// async batch writer and the retention prune — both writers — can land on
+	// async batch writer and the retention prune (both writers) can land on
 	// different connections and collide with SQLITE_BUSY, silently skipping a
 	// prune. One connection makes database/sql queue callers instead, and
 	// guarantees the per-connection pragmas below apply to the connection that
@@ -157,7 +157,7 @@ func (d *DBLogger) prune() {
 }
 
 // Log enqueues a single entry for asynchronous insertion. Respects the
-// logQueries filter and silently drops if the internal channel is full —
+// logQueries filter and silently drops if the internal channel is full;
 // logging completeness is subordinate to DNS handler latency. Never
 // blocks the caller.
 func (d *DBLogger) Log(clientIP, domain string, blocked bool) {

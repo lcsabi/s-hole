@@ -17,7 +17,7 @@ LDFLAGS     = -ldflags="-s -w \
 
 ## help: show this help text (default target)
 help:
-	@echo "s-hole — available targets:"
+	@echo "s-hole available targets:"
 	@grep -E '^## [a-z]' Makefile | sed 's/^## /  /'
 
 ## all: build for the current OS/architecture
@@ -48,7 +48,7 @@ test:
 test-race:
 	CGO_ENABLED=1 go test -race -count=1 ./...
 
-## bench: run benchmarks (one iteration each — for regression smoke)
+## bench: run benchmarks (one iteration each, for regression smoke)
 bench:
 	go test -run=^$$ -bench=. -benchtime=1x ./...
 
@@ -72,12 +72,12 @@ vuln:
 
 ## tools-install: install developer tools (golangci-lint) into $GOBIN
 tools-install:
-	# v2 module path — the un-versioned path installs golangci-lint v1,
+	# v2 module path: the un-versioned path installs golangci-lint v1,
 	# which cannot parse the version:"2" schema in .golangci.yml.
 	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 	@echo "tools installed; ensure \$$(go env GOBIN) (or \$$GOPATH/bin) is on \$$PATH"
 
-## check: fmt + vet + lint + test — what CI does
+## check: fmt + vet + lint + test (what CI does)
 check: fmt vet lint test
 
 ## version: print the version that would be embedded in a build

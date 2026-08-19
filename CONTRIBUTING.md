@@ -208,6 +208,13 @@ sentence. Two hard rules:
   the imperative, and keep each step to one action.
 
 Design rationale can stay nuanced; the goal is clarity, not mechanical brevity.
+The nuance exemption covers only mechanical brevity (no hard sentence-length cap,
+no approved-word list). The anti-slop tells still apply everywhere, rationale and
+"why" comments included: no em-dashes, no triadic "A, B, and C" cadence, no "not
+just X but Y" balancing, no empty intensifiers. Only the em-dash rule is
+greppable; the others are a reviewer-eyeball check. `/simple-english` is a manual
+tool for operator text (Quick Start, deploy steps, error strings, installer
+echoes), not the whole-repo standard.
 The immutable historical records (`docs/cls/CL-*.md`, `docs/BUGS.md`) are exempt,
 and new CL titles use `# CL N: title` (a colon, not an em-dash).
 

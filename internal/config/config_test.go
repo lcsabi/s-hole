@@ -143,14 +143,16 @@ func TestFilterWhitelist(t *testing.T) {
 	// would exempt its whole subtree. filterWhitelist drops invalid entries
 	// (Load WARNs on them) instead of aborting startup, and a dropped entry
 	// fails safe: the domain stays blockable.
-	in := []string{"safe.doubleclick.net", "com", "example.com", "bad host"}
+	// "com." is the b/040 case: a bare TLD with a trailing root dot must be
+	// dropped, or normalize would store bare "com" and exempt the whole TLD.
+	in := []string{"safe.doubleclick.net", "com", "com.", "example.com", "bad host"}
 	valid, dropped := filterWhitelist(in)
 
 	wantValid := []string{"safe.doubleclick.net", "example.com"}
 	if !reflect.DeepEqual(valid, wantValid) {
 		t.Errorf("valid = %v, want %v", valid, wantValid)
 	}
-	wantDropped := []string{"com", "bad host"}
+	wantDropped := []string{"com", "com.", "bad host"}
 	if !reflect.DeepEqual(dropped, wantDropped) {
 		t.Errorf("dropped = %v, want %v", dropped, wantDropped)
 	}

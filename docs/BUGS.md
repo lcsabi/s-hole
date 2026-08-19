@@ -1175,3 +1175,75 @@ change the entrypoint to `["s-hole"]`. `/app` stays the `WORKDIR` and the data
 `-v "$(pwd)/data:/app"` command: the container starts, loads blocklists, serves
 DNS + admin UI, and writes the blocklist cache and query DB into the host
 directory.
+
+---
+
+## b/040 — blocklist: ValidDomain accepts a bare TLD with a trailing dot, so a whitelist typo can disable a whole TLD
+
+**Priority:** P3
+**Component:** blocklist
+**Status:** Fixed in CL 42
+**Filed:** 2026-08-19
+
+### Description
+
+`ValidDomain` gated its dot check with `strings.Contains(s, ".")`, so a bare
+label with a trailing root dot passed: `"com."` is four characters, contains a
+dot (the trailing one), and uses only allowed characters. The config `whitelist`
+filter (`filterWhitelist`) and `POST /api/whitelist` both validate with
+`ValidDomain`, so `whitelist: ["com."]` reached the store. `normalize` strips the
+trailing dot and stores the bare label `"com"`. The CL 30 suffix walk in
+`IsBlocked` then matches at the final label of every `.com` query, so all `.com`
+domains were exempted, including any explicitly on the block set. No WARN fired
+and `/readyz` stayed green.
+
+The trigger is an uncommon operator typo (a bare TLD followed by a dot; `"com"`
+alone was already rejected), so the impact is a silent defense-in-depth hole,
+not a default-configuration failure. Found by ultrareview.
+
+### Root Cause
+
+The dot check counted a trailing root dot, so `ValidDomain` could not tell a real
+two-label name from a single label written as an FQDN. The CL 31 guard caught the
+no-dot form `"com"` but not `"com."`, one keystroke apart.
+
+### Fix
+
+Require an interior dot in `ValidDomain`: reject when the first dot is at index 0
+(leading dot) or at the last index (trailing dot on a single label). A real FQDN
+with a root dot (`"example.com."`) still has an interior dot and stays valid;
+`normalize` strips its trailing dot as before. Regression cases added for
+`"com."`, `"."`, `"a."`, and `".com"` in `TestValidDomain`, plus a `"com."` drop
+case in `TestFilterWhitelist`.
+
+---
+
+## b/041 — config: applyEnvOverrides docstring claims the package "deliberately avoids logging"
+
+**Priority:** P3
+**Component:** config
+**Status:** Fixed in CL 42
+**Filed:** 2026-08-19
+
+### Description
+
+The `applyEnvOverrides` docstring justified silently ignoring malformed numeric
+env values by stating "the config package deliberately avoids logging". That was
+true when written, but CL 31 added a package logger (`var logger =
+slog.With("pkg", "config")`) and a `logger.Warn` call in `Load` for invalid
+whitelist entries. The stated rationale was therefore false. A future contributor
+could either remove the CL 31 WARN (reading the package as log-free) or add a
+WARN to the env path without knowing the silence was deliberate. Found by
+ultrareview. Doc-vs-code drift, comment-only.
+
+### Root Cause
+
+The docstring was not updated when CL 31 introduced logging to the package.
+
+### Fix
+
+Replace the false parenthetical with the real policy: env overrides are
+best-effort container knobs, so a per-typo WARN on every restart is noise, and
+the only invariant is that a bad env var never blocks startup. The docstring now
+also notes why the invalid-whitelist path in `Load` does WARN (a dropped
+whitelist entry can widen blocking to a whole subtree).

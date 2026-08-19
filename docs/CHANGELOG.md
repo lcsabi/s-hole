@@ -208,6 +208,12 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
   `/metrics` endpoint can surface cache statistics.
 
 ### Fixed
+- **A whitelist typo can no longer disable a whole TLD.** `ValidDomain` accepted
+  a bare TLD written with a trailing root dot (`"com."`), which normalized to the
+  bare label `"com"` and, through subtree matching, exempted every `.com` domain
+  from blocking. The validator now requires an interior dot, so `"com."` (and
+  `"."`, `"a."`, `".com"`) is rejected at the config, API, and dashboard entry
+  points; a real FQDN like `"example.com."` stays valid. (b/040, CL 42)
 - **The Docker container starts again when a data volume is mounted.** The
   binary lived at `/app/s-hole`, but `/app` is the declared volume and the
   documented `-v "$(pwd)/data:/app"` bind mount shadowed it, so the container

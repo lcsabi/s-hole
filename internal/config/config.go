@@ -151,8 +151,11 @@ func filterWhitelist(entries []string) (valid, dropped []string) {
 // the corresponding YAML fields. Container deployments use this to avoid
 // rebuilding a config bind-mount for every change. Unknown keys are
 // ignored; malformed numeric values are silently ignored to preserve
-// startup (a warn-level slog message would also work but the config
-// package deliberately avoids logging).
+// startup. Env overrides are best-effort container knobs (an orchestrator
+// may inject a stray value), so a per-typo WARN on every restart is noise,
+// not signal; the invariant is only that a bad env var never blocks
+// startup. The invalid-whitelist path in Load does WARN (CL 31), because a
+// silently dropped whitelist entry can widen blocking to a whole subtree.
 //
 // Supported overrides:
 //

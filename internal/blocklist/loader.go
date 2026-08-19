@@ -186,7 +186,14 @@ func ValidDomain(s string) bool {
 	if s == "" || len(s) > 253 {
 		return false
 	}
-	if !strings.Contains(s, ".") {
+	// Require an interior dot. A bare label ("com") has none, and a bare
+	// label with a trailing root dot ("com.") would pass a plain Contains
+	// check, but normalize strips the dot and stores the bare label. A
+	// whitelist typo like "com." would then exempt an entire TLD through the
+	// CL 30 suffix walk (b/040). Leading dots (".com") are rejected too. A
+	// real FQDN with a root dot ("example.com.") still has an interior dot
+	// and stays valid.
+	if i := strings.IndexByte(s, '.'); i <= 0 || i >= len(s)-1 {
 		return false
 	}
 	for _, r := range s {

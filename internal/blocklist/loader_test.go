@@ -276,8 +276,13 @@ func TestValidDomain(t *testing.T) {
 		{"sub.example.com", true},
 		{"a-b.example.com", true},
 		{"_dmarc.example.com", true},
+		{"example.com.", true}, // FQDN with a root dot; normalize strips it
 		{"", false},
 		{"example", false}, // no dot, bare TLD
+		{"com.", false},    // b/040: bare TLD with a trailing root dot
+		{".", false},       // b/040: dot only
+		{"a.", false},      // b/040: single label, trailing dot
+		{".com", false},    // leading dot, no label before it
 		{"has space.com", false},
 		{"slash/path.com", false},
 		{"control\x00char.com", false},

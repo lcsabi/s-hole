@@ -7,7 +7,7 @@ upstreams:
   - "1.1.1.1:53"
   - "8.8.8.8:53"
 
-# Blocklist URLs — hosts-file format or plain domain-per-line.
+# Blocklist URLs: hosts-file format or plain domain-per-line.
 blocklists:
   - "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
   - "https://adaway.org/hosts.txt"
@@ -44,7 +44,7 @@ query_db: "queries.db"
 cache_dir: "."
 
 # Address:port for the admin web UI and REST API.
-# Default is "127.0.0.1:8080" — localhost only, no LAN access.
+# Default is "127.0.0.1:8080". Localhost only, no LAN access.
 # Set to "0.0.0.0:8080" to expose the UI to every device on the LAN.
 api_listen: "127.0.0.1:8080"
 
@@ -64,7 +64,7 @@ query_db_retention_days: 0
 
 # Expose net/http/pprof handlers under /debug/pprof/ on the admin HTTP
 # server. Off by default. Only turn on when investigating a running
-# incident, and only when api_listen is bound to localhost — pprof
+# incident, and only when api_listen is bound to localhost. pprof
 # reveals goroutine stacks, heap layouts, and symbols that are useful to
 # the operator and dangerous in the wrong hands.
 enable_pprof: false
@@ -72,7 +72,7 @@ enable_pprof: false
 # Answer PTR (reverse DNS) queries for RFC 6303 private-range zones
 # (10/8, 172.16/12, 192.168/16, fc00::/7, fe80::/10) locally with
 # authoritative NXDOMAIN instead of forwarding them upstream.
-# No public resolver can ever hold records for these addresses — forwarding
+# No public resolver can ever hold records for these addresses. Forwarding
 # wastes a round-trip on every request and leaks LAN addressing to the
 # upstream resolver. Recommended: true (the default).
 # Set to false only if you run a private reverse DNS zone on your LAN and

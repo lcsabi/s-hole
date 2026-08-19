@@ -16,11 +16,11 @@ var logger = slog.With("pkg", "blocklist")
 
 const cacheMaxAge = 24 * time.Hour
 
-// httpClient has a generous timeout to handle slow mirrors; 256 MB cap prevents
+// httpClient has a generous timeout to handle slow mirrors; 256 MiB cap prevents
 // a runaway download from filling the disk.
 var httpClient = &http.Client{Timeout: 60 * time.Second}
 
-const maxBodyBytes = 256 << 20 // 256 MB
+const maxBodyBytes = 256 << 20 // 256 MiB
 
 // Update downloads (or loads from cache) all lists and replaces the store.
 // If every configured URL fails (network outage, all servers down), the

@@ -40,7 +40,7 @@ Per-query hot path (one goroutine per query, spawned by miekg/dns):
 
 ```
 ServeDNS (internal/dnsserver/handler.go)
-  → blocklist.Store.IsBlocked      O(1) set lookup; whitelist overrides
+  → blocklist.Store.IsBlocked      O(labels) suffix walk over two O(1) sets; whitelist overrides
   → stats.Counter + querylog fan-out (never blocks the query)
   → blocked? write sinkhole reply (0.0.0.0/:: or NXDOMAIN, EDNS0 mirrored)
   → cache.Cache.Get                TTL-respecting; hit ends here

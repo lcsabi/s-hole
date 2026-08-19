@@ -1,7 +1,7 @@
 // Package stats tracks per-process query counters and top-N domain/client
 // tallies.
 //
-// total and cacheHit are atomic and updated lock-free on the hot path.
+// total, cacheHit, and localPTR are atomic and updated lock-free on the hot path.
 // blocked is mutex-guarded because RecordQuery's critical section
 // already takes the lock to update the top-domain tally; promoting it
 // to atomic would be redundant and misleading. Snapshot reads blocked
@@ -36,7 +36,7 @@ import (
 const topNMaxEntries = 4096
 
 // Counter aggregates query statistics across the lifetime of the process.
-// total and cacheHit are atomic and updated lock-free on the hot path.
+// total, cacheHit, and localPTR are atomic and updated lock-free on the hot path.
 // blocked is mutex-guarded (incremented inside RecordQuery's critical
 // section alongside the top-domain map update). Making it atomic too
 // would be misleading dead optimisation. Snapshot reads it back inside

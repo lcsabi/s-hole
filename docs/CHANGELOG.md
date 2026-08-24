@@ -9,6 +9,11 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 ## [Unreleased]
 
 ### Added
+- **Audit logging for admin actions.** A whitelist add or remove now logs the
+  domain and the requester address at `Info`, and each blocklist reload logs its
+  trigger source, so a `POST /api/reload` is distinguishable from the periodic
+  timer and a SIGHUP. The admin API is unauthenticated on the LAN, so these
+  state changes previously left no trace in the log. (CL 45)
 
 ### Changed
 

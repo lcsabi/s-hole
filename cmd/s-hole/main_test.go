@@ -305,3 +305,42 @@ func TestWaitWithDeadline_GivesUpOnDeadline(t *testing.T) {
 		t.Errorf("waitWithDeadline ignored the deadline: %v", elapsed)
 	}
 }
+
+// TestNewReloadFn_SingleFlight pins the b/022 invariant on the real closure
+// the timer, the API, and SIGHUP all share: while one refresh holds the lock,
+// a second call returns false and does not run the work. b/022 was a mutex
+// living in api.Server that the periodic timer bypassed; the fix moved the
+// lock into this closure. The rejected caller must not launch a concurrent
+// refresh.
+func TestNewReloadFn_SingleFlight(t *testing.T) {
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	var calls atomic.Int32
+	release := make(chan struct{})
+
+	reload := newReloadFn(&mu, &wg, func() {
+		calls.Add(1)
+		<-release // hold the lock until the test lets go
+	})
+
+	// TryLock succeeds synchronously, so on return the lock is already held.
+	if !reload() {
+		t.Fatal("first reload() = false, want true (should win the lock)")
+	}
+	if reload() {
+		t.Error("second reload() = true while a refresh is in flight, want false (single-flight)")
+	}
+
+	close(release) // let the in-flight refresh finish and release the lock
+	wg.Wait()
+
+	// After completion a fresh call wins again.
+	if !reload() {
+		t.Error("reload() after completion = false, want true")
+	}
+	wg.Wait()
+
+	if got := calls.Load(); got != 2 {
+		t.Errorf("work ran %d times, want 2 (the rejected middle call must not run work)", got)
+	}
+}

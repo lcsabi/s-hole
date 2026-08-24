@@ -147,6 +147,11 @@ func (c *Cache) cleanupExpired(now time.Time) int {
 // mnemonic; a bare TypeToString map lookup would render every unknown
 // code as "", letting two distinct unknown qtypes collide on one key and
 // serve each other's cached answers (T6).
+//
+// The qname keeps its wire-format case on purpose. A dns-0x20 forwarder
+// randomizes case and rejects a reply whose question name does not echo the
+// exact case it sent, so the key must not fold "Example.com" and "example.com"
+// together (b/037). TestCache_KeyIsCaseSensitive guards this.
 func key(q dns.Question) string {
 	return q.Name + "\x00" + dns.Type(q.Qtype).String() + "\x00" + dns.Class(q.Qclass).String()
 }

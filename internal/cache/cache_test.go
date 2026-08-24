@@ -245,6 +245,27 @@ func TestCache_CloseStopsGoroutine(t *testing.T) {
 	// select-on-stop guarantee covers the regression.
 }
 
+func TestCache_KeyIsCaseSensitive(t *testing.T) {
+	// b/037: cache keys preserve the query name's case on purpose. A dns-0x20
+	// forwarder randomizes case and rejects a reply whose question name does
+	// not echo the exact case it sent, so the cache must not collapse
+	// "Example.COM" and "example.com" into one entry. This guards against a
+	// future "lowercase the key to raise the hit rate" change.
+	c := New(10)
+	defer c.Close()
+
+	upper := dns.Question{Name: "Example.COM.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	lower := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	c.Set(upper, buildResponse(upper, 300))
+
+	if _, ok := c.Get(lower); ok {
+		t.Error("Get(lowercase) hit an entry Set under mixed case; key is not case-sensitive (b/037)")
+	}
+	if _, ok := c.Get(upper); !ok {
+		t.Error("Get(same case) missed; Set/Get round-trip broken")
+	}
+}
+
 // BenchmarkCache_Get guards the cache hit path, the branch that avoids an
 // upstream round-trip entirely and is therefore the whole point of the
 // cache. Its cost (and per-op allocations) is dominated by the defensive

@@ -198,30 +198,12 @@ func main() {
 	// cache .tmp file behind.
 	var reloadMu sync.Mutex
 	var reloadWG sync.WaitGroup
-	reloadFn := func() bool {
-		if !reloadMu.TryLock() {
-			return false
+	reloadFn := newReloadFn(&reloadMu, &reloadWG, func() {
+		mainLog.Info("refreshing blocklists")
+		if err := blocklist.Update(store, cfg.Blocklists, cfg.CacheDir); err != nil {
+			mainLog.Warn("blocklist refresh failed", "err", err)
 		}
-		reloadWG.Add(1)
-		go func() {
-			// Explicit, ordered cleanup: release the lock first so a
-			// subsequent reloadFn caller is not gated on us, then
-			// signal Done so doStop's reloadWG.Wait() returns only
-			// after the mutex is already free. Two separate defers
-			// would fire in LIFO order, which puts Done before Unlock
-			// and confuses readers who expect "release resources in
-			// reverse acquisition order."
-			defer func() {
-				reloadMu.Unlock()
-				reloadWG.Done()
-			}()
-			mainLog.Info("refreshing blocklists")
-			if err := blocklist.Update(store, cfg.Blocklists, cfg.CacheDir); err != nil {
-				mainLog.Warn("blocklist refresh failed", "err", err)
-			}
-		}()
-		return true
-	}
+	})
 
 	apiServer := api.New(counter, db, store, dnsCache, reloadFn)
 	if cfg.EnablePprof {
@@ -461,5 +443,38 @@ func waitWithDeadline(ctx context.Context, wg *sync.WaitGroup, log *slog.Logger,
 	case <-done:
 	case <-ctx.Done():
 		log.Warn("shutdown deadline exceeded waiting for "+what, "err", ctx.Err())
+	}
+}
+
+// newReloadFn builds the single-flight blocklist-refresh closure shared by the
+// periodic timer, POST /api/reload, and SIGHUP. It returns true if it acquired
+// the lock and started work (asynchronously, so callers return at once), or
+// false if a refresh is already running. The shared mutex stops the three
+// callers from launching concurrent downloads that would race on the cache
+// files. Keeping the lock in this one closure, not in api.Server, is what
+// prevents the periodic timer from bypassing the gate (b/022).
+//
+// wg lets doStop wait for an in-flight refresh to finish its os.Rename before
+// the process exits, so a refresh is never killed mid-write.
+func newReloadFn(mu *sync.Mutex, wg *sync.WaitGroup, work func()) func() bool {
+	return func() bool {
+		if !mu.TryLock() {
+			return false
+		}
+		wg.Add(1)
+		go func() {
+			// Explicit, ordered cleanup: release the lock first so a
+			// subsequent caller is not gated on us, then signal Done so
+			// doStop's wg.Wait() returns only after the mutex is already
+			// free. Two separate defers would fire in LIFO order, which
+			// puts Done before Unlock and confuses readers who expect
+			// "release resources in reverse acquisition order."
+			defer func() {
+				mu.Unlock()
+				wg.Done()
+			}()
+			work()
+		}()
+		return true
 	}
 }

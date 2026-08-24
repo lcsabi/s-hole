@@ -213,9 +213,9 @@ strictly, but the per-package targets are:
 - `internal/api`, `internal/blocklist`, `internal/dnsserver`,
   `internal/querylog`: ≥ 85 %
 
-The `cmd/s-hole` package sits around 32 % because the rest is the
+The `cmd/s-hole` package sits around 36 % because the rest is the
 `main()` bootstrap and SCM glue that aren't unit-testable. Module-wide
-coverage tracks around 77 %.
+coverage tracks around 78 %.
 
 Run `go test -cover ./...` locally to see the current state before
 sending a PR; if your change drops a number, please either add the

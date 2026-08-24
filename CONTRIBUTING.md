@@ -163,7 +163,7 @@ docs/cls/          one file per CL
 All implementation packages live under `internal/` so the public API
 surface is just `cmd/s-hole`. If you find yourself wanting to expose a
 package, please open a discussion first; the `internal/` boundary is
-load-bearing for the "auditable in an afternoon" goal.
+essential to the "auditable in an afternoon" goal.
 
 ## Pull-request conventions
 

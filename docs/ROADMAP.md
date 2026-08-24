@@ -798,7 +798,7 @@ Pi-hole/AdGuard Home:
   in-code rationale: changing them without a benchmark is unlikely to
   help.
 - **Deduplicating the on-disk blocklist caches.** Per-URL verbatim
-  snapshots are load-bearing: the stale-fallback contract is per-list,
+  snapshots are kept on purpose: the stale-fallback contract is per-list,
   and an untransformed copy is inspectable evidence when a source
   misbehaves. The in-memory set already deduplicates for free; disk
   savings would be a few hundred KB once per day.

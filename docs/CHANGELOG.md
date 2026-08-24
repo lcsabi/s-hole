@@ -9,6 +9,23 @@ release ships. Detailed per-CL descriptions live under `cls/`, indexed by
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+## [0.1.0] - 2026-08-24
+
+### Added
+- **Pre-built releases.** Pushing a `v*` tag now runs
+  `.github/workflows/release.yml`, which builds the four targets
+  (linux/amd64, linux/arm64, linux/armv7, windows/amd64) with the version
+  ldflags and attaches a per-target archive (`tar.gz` for Linux, `zip` for
+  Windows, each bundling the binary, `config.yaml`, `LICENSE`, `README.md`,
+  and the Linux deploy scripts) plus a `SHA256SUMS` file to a GitHub Release.
+  The same tag publishes a multi-arch (amd64 + arm64) image to
+  `ghcr.io/lcsabi/s-hole`. `s-hole -version` on a released build reports the
+  tag instead of `dev`. (CL 43)
 - **A Linux uninstaller, `deploy/uninstall-linux.sh`.** Reverses
   `install-linux.sh`. It stops and disables the service, removes the unit,
   binary, config, and the `s-hole` system user/group, and prints a summary of

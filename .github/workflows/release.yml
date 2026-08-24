@@ -1,0 +1,171 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+# contents: write to create the GitHub Release and upload archives.
+# packages: write to push the container image to ghcr.io.
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build:
+    name: build / ${{ matrix.target.slug }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - { goos: linux,   goarch: amd64, slug: linux_amd64, archive: targz }
+          - { goos: linux,   goarch: arm64, slug: linux_arm64, archive: targz }
+          - { goos: linux,   goarch: arm, goarm: "7", slug: linux_armv7, archive: targz }
+          - { goos: windows, goarch: amd64, slug: windows_amd64, archive: zip }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.25"
+      - name: Resolve version metadata
+        id: meta
+        # On a tag push the tag name is the authoritative version, so use it
+        # directly instead of `git describe` (which the Makefile and CI use).
+        run: |
+          echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+      - name: Build and package ${{ matrix.target.slug }}
+        env:
+          GOOS: ${{ matrix.target.goos }}
+          GOARCH: ${{ matrix.target.goarch }}
+          GOARM: ${{ matrix.target.goarm }}
+          CGO_ENABLED: "0"
+          VERSION: ${{ steps.meta.outputs.version }}
+          COMMIT: ${{ steps.meta.outputs.commit }}
+          BUILD_DATE: ${{ steps.meta.outputs.date }}
+          SLUG: ${{ matrix.target.slug }}
+          ARCHIVE: ${{ matrix.target.archive }}
+        run: |
+          set -euo pipefail
+          VPKG=github.com/lcsabi/s-hole/internal/version
+          bin=s-hole
+          if [ "$GOOS" = "windows" ]; then bin=s-hole.exe; fi
+
+          stage="dist/s-hole_${VERSION}_${SLUG}"
+          mkdir -p "$stage"
+          go build -ldflags="-s -w \
+            -X '${VPKG}.Version=${VERSION}' \
+            -X '${VPKG}.Commit=${COMMIT}' \
+            -X '${VPKG}.BuildDate=${BUILD_DATE}'" \
+            -o "$stage/$bin" ./cmd/s-hole
+
+          # Ship the sample config and the docs/license in every archive.
+          cp config.yaml LICENSE README.md "$stage/"
+          # The deploy helpers are Linux-only.
+          if [ "$GOOS" = "linux" ]; then
+            cp deploy/install-linux.sh deploy/uninstall-linux.sh deploy/s-hole.service "$stage/"
+          fi
+
+          mkdir -p out
+          base="s-hole_${VERSION}_${SLUG}"
+          if [ "$ARCHIVE" = "zip" ]; then
+            ( cd dist && zip -r -q "../out/${base}.zip" "s-hole_${VERSION}_${SLUG}" )
+          else
+            tar -C dist -czf "out/${base}.tar.gz" "s-hole_${VERSION}_${SLUG}"
+          fi
+      - name: Upload archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: archive-${{ matrix.target.slug }}
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    name: publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download all archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: archive-*
+          path: artifacts
+          merge-multiple: true
+      - name: Checksums and release notes
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ( cd artifacts && sha256sum s-hole_* > SHA256SUMS )
+          # Extract the CHANGELOG section for this version (tag minus the "v").
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            $0 == "## [" v "]" || index($0, "## [" v "] ") == 1 { grab=1; next }
+            grab && /^## \[/ { exit }
+            grab { print }
+          ' docs/CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "Release ${GITHUB_REF_NAME}." > notes.md
+          fi
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          prerelease=""
+          case "$GITHUB_REF_NAME" in
+            *-*) prerelease="--prerelease" ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md \
+            $prerelease \
+            artifacts/s-hole_* artifacts/SHA256SUMS
+
+  docker:
+    name: push image to ghcr.io
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compute image tags
+        id: tags
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          repo="$(echo "$REPO" | tr '[:upper:]' '[:lower:]')"
+          tags="ghcr.io/${repo}:${version}"
+          # Move :latest only for final releases (tags without a pre-release
+          # suffix such as -rc1).
+          case "$GITHUB_REF_NAME" in
+            *-*) ;;
+            *) tags="${tags},ghcr.io/${repo}:latest" ;;
+          esac
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve build metadata
+        id: meta
+        run: |
+          echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ steps.meta.outputs.commit }}
+            BUILD_DATE=${{ steps.meta.outputs.date }}

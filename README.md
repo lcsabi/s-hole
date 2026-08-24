@@ -103,13 +103,13 @@ sudo ./s-hole -config config.yaml          # Linux / macOS
 .\s-hole.exe -config config.yaml           # Windows (Administrator)
 ```
 
-On first run, blocklists are downloaded (~80 000 domains with the default lists; the exact count shifts as the upstream lists evolve) and cached to disk. Subsequent starts skip the download if the cache is less than 24 hours old.
+On first run, s-hole downloads the blocklists (~80 000 domains with the default lists, and the exact count shifts as the upstream lists evolve) and caches them to disk. Later starts skip the download when the cache is less than 24 hours old.
 
 ### Point your router at it
 
-In your router's DHCP settings, set the **DNS Server** field to the IP address of the machine running s-hole. All devices on the network will pick up the new DNS server on their next DHCP renewal (or immediately after reconnecting).
+In your router's DHCP settings, set the **DNS Server** field to the IP address of the machine running s-hole. All devices on the network get the new DNS server on their next DHCP renewal (or immediately after they reconnect).
 
-Keep a fallback upstream DNS as the secondary DNS entry (e.g. `1.1.1.1`) in case s-hole is unavailable.
+Keep a fallback upstream DNS as the secondary DNS entry (for example `1.1.1.1`). s-hole can become unavailable, so the fallback keeps the LAN online.
 
 > **IPv6 networks:** on a dual-stack LAN, routers typically advertise a
 > DNS server over IPv6 as well (via RA/RDNSS or DHCPv6), and many
@@ -140,9 +140,9 @@ dig @<s-hole-ip> google.com +short        # expected: a real IP address
 ```
 
 These commands address s-hole explicitly, so they work even before the
-router change above. Network-wide blocking (devices being filtered
-without naming the server) only begins once DHCP hands out s-hole's
-address and clients renew their leases.
+router change above. Network-wide blocking begins only after DHCP hands
+out s-hole's address and clients renew their leases. Then devices are
+filtered without naming the server.
 
 If a query times out, check s-hole's log (stdout, or
 `journalctl -u s-hole -f` under systemd): every query that reaches the
@@ -247,7 +247,7 @@ Runtime whitelist changes take effect immediately but do not persist across rest
 
 The Quick Start runs s-hole as a foreground process. It lives exactly
 as long as your terminal session and dies with a reboot, a crash, or a
-logout. That's fine for evaluation, but once your router points the LAN
+logout. That is fine for evaluation, but once your router points the LAN
 at s-hole, every device's internet depends on it. Deployment registers
 the binary as a **service**: the operating system (systemd, the Windows
 SCM, or Docker's restart policy) starts it at boot, restarts it if it
@@ -274,7 +274,7 @@ scp deploy/install-linux.sh deploy/uninstall-linux.sh pi@raspberrypi.local:~/
 sudo bash install-linux.sh ./s-hole-linux-arm64 ./config.yaml
 ```
 
-The installer creates a `s-hole` system user, places the binary at `/usr/local/bin/s-hole`, installs config to `/etc/s-hole/config.yaml`, and enables the service to start on boot. It ends by printing the installed build's version and commit. Confirm it matches the binary you meant to ship, since a stale `scp` is otherwise silent.
+The installer creates a `s-hole` system user, places the binary at `/usr/local/bin/s-hole`, installs config to `/etc/s-hole/config.yaml`, and enables the service to start on boot. It ends by printing the installed build's version and commit. Confirm it matches the binary you meant to ship, because a stale `scp` is otherwise silent.
 
 After installation:
 
@@ -301,7 +301,7 @@ The systemd unit runs with `CAP_NET_BIND_SERVICE` so it can bind port 53 without
 
 #### Operating an installed service
 
-A few things that trip people up once s-hole is running as a systemd service:
+A few things to know once s-hole runs as a systemd service:
 
 - **Config is *copied*, not live-linked.** The installer copies your config to `/etc/s-hole/config.yaml` on the **first** install only. It never overwrites an existing one (it prints `config already exists, skipping`), and re-running the installer or `scp`-ing a new file to your home directory does **not** update it. To apply a config change on an installed host, edit `/etc/s-hole/config.yaml` directly (or `sudo cp your-config.yaml /etc/s-hole/config.yaml`), then `sudo systemctl restart s-hole`.
 - **`S_HOLE_*` environment overrides do not reach the service.** The systemd unit runs with a clean environment, so shell env vars only take effect when you run the binary directly. On the service, put values in `/etc/s-hole/config.yaml` (or add `Environment=` lines to the unit).

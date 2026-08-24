@@ -64,14 +64,14 @@ Fuzz tests are not part of CI but are easy to run locally:
 go test -fuzz=FuzzValidDomain -fuzztime=30s ./internal/blocklist/
 ```
 
-`-fuzztime=30s` is a sensible smoke; longer runs are appropriate when
-touching `ValidDomain`, `parseHostsFormat`, or `cacheFilename`.
+`-fuzztime=30s` is a good smoke test. Run longer when you change
+`ValidDomain`, `parseHostsFormat`, or `cacheFilename`.
 
 ### Manual smoke test
 
-Unit tests cover the packages; this seven-step pass (about five minutes)
-exercises the running binary end-to-end. Worth doing before a release tag or after
-touching startup, shutdown, or anything in the query path. Port 5353
+Unit tests cover the packages. This seven-step pass (about five minutes)
+exercises the running binary end-to-end. Run it before a release tag, or after
+you change startup, shutdown, or anything in the query path. Port 5353
 avoids both the privileged-port bind and the local resolver's claim on
 port 53 (`systemd-resolved` holds `127.0.0.53:53` on most distros).
 

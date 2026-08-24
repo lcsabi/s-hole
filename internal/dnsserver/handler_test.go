@@ -48,6 +48,37 @@ func fakeClient() *fakeWriter {
 	}
 }
 
+// customAddr is a net.Addr that is neither *net.UDPAddr nor *net.TCPAddr, to
+// exercise clientAddr's SplitHostPort fallback branch.
+type customAddr string
+
+func (c customAddr) Network() string { return "custom" }
+func (c customAddr) String() string  { return string(c) }
+
+func TestClientAddr(t *testing.T) {
+	cases := []struct {
+		name   string
+		remote net.Addr
+		want   string
+	}{
+		{"udp", &net.UDPAddr{IP: net.IPv4(192, 168, 1, 5), Port: 5353}, "192.168.1.5"},
+		{"tcp", &net.TCPAddr{IP: net.IPv4(10, 0, 0, 9), Port: 853}, "10.0.0.9"},
+		{"ipv6 udp", &net.UDPAddr{IP: net.ParseIP("2001:db8::1"), Port: 53}, "2001:db8::1"},
+		{"nil interface", nil, "unknown"},
+		{"typed-nil udp", (*net.UDPAddr)(nil), "unknown"},
+		{"typed-nil tcp", (*net.TCPAddr)(nil), "unknown"},
+		{"other type with port", customAddr("host.example:99"), "host.example"},
+		{"other type no port", customAddr("host.example"), "host.example"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := clientAddr(&fakeWriter{remote: tc.remote}); got != tc.want {
+				t.Errorf("clientAddr(%v) = %q, want %q", tc.remote, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestServeDNS_BlockedZeroMode(t *testing.T) {
 	store := blocklist.NewStore()
 	store.Replace([]string{"ads.example.com"})

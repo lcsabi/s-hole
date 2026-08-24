@@ -11,6 +11,7 @@ package blocklist
 import (
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 // Store is a thread-safe in-memory set of blocked domains plus an in-memory
@@ -153,5 +154,26 @@ func normalize(d string) string {
 	if len(d) > 0 && d[len(d)-1] == '.' {
 		d = d[:len(d)-1]
 	}
-	return strings.ToLower(d)
+	hasUpper := false
+	for i := 0; i < len(d); i++ {
+		c := d[i]
+		if c >= utf8.RuneSelf {
+			return strings.ToLower(d)
+		}
+		if 'A' <= c && c <= 'Z' {
+			hasUpper = true
+		}
+	}
+	if !hasUpper {
+		return d
+	}
+	b := make([]byte, len(d))
+	for i := 0; i < len(d); i++ {
+		c := d[i]
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		b[i] = c
+	}
+	return string(b)
 }

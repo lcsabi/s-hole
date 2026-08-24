@@ -276,6 +276,9 @@ func TestNormalize(t *testing.T) {
 		{"example.com.", "example.com"},
 		{"EXAMPLE.COM.", "example.com"},
 		{"", ""},
+		// A non-ASCII byte falls back to strings.ToLower for exact Unicode
+		// folding, rather than the ASCII fast path.
+		{"MÜNCHEN.de", "münchen.de"},
 	}
 	for _, tc := range tests {
 		if got := normalize(tc.in); got != tc.want {

@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -342,5 +344,55 @@ func TestNewReloadFn_SingleFlight(t *testing.T) {
 
 	if got := calls.Load(); got != 2 {
 		t.Errorf("work ran %d times, want 2 (the rejected middle call must not run work)", got)
+	}
+}
+
+// TestShutdown_TeardownOrder pins the teardown sequence. The order matters:
+// tickers stop, then the DNS server stops so no query touches the cache or
+// loggers, then HTTP drains, then an in-flight refresh finishes its rename,
+// and only then the cache and loggers close. A wrong order risks a
+// write-to-closed-DB or a half-written cache file.
+func TestShutdown_TeardownOrder(t *testing.T) {
+	var order []string
+	rec := func(name string) func() { return func() { order = append(order, name) } }
+
+	shutdown(slog.With("pkg", "test"), 50*time.Millisecond, shutdownDeps{
+		cancelTickers: rec("cancel"),
+		printStats:    rec("stats"),
+		stopDNS:       rec("dns"),
+		drainHTTP:     func(context.Context) error { order = append(order, "http"); return nil },
+		waitForReload: func(context.Context) { order = append(order, "reload") },
+		closeCache:    rec("cache"),
+		closeFileLog:  func() error { order = append(order, "filelog"); return nil },
+		closeDB:       func() error { order = append(order, "db"); return nil },
+	})
+
+	want := []string{"cancel", "stats", "dns", "http", "reload", "cache", "filelog", "db"}
+	if !reflect.DeepEqual(order, want) {
+		t.Errorf("teardown order = %v, want %v", order, want)
+	}
+}
+
+// TestShutdown_ContinuesAfterErrors verifies a drainHTTP or close error is
+// logged, not fatal: every later step still runs, so a failed HTTP drain
+// cannot strand an in-flight refresh or leak the cache.
+func TestShutdown_ContinuesAfterErrors(t *testing.T) {
+	var order []string
+	rec := func(name string) func() { return func() { order = append(order, name) } }
+
+	shutdown(slog.With("pkg", "test"), 50*time.Millisecond, shutdownDeps{
+		cancelTickers: rec("cancel"),
+		printStats:    rec("stats"),
+		stopDNS:       rec("dns"),
+		drainHTTP:     func(context.Context) error { order = append(order, "http"); return errors.New("drain failed") },
+		waitForReload: func(context.Context) { order = append(order, "reload") },
+		closeCache:    rec("cache"),
+		closeFileLog:  func() error { order = append(order, "filelog"); return errors.New("filelog close failed") },
+		closeDB:       func() error { order = append(order, "db"); return errors.New("db close failed") },
+	})
+
+	want := []string{"cancel", "stats", "dns", "http", "reload", "cache", "filelog", "db"}
+	if !reflect.DeepEqual(order, want) {
+		t.Errorf("teardown did not complete after errors: order = %v, want %v", order, want)
 	}
 }

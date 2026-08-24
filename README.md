@@ -61,6 +61,17 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
   cloaked tracker disguised as a first-party subdomain can slip past a
   blocklist entry. Following those chains (CNAME deep-inspection) is on the
   roadmap.
+- **Faster browsing comes from blocking, not acceleration.** s-hole usually
+  makes pages feel faster because the browser has less to load, not because
+  your network is faster. A blocked ad or tracker domain returns `0.0.0.0`, so
+  the browser never fetches that content. Repeat DNS lookups return from the
+  in-memory cache with no upstream round-trip. The effect is largest on
+  ad-heavy pages and low-end devices.
+- **It is not a content cache.** s-hole answers DNS only. A first-time lookup
+  of an allowed domain still forwards upstream through s-hole. This adds a
+  small hop on a healthy LAN, but it is not faster than a direct query. s-hole
+  never caches or proxies the pages you visit, so it cannot speed up
+  first-party content or raise your bandwidth.
 
 ---
 

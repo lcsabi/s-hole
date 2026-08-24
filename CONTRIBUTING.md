@@ -199,11 +199,14 @@ missing test or note in the CL why the drop is acceptable.
 
 Docs, code comments, and commit messages follow a house style inspired by
 Simplified Technical English: short active sentences, plain words, one idea per
-sentence. Two hard rules:
+sentence. Two conventions:
 
-- **No em-dashes (`—`).** Use a period, colon, semicolon, or parentheses
-  instead. Before a PR, `grep -n '—'` on the files you changed should return
-  nothing.
+- **Keep em-dashes (`—`) out of prose.** Overused, they read as AI-slop, so use
+  a period, colon, semicolon, or parentheses instead. This is a taste guideline,
+  not a gate: normal dashes are fine (hyphens, and en-dash ranges like
+  `2000–5000`). `grep -n '—'` on your changed files is a handy convenience check,
+  but it is not mechanically enforced and can miss occurrences, so read the prose
+  rather than trusting a clean result.
 - **Procedures read as instructions.** Put the condition before the command, use
   the imperative, and keep each step to one action.
 

@@ -98,8 +98,12 @@ jobs:
         run: |
           set -euo pipefail
           ( cd artifacts && sha256sum s-hole_* > SHA256SUMS )
-          # Extract the CHANGELOG section for this version (tag minus the "v").
+          # Extract the CHANGELOG section for this version. Strip the leading
+          # "v", then drop any pre-release suffix (v0.1.0-rc1 -> 0.1.0), so a
+          # release candidate resolves the same [0.1.0] section its final tag
+          # will. A final tag has no "-" and is unchanged.
           version="${GITHUB_REF_NAME#v}"
+          version="${version%%-*}"
           awk -v v="$version" '
             $0 == "## [" v "]" || index($0, "## [" v "] ") == 1 { grab=1; next }
             grab && /^## \[/ { exit }

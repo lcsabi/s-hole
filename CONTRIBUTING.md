@@ -103,7 +103,16 @@ A live instance profiles the same way once `enable_pprof: true` is set. Bind
 ```bash
 go tool pprof http://127.0.0.1:8080/debug/pprof/profile?seconds=30   # 30s CPU
 go tool pprof http://127.0.0.1:8080/debug/pprof/heap                 # heap snapshot
+go tool pprof http://127.0.0.1:8080/debug/pprof/mutex                # lock contention
+go tool pprof http://127.0.0.1:8080/debug/pprof/block                # blocking events
 ```
+
+`enable_pprof: true` also turns on mutex and block profiling (both are off in
+the Go runtime by default and their endpoints report nothing until a rate is
+set). Use them to find a lock stall on the RWMutex-guarded hot path (`Store`,
+`Cache`, `stats.Counter`), the contention that the `_Parallel` benchmarks guard
+against. They sample rather than record every event, so they cost little while
+enabled, but enable them only during incident response on a localhost bind.
 
 Two notes. Profiling this codebase usually confirms the design (a map-lookup hot
 path) rather than revealing a problem, so reach for it when there is a symptom,

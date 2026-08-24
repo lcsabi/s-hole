@@ -312,3 +312,82 @@ func BenchmarkCache_Set(b *testing.B) {
 		c.Set(qs[j], msgs[j])
 	}
 }
+
+// BenchmarkCache_Set_DropOnFull measures the write path once the cache is at
+// capacity, the branch BenchmarkCache_Set deliberately avoids. Set still
+// validates the message and copies it (msg.Copy) before the len >= maxSize
+// check drops it under lock. A full cache under a query flood pays that copy
+// on every miss and throws it away, so this is the standing cost of the
+// drop-on-full policy.
+func BenchmarkCache_Set_DropOnFull(b *testing.B) {
+	c := New(1)
+	defer c.Close()
+
+	// Fill the single slot so every benchmarked Set hits the drop branch.
+	seed := dns.Question{Name: "seed.example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	c.Set(seed, buildResponse(seed, 300))
+
+	q := dns.Question{Name: "other.example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	msg := buildResponse(q, 300)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		c.Set(q, msg)
+	}
+}
+
+// BenchmarkCache_Get_Parallel measures the hit path under the concurrency it
+// runs in: miekg/dns spawns one goroutine per query, so many reads hit the
+// RWMutex-guarded map at once. Distinct keys spread the reads across the map
+// rather than hammering one entry. A serial Cache_Get cannot show lock
+// contention; this catches a regression that serializes readers or moves the
+// msg.Copy under an exclusive lock.
+func BenchmarkCache_Get_Parallel(b *testing.B) {
+	const distinct = 4096
+	c := New(distinct * 2)
+	defer c.Close()
+
+	qs := make([]dns.Question, distinct)
+	for i := range qs {
+		qs[i] = dns.Question{Name: "d" + strconv.Itoa(i) + ".example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+		c.Set(qs[i], buildResponse(qs[i], 300))
+	}
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			if _, ok := c.Get(qs[i%distinct]); !ok {
+				b.Fatal("expected cache hit")
+			}
+			i++
+		}
+	})
+}
+
+// BenchmarkCache_CleanupExpired measures the periodic sweep runCleanup runs
+// once a minute. It holds the write lock while iterating every entry, so on a
+// large cache it is a lock-held O(n) pass that blocks all readers and writers
+// for its duration. The entries are seeded not-yet-expired so the sweep walks
+// the whole map and deletes nothing, the worst case for scan cost.
+func BenchmarkCache_CleanupExpired(b *testing.B) {
+	const N = 8192
+	c := New(N)
+	defer c.Close()
+
+	for i := 0; i < N; i++ {
+		q := dns.Question{Name: "d" + strconv.Itoa(i) + ".example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+		c.Set(q, buildResponse(q, 3600))
+	}
+	// A fixed "now" at seed time so no entry has expired.
+	now := time.Now()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if removed := c.cleanupExpired(now); removed != 0 {
+			b.Fatalf("removed %d entries; expected none expired", removed)
+		}
+	}
+}

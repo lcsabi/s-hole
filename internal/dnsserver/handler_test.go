@@ -497,3 +497,48 @@ func BenchmarkHandler_ServeDNS(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkHandler_ServeDNS_Parallel drives the same two network-free paths
+// under the concurrency the handler actually runs in: miekg/dns spawns one
+// goroutine per query, so many ServeDNS calls hit the shared Store, Cache,
+// and stats.Counter at once. This is the contention the serial benchmark
+// cannot see, and where a lock regression (an exclusive Lock on the read
+// path, or real work under the stats mutex) shows up. Each goroutine gets its
+// own ResponseWriter because fakeWriter records the reply; the request is
+// read-only during ServeDNS, so all goroutines share it.
+func BenchmarkHandler_ServeDNS_Parallel(b *testing.B) {
+	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+
+	b.Run("Blocked", func(b *testing.B) {
+		store := blocklist.NewStore()
+		store.Replace([]string{"example.com"})
+		h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, false)
+		req := buildReq("example.com")
+
+		b.ResetTimer()
+		b.RunParallel(func(pb *testing.PB) {
+			w := fakeClient()
+			for pb.Next() {
+				h.ServeDNS(w, req)
+			}
+		})
+	})
+
+	b.Run("Cached", func(b *testing.B) {
+		c := cache.New(1024)
+		defer c.Close()
+		c.Set(q, buildResp(q, net.IPv4(1, 2, 3, 4), 300))
+
+		store := blocklist.NewStore() // empty: query is allowed, served from cache
+		h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, c, false)
+		req := buildReq("example.com")
+
+		b.ResetTimer()
+		b.RunParallel(func(pb *testing.PB) {
+			w := fakeClient()
+			for pb.Next() {
+				h.ServeDNS(w, req)
+			}
+		})
+	})
+}

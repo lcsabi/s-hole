@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -89,6 +90,39 @@ func TestPprof_CmdlineWhenEnabled(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("/debug/pprof/cmdline status = %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestPprof_MutexBlockProfilingEnabled verifies that enabling pprof also turns
+// on mutex and block profiling. Both are off in the Go runtime by default, so
+// /debug/pprof/mutex and /debug/pprof/block return empty profiles until a rate
+// is set. Without this wiring the contention endpoints are registered but
+// useless. Asserting the mutex fraction is set is deterministic; generating
+// real contention is not. SetMutexProfileFraction(-1) reads the current
+// fraction without changing it.
+func TestPprof_MutexBlockProfilingEnabled(t *testing.T) {
+	store := blocklist.NewStore()
+	store.Replace([]string{"x.com"})
+	s := New(stats.New(), nil, store, nil, func() bool { return true })
+	s.EnablePprof(true)
+	srv := httptest.NewServer(s.handler())
+	t.Cleanup(srv.Close)
+
+	if got := runtime.SetMutexProfileFraction(-1); got != mutexProfileFraction {
+		t.Errorf("mutex profile fraction = %d after EnablePprof; want %d "+
+			"(/debug/pprof/mutex would report nothing)", got, mutexProfileFraction)
+	}
+
+	// The block and mutex endpoints must serve a profile now, not 404 or error.
+	for _, path := range []string{"/debug/pprof/mutex", "/debug/pprof/block"} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("%s status = %d, want 200", path, resp.StatusCode)
+		}
 	}
 }
 

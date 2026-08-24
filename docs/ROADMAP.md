@@ -32,6 +32,19 @@ rails.
 | 16 | Conditional / split-horizon forwarding | Medium | not started |
 | 17 | Per-source blocklist health in `/api/stats` + dashboard | Medium | not started |
 | 18 | "Why is this blocked?" diagnostic endpoint (`/api/check`) | Low | not started |
+| 19 | Temporary "pause blocking" (timed bypass, auto-resume) | High | not started |
+| 20 | Query-volume-over-time graph on the dashboard | Medium | not started |
+| 21 | Query-log privacy modes (write-time client anonymization) | Medium | not started |
+| 22 | Client name attribution in the log and dashboard | Medium | not started |
+| 23 | Query-log search / filter | Medium | not started |
+| 24 | Query-log export (CSV / JSON) | Medium | not started |
+| 25 | Regex / pattern blocking | High | not started |
+| 26 | Grafana dashboard + Prometheus scrape/alert examples | Low | not started |
+
+Items 19-26 came out of a 2026-08-24 feature-ideas session. Items 21-24 are a
+dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
+#24 all read, so #21 must land first. The order below is the recommended
+implementation order, not the item-number order.
 
 ## 1. Deploy to real hardware
 
@@ -501,6 +514,257 @@ Design decisions to settle in the CL:
 Rated Low: a diagnostic guard rail with no runtime behavior change. It
 reinforces the "auditable in an afternoon" identity by making the block decision
 inspectable without reading Go.
+
+## 19. Temporary "pause blocking"
+
+The most-used control in comparable sinkholes. An operator hits a false positive
+and wants the site now, without hunting for the list entry that matched. Add a
+timed bypass that turns the block decision into pass-through for a set duration,
+then re-enables itself.
+
+`POST /api/disable?duration=5m` flips the store into pass-through and arms a timer
+that restores blocking when the duration expires. `POST /api/enable` restores it
+immediately. The dashboard shows a countdown pill and quick-duration buttons
+(30s, 5m, indefinite). The store already swaps its map pointer under lock (CL 30),
+so a bypass flag reuses the same read path with one atomic check.
+
+Design decisions to settle in the CL:
+
+- **Where the bypass lives.** A single atomic flag read at the top of `IsBlocked`,
+  or a separate resolver state. The flag is simpler and adds one branch to the hot
+  path.
+- **Indefinite vs bounded.** Whether to allow an unbounded disable, or cap it and
+  require re-arming. An unbounded disable that outlives the operator's memory is
+  its own foot-gun; the visible countdown mitigates it.
+- **Restart behavior.** Whether a pause survives a restart. Forward-only (a
+  restart re-enables blocking) is the safe default. Record it so a later review
+  does not read it as a lost timer.
+- **Counter and metric.** A `shole_blocking_disabled` gauge (1 while paused) so
+  the pause shows in `/metrics`, and a dropped block count is not a mystery.
+
+Rated High: a user-visible control that many deployments reach for daily. It
+changes no filtering rules, only whether they apply right now.
+
+## 20. Query-volume-over-time graph
+
+The dashboard shows current totals but not the shape of the day. Comparable tools
+lead with a queries-over-time graph, and the data already sits in the query DB
+with timestamps. A short history turns "current numbers" into "what happened
+today".
+
+`GET /api/history?window=24h&bucket=1h` aggregates total and blocked counts per
+time bucket in SQL. The UI draws it with a small inline canvas, no chart library,
+so the dependency graph and the static `go:embed` UI both stay as they are.
+
+Design decisions to settle in the CL:
+
+- **Bucketing in SQL vs Go.** Group by a time expression in the query, or scan
+  rows and bucket in the handler. SQL grouping keeps the payload small and the
+  handler thin.
+- **Window and bucket bounds.** Which windows to offer (24h, 7d) and how to clamp
+  the bucket count, reusing the `?limit=` clamp pattern so a crafted request
+  cannot ask for millions of buckets.
+- **db-disabled path.** With `query_db` off, return an empty series the way
+  `/api/queries` returns an empty list, so the panel renders empty instead of
+  erroring.
+- **Privacy interaction.** The series is aggregate counts only and needs no client
+  field, so #21 does not affect it. Record this so the two are not read as
+  coupled.
+
+Rated Medium: an observability win with high visual value. It changes no filtering
+behavior.
+
+## 21. Query-log privacy modes (write-time client anonymization)
+
+The query log stores the client IP for every request. An operator who wants block
+and domain analysis without retaining per-device history has no way to ask for it
+today. Add privacy levels that mask the client before it is stored.
+
+The masking must happen at **write time**, at a single choke point. A
+`privacyLogger` decorator wraps the `Multi` logger and transforms the client IP
+once, upstream of the fan-out, so the SQLite log, the text `FileLogger`, and every
+reader see the same masked value. Read-time masking would leave raw IPs in
+`queries.db` and in the text log, so the setting would promise a property it does
+not have.
+
+Levels:
+
+- `full` (default): the raw client IP, current behavior.
+- `anonymize`: the client is dropped on the flat home LAN (the common case), with
+  **opt-in prefix truncation** (a configurable prefix such as `/24`) for segmented
+  or VLAN networks where the subnet is a meaningful group. On a single-`/24` LAN a
+  truncated client is a constant that looks like data and is not, so dropping is
+  the honest default there.
+- off is the existing `query_db: ""`.
+
+This item is the foundation for #22, #23, and #24. Each of those is a read-time
+consumer of the stored row and must never reach behind the mask.
+
+Design decisions to settle in the CL:
+
+- **Truncate vs drop default.** Drop on the flat LAN; truncate only when the
+  operator sets a prefix. The choice is topology, not searchability (a `/24`
+  truncation on a single-`/24` LAN filters nothing).
+- **Retroactivity.** Masking is forward-only: rows written at `full` keep their raw
+  IPs, so a mixed-level DB shows both. Whether to offer an explicit one-shot scrub
+  of existing rows, or document forward-only and add scrub later. A silent bulk
+  `UPDATE` of operator data should not be automatic.
+- **No de-anonymization path.** No API convenience may reverse the mask (for
+  example hashing a query parameter to match a hashed store). That would build a
+  de-anonymization oracle on the unauthenticated LAN endpoint and defeat the mode.
+- **Config surface.** A `query_privacy:` setting and its `S_HOLE_*` override,
+  validated in `config.Validate`.
+
+Rated Medium: a user-visible trust and robustness win. It changes no filtering
+behavior.
+
+## 22. Client name attribution
+
+The log and the Top Clients panel show raw IPs. A friendly device name
+("kids-ipad") is easier to read and act on. Add a static name map that resolves at
+display time.
+
+A `client_names:` map in config (exact IP or CIDR to label) is joined on the way
+out, in the API read path or the UI. It is a read-time cosmetic over the stored
+row, so it keys off the **masked** client value once #21 lands, never a pre-mask
+raw IP. Resolving from a raw IP before masking would re-identify the exact device
+and defeat #21; the label is itself PII.
+
+Label granularity then tracks the privacy level: a host label at `full`, a subnet
+label only when #21 truncates on a segment, nothing when the client is dropped.
+
+Design decisions to settle in the CL:
+
+- **Match precedence.** Exact IP over CIDR when both match, so a named host wins
+  over its segment label.
+- **Where the join runs.** In the API handler (one place, feeds the UI and the
+  export) or in the UI only. The handler keeps export (#24) consistent for free.
+- **Optional reverse-lookup.** Whether to also resolve names from the local PTR
+  data opportunistically, or keep it config-only for the first cut. Config-only is
+  simpler and has no lookup cost.
+- **Scope note.** This is read-only attribution, distinct from the per-client
+  policies non-goal. Record it so a later review does not conflate the two.
+
+Rated Medium: a usability win for reading the log. It changes no filtering
+behavior.
+
+## 23. Query-log search / filter
+
+The recent-queries panel shows the stream but cannot answer a question about it.
+Add filters so false-positive triage is a query, not a scroll.
+
+`GET /api/queries` gains `?domain=`, `?blocked=`, and `?client=` parameters,
+reusing the `?limit=` clamp machinery. The filter runs in SQL over the stored
+columns, so it can only ever match what #21 left in the row. When the effective
+privacy level makes the client filter meaningless (the client is dropped, or a
+single-`/24` LAN collapses every client to one subnet), the UI hides or disables
+the client control rather than offering a box that silently returns every row.
+
+Design decisions to settle in the CL:
+
+- **Match semantics.** Exact vs substring for `?domain=`, and whether `?client=`
+  accepts a CIDR. Substring domain match is the useful default for "show me
+  everything under this tracker".
+- **Index cost.** Whether the filtered columns need an index, weighed against the
+  async writer's single-connection pool (b/038). Home-scale row counts likely do
+  not, but note the measurement.
+- **Privacy-aware UI.** The client control shows only when the stored client is
+  meaningful, driven by the active `query_privacy` level.
+
+Rated Medium: a usability and observability win. It changes no filtering behavior.
+
+## 24. Query-log export (CSV / JSON)
+
+Data portability. An operator who wants to analyze history in another tool has no
+bulk path out today. Add an export that streams the log.
+
+`GET /api/queries/export` streams the stored rows, reusing the #23 filter
+parameters so a filtered export is the filtered query in bulk. Because #21 masks
+at write time, export cannot leak more than search: there is no richer copy of the
+client for the bulk endpoint to expose. This item is also the forcing function
+that validates #21's placement. If masking were ever done at read time, an export
+of the raw DB would silently undo the privacy setting.
+
+Design decisions to settle in the CL:
+
+- **Format and streaming.** CSV and JSON, streamed row by row so a large log does
+  not build a full response in memory.
+- **Privacy stamp.** Record the active `query_privacy` level in the export
+  metadata (a CSV comment header or a JSON envelope field) so a masked value reads
+  as intentional, not a bug.
+- **Resolved names.** Whether the export includes the #22 label column. It may, and
+  stays safe precisely because the label resolves from the masked stored value.
+- **Timeout interaction.** The 64 KiB body cap is a request limit and does not
+  apply, but confirm the slowloris write timeouts suit a long streamed response.
+
+Rated Medium: a data-portability win. It changes no filtering behavior.
+
+## 25. Regex / pattern blocking
+
+Suffix blocking (CL 30) covers the common cases, but some trackers need a pattern
+(for example a family such as `ad[sx]?[0-9]*\.`). Add an optional pattern list
+checked after the fast set lookups.
+
+A `block_patterns:` list is compiled once at load. `IsBlocked` checks the two O(1)
+sets and the suffix walk first, and falls through to the patterns only on a miss,
+so a blocked or exact-allowed query pays no regex cost. Patterns are the
+last-resort tool; suffix blocking stays the fast path.
+
+Design decisions to settle in the CL:
+
+- **Hot-path guard.** A benchmark companion (the pattern-miss worst case, which
+  runs every pattern) so a large list cannot regress the hot path unseen. Add it
+  the way `BenchmarkStore_IsBlocked_Miss` guards the suffix walk.
+- **Whitelist interaction.** Whether the whitelist walk (CL 30) overrides a pattern
+  match the way it overrides a suffix match. It should: whitelist-wins stays the
+  single escape hatch.
+- **Compile-time validation.** A bad pattern in config fails `config.Validate` with
+  the offending line, not at the first query.
+- **Stats attribution.** A pattern-blocked query counts as blocked like any other.
+  Whether to distinguish the reason in the #18 `/api/check` output.
+
+Rated High: a user-visible filtering win for the cases exact and suffix matching
+miss. Narrower reach than CL 30, since most real traffic is already caught by
+suffix blocking.
+
+## 26. Grafana dashboard + Prometheus examples
+
+s-hole already exposes `/metrics` in Prometheus format, so the hard part is done.
+What is missing is a ready-made way to use it. Ship the assets that turn the
+existing metrics into a working monitoring setup, with no code and no new
+dependency.
+
+Prometheus scrapes and stores the `/metrics` time series and evaluates alert
+rules. Grafana draws dashboards on top of a Prometheus data source. They are
+layers, not alternatives: Grafana cannot scrape `/metrics` on its own, and
+Prometheus has no dashboards of its own. An operator who already runs that stack
+for a homelab gets the most from this. An operator who does not is already served
+by the built-in dashboard (#20) and does not need to adopt the stack just for
+s-hole.
+
+Ship:
+
+- `deploy/grafana-dashboard.json`: a portable dashboard with panels for the
+  `shole_*` metrics (blocklist size, query rate, block ratio, cache hit rate,
+  query-log drops, and any gauge added by #19 or #21).
+- A `prometheus.yml` scrape snippet for the s-hole target.
+- A small set of example alert rules (blocklist empty, high query-log drop rate,
+  upstream failure rate).
+
+Build this last so the dashboard and alerts can include any metric added by the
+earlier items.
+
+Design decisions to settle in the CL:
+
+- **Dashboard scope.** Which panels ship by default, kept to the metrics that
+  already exist so the JSON does not reference absent series.
+- **Where the assets live.** Under `deploy/` next to the install scripts, and
+  whether the README gains a short "monitoring" section pointing at them.
+- **Version pinning.** Which Grafana schema version the JSON targets, since the
+  import format changes across major versions.
+
+Rated Low: a distribution and documentation win that makes the existing metrics
+immediately usable. It adds nothing to the binary.
 
 ## Pending decisions
 

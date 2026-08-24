@@ -15,7 +15,7 @@ rails.
 | # | Item | Impact | Status |
 |--:|---|---|---|
 | 1 | Deploy to real hardware (Raspberry Pi) | High | procedure validated in a VM; awaiting hardware |
-| 2 | Tag `v0.1.0` + release workflow | High | done (CL 43) |
+| 2 | Tag `v0.1.0` + release workflow | High | done (CL 43, CL 44); v0.1.0 tagged 2026-08-24 |
 | 3 | Wildcard / subdomain blocking | High | done (CL 30) |
 | 4 | Wire up or delete `DBLogger.TopBlocked` | Medium | done (CL 33) |
 | 5 | DNS-over-HTTPS upstream support | Medium | not started |
@@ -37,7 +37,10 @@ Cross-compile (`make pi` / `make pi32`), `scp` binary + config +
 CONTRIBUTING smoke test, then point the router's DHCP DNS at it (see
 the README's IPv6-networks note for the RA/RDNSS bypass trap). Give
 the machine a static IP / DHCP reservation first. A few days of real
-LAN traffic is the qualification gate for #2.
+LAN traffic is the confidence gate for running a release on real hardware.
+(`v0.1.0` was tagged ahead of this soak on 2026-08-24, on the strength of the
+release dry-runs under #2; the soak stays open here until a Raspberry Pi is
+available.)
 
 **2026-07-12:** the full procedure was rehearsed on a VirtualBox
 Debian 12 VM (amd64 build, bridged networking): installer, systemd
@@ -48,7 +51,7 @@ disabled (`query_db: ""`). What remains is a replay on ARM hardware
 (`make pi`) plus the router cut-over and the multi-day soak, so the
 item stays open until a Raspberry Pi is available.
 
-## 2. Tag `v0.1.0` + release workflow (done, CL 43)
+## 2. Tag `v0.1.0` + release workflow (done, CL 43 and CL 44)
 
 CI already cross-compiled all four targets and threw the binaries away.
 **Shipped in CL 43:** `.github/workflows/release.yml` triggers on a `v*`
@@ -69,10 +72,18 @@ Design decisions settled in the CL:
   does not move the `:latest` image, so an rc can be validated without
   becoming the default pull.
 
-The CL also graduated the CHANGELOG's `[Unreleased]` section to
-`[0.1.0]`. The `v0.1.0` tag itself is a maintainer action (a `git tag` +
-`git push`), ideally pointing at a commit that has survived #1 (the
-real-hardware soak).
+The CL also graduated the CHANGELOG's `[Unreleased]` section to `[0.1.0]`.
+
+**2026-08-24:** `v0.1.0` was tagged and pushed (commit `59c5212`). The workflow
+produced the first GitHub Release (four archives plus `SHA256SUMS`, notes drawn
+from the `[0.1.0]` CHANGELOG section) and the first multi-arch
+`ghcr.io/lcsabi/s-hole` image, and moved `:latest` to it. A `v0.1.0-rc1`
+dry-run first surfaced a bug in the release-notes extractor (a pre-release tag
+did not resolve its base CHANGELOG section, so the notes fell back to a
+placeholder); CL 44 fixed it and a `v0.1.0-rc2` dry-run confirmed the fix before
+the final tag. The tag was cut ahead of the #1 hardware soak. The release
+machinery was validated on its own through the rc dry-runs, so any issue the
+soak surfaces later ships as `v0.1.1`.
 
 ## 3. Wildcard / subdomain blocking (done, CL 30)
 

@@ -1,6 +1,7 @@
 # s-hole
 
 [![CI](https://github.com/lcsabi/s-hole/actions/workflows/ci.yml/badge.svg)](https://github.com/lcsabi/s-hole/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/lcsabi/s-hole)](https://github.com/lcsabi/s-hole/releases/latest)
 [![Go Reference](https://pkg.go.dev/badge/github.com/lcsabi/s-hole.svg)](https://pkg.go.dev/github.com/lcsabi/s-hole)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/lcsabi/s-hole)](go.mod)
 [![License](https://img.shields.io/github/license/lcsabi/s-hole)](LICENSE)
@@ -649,7 +650,7 @@ The binary reports its build identity at any time:
 
 ```
 $ s-hole -version
-s-hole v1.0.0
+s-hole v0.1.0
   commit:  ab12cd3
   built:   2026-06-24T12:00:00Z
   go:      go1.25.0

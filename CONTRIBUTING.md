@@ -112,6 +112,43 @@ and the router-setup banner. Then, in a second terminal:
    pre-restart rows, and startup is faster (blocklists load from the
    disk cache).
 
+## Cutting a release
+
+Releases are tag-triggered. Push a `vMAJOR.MINOR.PATCH` tag and
+`.github/workflows/release.yml` builds the four targets, attaches a per-target
+archive plus `SHA256SUMS` to a GitHub Release (notes drawn from the matching
+`[X.Y.Z]` CHANGELOG section), and pushes a multi-arch
+`ghcr.io/lcsabi/s-hole` image. The version is the tag name, so `s-hole
+-version` on a released build reports it instead of `dev`.
+
+The procedure:
+
+1. **Graduate the CHANGELOG first, as a normal CL.** Rename `## [Unreleased]`
+   to `## [X.Y.Z] - YYYY-MM-DD` and add a fresh empty `## [Unreleased]` above
+   it. Merge that before tagging, so the tag points at a commit whose CHANGELOG
+   already carries the release section.
+2. **Dry-run with a pre-release tag.** Run `git tag -a vX.Y.Z-rc1 -m … && git
+   push origin vX.Y.Z-rc1`. A tag with a `-` suffix is published as a GitHub
+   pre-release and does not move the Docker `:latest`, so a mistake costs
+   nothing.
+3. **Verify the rc.** Confirm the four archives and `SHA256SUMS` are attached,
+   `sha256sum -c SHA256SUMS` passes on a downloaded archive, a downloaded binary
+   reports the tag under `-version`, `docker pull
+   ghcr.io/lcsabi/s-hole:X.Y.Z-rc1` runs and reports the same version, and the
+   Release notes render the `[X.Y.Z]` CHANGELOG section (not a placeholder).
+4. **Tear down the rc.** Run `gh release delete vX.Y.Z-rc1 --yes --cleanup-tag`
+   (removes the Release and the tag) and `git tag -d vX.Y.Z-rc1`. Delete the rc
+   image from the `ghcr` package too if you want a clean package page.
+5. **Cut the final tag.** Run `git tag -a vX.Y.Z -m … && git push origin
+   vX.Y.Z`. This tag has no `-`, so the Release is marked Latest and `:latest`
+   moves to it.
+6. **Confirm.** `gh release view vX.Y.Z` shows `isPrerelease=false`,
+   `docker manifest inspect ghcr.io/lcsabi/s-hole:latest` resolves, and the
+   `ghcr` package is public.
+
+A published final tag is immutable. Never move or delete it once it is out;
+ship a fix as the next patch (`vX.Y.Z+1`).
+
 ## Project structure
 
 ```

@@ -2,8 +2,8 @@
 
 All notable changes to s-hole are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project loosely
-tracks [Semantic Versioning](https://semver.org/) once the first tagged
-release ships. Detailed per-CL descriptions live under `cls/`, indexed by
+tracks [Semantic Versioning](https://semver.org/), starting from the first
+tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexed by
 `CL.md`; this file is the operator-facing summary.
 
 ## [Unreleased]

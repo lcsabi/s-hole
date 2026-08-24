@@ -53,7 +53,7 @@ ServeDNS (internal/dnsserver/handler.go)
 Wiring lives in `cmd/s-hole/main.go`, which owns three cross-cutting mechanisms that are easy to break from inside a package:
 
 - **Single-flight reload**: one `TryLock` closure wraps `blocklist.Update`; the periodic ticker, `POST /api/reload`, and SIGHUP all go through it. The mutex must stay in main; a mutex inside `api` was a P0 once (b/022) because the ticker bypassed it.
-- **Shutdown ordering** (`doStop`): cancel ticker ctx → stop DNS → drain HTTP → wait for in-flight reload (bounded) → close cache/loggers → exit. Reordering causes writes-to-closed-DB or half-written blocklist cache files.
+- **Shutdown ordering** (`shutdown`, invoked by `doStop`): cancel ticker ctx → stop DNS → drain HTTP → wait for in-flight reload (bounded) → close cache/loggers → exit. Reordering causes writes-to-closed-DB or half-written blocklist cache files. The order is unit-tested via injected `shutdownDeps` (`TestShutdown_TeardownOrder`, CL 48).
 - **Platform split**: Windows SCM service loop vs. interactive signal handling (`signals_unix.go`/`signals_windows.go`, `internal/service` with a non-Windows stub).
 
 Concurrency invariants that tests pin (keep them green under `-race`):

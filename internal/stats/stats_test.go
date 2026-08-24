@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -346,4 +347,37 @@ func TestCounter_CacheHitRateNeverExceeds100UnderLoad(t *testing.T) {
 	}
 	stop.Store(true)
 	wg.Wait()
+}
+
+// BenchmarkCounter_RecordQuery measures the per-query stats cost. RecordQuery
+// runs on every query and updates the top-N maps under a lock.
+func BenchmarkCounter_RecordQuery(b *testing.B) {
+	// SteadyState: a small fixed set of keys, so the top-N maps stay well under
+	// the cap and never prune. The common home-LAN shape.
+	b.Run("SteadyState", func(b *testing.B) {
+		c := New()
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			c.RecordQuery("192.168.1.10", "example.com", false)
+		}
+	})
+
+	// ManyDomains: more distinct domains than topNMaxEntries, so topDomains
+	// grows to the cap and pruneBottomHalf fires repeatedly. This is the path
+	// BenchmarkHandler_ServeDNS never reaches (it reuses one domain), and the
+	// prune reassigns the map pointer (R31), so it is worth guarding.
+	b.Run("ManyDomains", func(b *testing.B) {
+		c := New()
+		distinct := 2 * topNMaxEntries
+		domains := make([]string, distinct)
+		for i := range domains {
+			domains[i] = "d" + strconv.Itoa(i) + ".example.com"
+		}
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			c.RecordQuery("192.168.1.10", domains[i%distinct], false)
+		}
+	})
 }

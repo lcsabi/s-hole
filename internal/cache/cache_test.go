@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -285,5 +286,29 @@ func BenchmarkCache_Get(b *testing.B) {
 		if _, ok := c.Get(q); !ok {
 			b.Fatal("expected cache hit")
 		}
+	}
+}
+
+// BenchmarkCache_Set measures the write path that runs on every cache miss:
+// validate the message, build the key, and store under lock. Distinct keys so
+// each Set builds a fresh key string; the cache is sized to hold them all, so
+// this measures the store path rather than the drop-on-full early return.
+func BenchmarkCache_Set(b *testing.B) {
+	const distinct = 4096
+	c := New(distinct * 2)
+	defer c.Close()
+
+	qs := make([]dns.Question, distinct)
+	msgs := make([]*dns.Msg, distinct)
+	for i := range qs {
+		qs[i] = dns.Question{Name: "d" + strconv.Itoa(i) + ".example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+		msgs[i] = buildResponse(qs[i], 300)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		j := i % distinct
+		c.Set(qs[j], msgs[j])
 	}
 }

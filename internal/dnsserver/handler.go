@@ -262,14 +262,32 @@ func (h *Handler) writeLocalNXDOMAIN(w dns.ResponseWriter, req *dns.Msg) {
 	}
 }
 
+// clientAddr returns the query source IP (no port) for the stats top-clients
+// tracker and the query log. It runs on every query, so it reads the IP
+// directly from the concrete address type. The former SplitHostPort(addr.String())
+// form built "ip:port" (a JoinHostPort allocation) only to parse the port back
+// off, two allocations per query for a value we throw away. The type switch
+// keeps just the one IP.String() allocation; the SplitHostPort path stays as a
+// fallback for any other net.Addr implementation.
 func clientAddr(w dns.ResponseWriter) string {
-	addr := w.RemoteAddr()
-	if addr == nil {
+	switch a := w.RemoteAddr().(type) {
+	case *net.UDPAddr:
+		if a == nil {
+			return "unknown"
+		}
+		return a.IP.String()
+	case *net.TCPAddr:
+		if a == nil {
+			return "unknown"
+		}
+		return a.IP.String()
+	case nil:
 		return "unknown"
+	default:
+		host, _, err := net.SplitHostPort(a.String())
+		if err != nil {
+			return a.String()
+		}
+		return host
 	}
-	host, _, err := net.SplitHostPort(addr.String())
-	if err != nil {
-		return addr.String()
-	}
-	return host
 }

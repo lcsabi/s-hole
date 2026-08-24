@@ -652,11 +652,11 @@ Coverage by package (after `go test -cover ./...`):
 | `internal/version` | 100 % |
 | `internal/cache` | 94.8 % |
 | `internal/api` | 89.7 % |
-| `internal/blocklist` | 90.4 % |
-| `internal/dnsserver` | 88.5 % |
+| `internal/blocklist` | 91.4 % |
+| `internal/dnsserver` | 90.3 % |
 | `internal/querylog` | 85.7 % |
 | `cmd/s-hole` | 41.7 % |
-| **module-wide** | **79.8 %** |
+| **module-wide** | **80.4 %** |
 
 The uncovered region is the `main()` bootstrap and the Windows-only SCM glue, both exercised by manual smoke tests, not unit tests.
 

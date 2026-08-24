@@ -268,6 +268,60 @@ func BenchmarkStore_IsBlocked_Miss(b *testing.B) {
 	}
 }
 
+// BenchmarkStore_IsBlocked_Parallel measures the read path under the
+// concurrency it actually runs in: miekg/dns spawns one goroutine per query,
+// so many IsBlocked calls hit the RWMutex-guarded set at once. A serial
+// benchmark cannot see lock contention; this one catches a regression that
+// turns the RLock into an exclusive Lock or does real work under the lock.
+// Half the probes hit and half miss (the deep-walk worst case) to exercise
+// both suffix-walk exits under contention.
+func BenchmarkStore_IsBlocked_Parallel(b *testing.B) {
+	s := NewStore()
+	const N = 100_000
+	dom := make([]string, 0, N)
+	for i := 0; i < N; i++ {
+		dom = append(dom, "x"+strconv.Itoa(i)+".example.com")
+	}
+	s.Replace(dom)
+
+	hit := "x50000.example.com"
+	miss := "deep.sub.domain.example.org"
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			if i&1 == 0 {
+				s.IsBlocked(hit)
+			} else {
+				s.IsBlocked(miss)
+			}
+			i++
+		}
+	})
+}
+
+// BenchmarkStore_Replace measures the reload swap: build a fresh blocked
+// set from a slice, then swap the map pointer under the write lock. This
+// runs on every blocklist refresh (periodic ticker, POST /api/reload,
+// SIGHUP) inside the single-flight lock, so a regression here stalls the
+// swap and the readers waiting on it. The build dominates; the swap itself
+// is a pointer store. ReportAllocs tracks the per-reload allocation of the
+// new set.
+func BenchmarkStore_Replace(b *testing.B) {
+	const N = 100_000
+	dom := make([]string, 0, N)
+	for i := 0; i < N; i++ {
+		dom = append(dom, "x"+strconv.Itoa(i)+".example.com")
+	}
+	s := NewStore()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		s.Replace(dom)
+	}
+}
+
 func TestNormalize(t *testing.T) {
 	tests := []struct {
 		in, want string

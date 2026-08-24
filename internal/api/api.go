@@ -139,7 +139,8 @@ func (s *Server) handler() http.Handler {
 
 	if s.enablePprof {
 		registerPprof(mux)
-		logger.Info("pprof endpoints registered", "prefix", "/debug/pprof/")
+		logger.Info("pprof endpoints registered", "prefix", "/debug/pprof/",
+			"mutex_profiling", true, "block_profiling", true)
 	}
 
 	sub, err := fs.Sub(staticFiles, "static")

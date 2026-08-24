@@ -247,3 +247,54 @@ func TestDBLogger_DroppedZeroUnderNormalLoad(t *testing.T) {
 		t.Errorf("Dropped() = %d under normal load; want 0", got)
 	}
 }
+
+// BenchmarkDBLogger_Flush measures the batch-commit throughput of the async
+// writer. The SQLite pool is pinned to one connection (b/038), so this
+// single-transaction insert of flushBatchSize rows is the entire drain
+// budget: if it slows, the bounded channel fills and Log starts dropping
+// (shole_query_log_dropped_total). Each iteration commits one full batch. The
+// flush interval is set long so the writer goroutine stays idle and does not
+// compete for the one connection while flush is called directly.
+func BenchmarkDBLogger_Flush(b *testing.B) {
+	path := filepath.Join(b.TempDir(), "queries.db")
+	d, err := NewDBLogger(path, "all", time.Hour, 0)
+	if err != nil {
+		b.Fatalf("NewDBLogger: %v", err)
+	}
+	defer d.Close()
+
+	now := time.Now()
+	batch := make([]entry, flushBatchSize)
+	for i := range batch {
+		batch[i] = entry{ts: now, clientIP: "192.168.1.10", domain: "ads.example.com.", blocked: i%2 == 0}
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		d.flush(batch)
+	}
+}
+
+// BenchmarkDBLogger_Log_Parallel measures the enqueue cost on the hot path
+// under concurrent callers, the way it runs in production: one DNS goroutine
+// per query calling Log. The point is that the select-send stays non-blocking
+// even when the channel saturates and Log takes the drop branch; a regression
+// that made Log block a DNS goroutine would show as a throughput collapse
+// here. The writer drains concurrently, so some sends land and some drop; the
+// benchmark measures the caller's cost either way.
+func BenchmarkDBLogger_Log_Parallel(b *testing.B) {
+	path := filepath.Join(b.TempDir(), "queries.db")
+	d, err := NewDBLogger(path, "all", 50*time.Millisecond, 0)
+	if err != nil {
+		b.Fatalf("NewDBLogger: %v", err)
+	}
+	defer d.Close()
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			d.Log("192.168.1.10", "ads.example.com.", true)
+		}
+	})
+}

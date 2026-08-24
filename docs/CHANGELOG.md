@@ -16,6 +16,12 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   state changes previously left no trace in the log. (CL 45)
 
 ### Changed
+- **`enable_pprof` now also enables mutex and block profiling.** With pprof on,
+  `/debug/pprof/mutex` and `/debug/pprof/block` report lock contention and
+  blocking events, which the Go runtime leaves off (and those endpoints empty)
+  by default. Both sample rather than record every event, so the cost is small
+  and is paid only while pprof is enabled, which stays off by default and should
+  be bound to localhost. (CL 53)
 
 ### Fixed
 

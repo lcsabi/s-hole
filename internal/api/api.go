@@ -32,6 +32,7 @@ import (
 	"errors"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -263,6 +264,7 @@ func (s *Server) handleWhitelistAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.store.AddToWhitelist(domain)
+	logger.Info("whitelist entry added", "domain", domain, "client", clientIP(r))
 	writeJSON(w, map[string]string{"domain": domain, "status": "whitelisted"})
 }
 
@@ -273,10 +275,12 @@ func (s *Server) handleWhitelistRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.store.RemoveFromWhitelist(domain)
+	logger.Info("whitelist entry removed", "domain", domain, "client", clientIP(r))
 	writeJSON(w, map[string]string{"domain": domain, "status": "removed"})
 }
 
-func (s *Server) handleReload(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
+	logger.Info("blocklist reload requested via API", "client", clientIP(r))
 	if !s.reloadFn() {
 		writeJSON(w, map[string]string{"status": "reload already in progress"})
 		return
@@ -292,4 +296,14 @@ func writeJSON(w http.ResponseWriter, v any) {
 		// the client see a silent truncation.
 		logger.Warn("json encode failed", "err", err)
 	}
+}
+
+// clientIP returns the requester address for an audit-log line. It drops
+// the ephemeral source port from RemoteAddr and falls back to the raw
+// value if the address carries no port.
+func clientIP(r *http.Request) string {
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }

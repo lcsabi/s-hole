@@ -244,7 +244,10 @@ func main() {
 	// promptly instead of running until os.Exit.
 	runCtx, runCancel := context.WithCancel(context.Background())
 	go runTicker(runCtx, statsInterval, counter.Print)
-	go runTicker(runCtx, refreshInterval, func() { reloadFn() })
+	go runTicker(runCtx, refreshInterval, func() {
+		mainLog.Info("blocklist reload requested via timer")
+		reloadFn()
+	})
 
 	// doStop is the single shutdown path used by both the signal handler
 	// (interactive) and the Windows SCM stop event (service mode).

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -656,5 +657,120 @@ func TestReload_ConcurrentCallsCollapse(t *testing.T) {
 		// Possible but unlikely; if the goroutine releases the lock
 		// between every TryLock attempt we never observe contention.
 		t.Log("note: no contention observed; single-flight gate ran serially")
+	}
+}
+
+// recordingHandler is a race-safe slog.Handler that keeps each formatted
+// record so a test can assert an audit line was emitted. The handler
+// goroutine (the HTTP handler) and the test goroutine share it, so every
+// access is mutex-guarded.
+type recordingHandler struct {
+	mu   sync.Mutex
+	msgs []string
+}
+
+func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
+	var sb strings.Builder
+	sb.WriteString(r.Message)
+	r.Attrs(func(a slog.Attr) bool {
+		sb.WriteString(" ")
+		sb.WriteString(a.Key)
+		sb.WriteString("=")
+		sb.WriteString(a.Value.String())
+		return true
+	})
+	h.mu.Lock()
+	h.msgs = append(h.msgs, sb.String())
+	h.mu.Unlock()
+	return nil
+}
+
+func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *recordingHandler) WithGroup(string) slog.Handler      { return h }
+
+func (h *recordingHandler) contains(sub string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, m := range h.msgs {
+		if strings.Contains(m, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// captureLogs swaps the package logger for a recording handler and
+// restores it when the test ends. Tests here do not run in parallel, so
+// the swap of the package global is safe.
+func captureLogs(t *testing.T) *recordingHandler {
+	t.Helper()
+	h := &recordingHandler{}
+	old := logger
+	logger = slog.New(h)
+	t.Cleanup(func() { logger = old })
+	return h
+}
+
+func TestWhitelistAdd_LogsAuditLine(t *testing.T) {
+	// A whitelist add un-blocks a domain network-wide from an
+	// unauthenticated endpoint, so it must leave an audit line.
+	rec := captureLogs(t)
+	_, srv := newTestServer(t, nil)
+
+	resp, err := http.Post(srv.URL+"/api/whitelist", "application/json",
+		strings.NewReader(`{"domain":"foo.com"}`))
+	if err != nil {
+		t.Fatalf("POST whitelist: %v", err)
+	}
+	resp.Body.Close()
+
+	if !rec.contains("whitelist entry added") || !rec.contains("domain=foo.com") {
+		t.Errorf("missing audit line for add; got %v", rec.msgs)
+	}
+}
+
+func TestWhitelistRemove_LogsAuditLine(t *testing.T) {
+	rec := captureLogs(t)
+	_, srv := newTestServer(t, nil)
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/whitelist?domain=foo.com", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE whitelist: %v", err)
+	}
+	resp.Body.Close()
+
+	if !rec.contains("whitelist entry removed") || !rec.contains("domain=foo.com") {
+		t.Errorf("missing audit line for remove; got %v", rec.msgs)
+	}
+}
+
+func TestReload_LogsSource(t *testing.T) {
+	// The reload log line records the trigger source so a POST /api/reload
+	// is distinguishable from the periodic timer and a SIGHUP.
+	rec := captureLogs(t)
+	_, srv := newTestServer(t, func() bool { return true })
+
+	resp, err := http.Post(srv.URL+"/api/reload", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST reload: %v", err)
+	}
+	resp.Body.Close()
+
+	if !rec.contains("blocklist reload requested via API") {
+		t.Errorf("missing reload source line; got %v", rec.msgs)
+	}
+}
+
+func TestClientIP(t *testing.T) {
+	// With a port, clientIP drops it; without one, it returns the raw
+	// value so the audit line still records something.
+	if got := clientIP(&http.Request{RemoteAddr: "192.0.2.5:1234"}); got != "192.0.2.5" {
+		t.Errorf("clientIP(host:port) = %q, want 192.0.2.5", got)
+	}
+	if got := clientIP(&http.Request{RemoteAddr: "no-port"}); got != "no-port" {
+		t.Errorf("clientIP(no port) = %q, want no-port", got)
 	}
 }

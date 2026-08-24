@@ -64,6 +64,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 48](cls/CL-48.md) | Make the shutdown teardown order testable |
 | [CL 49](cls/CL-49.md) | Link two invariants to their guard tests at the enforcement site |
 | [CL 50](cls/CL-50.md) | Trim per-query allocations on the handler and lookup hot path |
+| [CL 51](cls/CL-51.md) | Document the benchmarking and profiling workflow |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

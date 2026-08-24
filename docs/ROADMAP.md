@@ -28,6 +28,10 @@ rails.
 | 12 | `uninstall-linux.sh` companion to the installer | Low | done (CL 40) |
 | 13 | Persist runtime whitelist across restarts | Medium | not started |
 | 14 | CNAME deep-inspection (block cloaked trackers) | Medium | not started |
+| 15 | Local DNS records (host overrides) | High | not started |
+| 16 | Conditional / split-horizon forwarding | Medium | not started |
+| 17 | Per-source blocklist health in `/api/stats` + dashboard | Medium | not started |
+| 18 | "Why is this blocked?" diagnostic endpoint (`/api/check`) | Low | not started |
 
 ## 1. Deploy to real hardware
 
@@ -365,6 +369,138 @@ Rated Medium. It closes a real and growing evasion, but only for the subset of
 trackers that use cloaking. The third-party trackers s-hole already blocks still
 dominate real traffic, so the practical reach is narrower than the subdomain
 blocking of CL 30.
+
+## 15. Local DNS records (host overrides)
+
+s-hole answers LAN queries but cannot name anything on the LAN itself. An
+operator who wants `nas.home` or `printer.home` to resolve has to run a second
+resolver or edit every client's hosts file. Pi-hole and dnsmasq both answer
+local A/AAAA records; s-hole forwards them upstream, where they NXDOMAIN.
+
+Add a `local_records:` map to config (name to one or more A/AAAA addresses).
+Answer a matching query authoritatively before the forward step, the same
+short-circuit pattern the private-PTR handler already uses (CL 27): the match
+runs before the blocklist check, costs one map lookup for a non-matching query,
+and needs no new dependency.
+
+Design decisions to settle in the CL:
+
+- **Name normalization.** Case-fold and trailing-dot normalize the configured
+  names, the way blocklist entries are matched, so `NAS.home` and `nas.home.`
+  resolve the same record.
+- **Exact vs wildcard.** Whether to answer only exact names or also a wildcard
+  suffix (e.g. `*.home`). Exact-only is the simpler first cut and covers the
+  common case; a wildcard can reuse the suffix walk (CL 30) later.
+- **Reverse symmetry.** Whether a configured record also answers the matching
+  PTR query, or PTR stays out of scope for the first cut. PTR slots next to
+  `isPrivatePTR` if wanted.
+- **Wrong-type response.** For a configured name whose query type has no record
+  (an AAAA query for an A-only host), return authoritative NODATA, not NXDOMAIN,
+  so the name still exists.
+- **Blocklist interaction.** A local record wins, since the operator declared
+  it. It is answered before the blocklist check, so a name that appears in both
+  resolves locally. Record this so a later review does not read it as a bypass.
+
+Rated High: a user-visible resolution feature that many home deployments want,
+and one of the more commonly requested capabilities s-hole lacks today. It
+changes no filtering behavior.
+
+## 16. Conditional / split-horizon forwarding
+
+s-hole sends every non-blocked, non-local query to the same upstream pool. An
+operator who runs an internal domain (a corporate zone, or a `.lan` served by
+the router) has no way to route just that suffix to an internal resolver while
+everything else goes to the public upstreams. dnsmasq calls this a
+server-for-domain rule.
+
+Add a per-suffix upstream override to config (suffix to upstream address).
+Select the upstream in the forward step by walking the query name the way the
+blocklist suffix check walks it (CL 30): the most specific configured suffix
+wins, and a query that matches none uses the default pool. Upstreams are already
+plain strings, so an override entry reuses the same `exchange()` path and
+cooldown tracker (this shares the transport plumbing with the DoH work, #5).
+
+Design decisions to settle in the CL:
+
+- **Precedence against local answers.** Local records (#15) and the private-PTR
+  short-circuit (CL 27) both answer before any forward, so a conditional-forward
+  suffix only affects queries that reach the forward step.
+- **Single upstream vs pool.** Whether an override defines one upstream or its
+  own small pool with the same failover and cooldown semantics as the default.
+- **Cooldown keying.** Whether the cooldown tracker keys stay global (one
+  string, one cooldown) or become per-pool. Global is simpler and stays correct,
+  since an upstream is identified by its string.
+- **Cache interaction.** An answer from a conditional upstream caches like any
+  other upstream answer, keyed by name and type, so no special handling is
+  needed.
+- **Scope note.** This is domain-scoped routing, distinct from the per-client
+  policies non-goal. Record that so a later review does not conflate the two.
+
+Rated Medium: a niche-deployment win for LANs that run an internal domain
+alongside s-hole. It changes no filtering behavior.
+
+## 17. Per-source blocklist health in `/api/stats` and dashboard
+
+The dashboard shows the aggregate blocklist size (CL 28) and the startup log
+records each source, but the running service exposes nothing per-source over the
+API: which URLs loaded, how many domains each contributed, when each last
+refreshed, and whether any fell back to its stale on-disk cache. When one source
+silently returns an empty or truncated list, the aggregate size drops but the
+operator cannot see which source caused it. The empty-blocklist alarm (CL 29)
+catches only the all-empty floor.
+
+Expose a per-source array in the stats payload (URL, domain count, last-refresh
+time, and a stale-fallback flag) and render it as a small per-source list near
+the Blocklist Size card. The data already exists at refresh time in
+`blocklist.Update`; the work is carrying it on the store and adding it to the
+`/api/stats` response the way `blocklist_size` rides along (CL 28).
+
+Design decisions to settle in the CL:
+
+- **Where the status lives.** Whether to store per-source status on the `Store`
+  or in a sibling struct the handler reads, keeping the hot-path `Store` lean.
+- **Meaning of "last refresh" under fallback.** For a source served from stale
+  cache, report the time of the cached snapshot with the stale flag set, not the
+  time of the failed fetch.
+- **Pre-dedup vs post-dedup counts.** Whether the per-source count is what the
+  source returned (pre-dedup) or its unique contribution (post-dedup). Pre-dedup
+  is the honest per-source signal and matches the on-disk snapshot; note the
+  choice, since the sum will exceed `blocklist_size`.
+- **Metrics parity.** Whether to add a labeled
+  `shole_blocklist_source_size{url=...}` gauge alongside the existing
+  `shole_blocklist_size`, or keep the breakdown API-only.
+
+Rated Medium: an observability win that turns a silent per-source failure into a
+visible one. It changes no filtering behavior.
+
+## 18. "Why is this domain blocked?" diagnostic endpoint
+
+A false-positive report ("site X is broken") sends the operator digging through
+blocklists to find which entry matched and whether a whitelist entry should
+override it. s-hole holds all of that in memory but exposes no way to ask it.
+The suffix walk (CL 30) is the exact logic an operator needs to see, and it is
+invisible today.
+
+Add `GET /api/check?domain=NAME` that runs the name through the same decision
+path and returns the outcome plus the reason: blocked (and which suffix
+matched), allowed by whitelist (and which entry), a local record or private-PTR
+short-circuit, or a plain forward. It reuses `IsBlocked` and the whitelist walk,
+adds no new dependency, and reads nothing the UI could not already infer, so it
+does not widen the unauthenticated read surface.
+
+Design decisions to settle in the CL:
+
+- **First match vs full walk.** Return the first matching suffix or the whole
+  walk. The first match is the decision; the full walk is better for debugging
+  an over-broad entry, and it is cheap, so return the full walk.
+- **UI surfacing.** Whether to add a small "check a domain" box in the actions
+  panel or keep the endpoint API-only for the first cut.
+- **Stats exclusion.** The check must not count in stats: it is a diagnostic,
+  not a served query, so it bumps no counter and writes no query-log row.
+
+Rated Low: a diagnostic guard rail with no runtime behavior change. It
+reinforces the "auditable in an afternoon" identity by making the block decision
+inspectable without reading Go.
 
 ## Pending decisions
 

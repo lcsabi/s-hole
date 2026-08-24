@@ -67,6 +67,22 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
 - Go 1.25 or later (for building from source)
 - Port 53 available (requires Administrator on Windows, root or `CAP_NET_BIND_SERVICE` on Linux)
 
+### Install a pre-built release
+
+Each tagged release attaches a per-target archive and a `SHA256SUMS` file to the
+[GitHub Releases page](https://github.com/lcsabi/s-hole/releases). Download the
+archive for your platform (`linux_amd64`, `linux_arm64`, `linux_armv7`, or
+`windows_amd64`), then verify and unpack it:
+
+```bash
+sha256sum -c SHA256SUMS --ignore-missing   # confirm the download
+tar -xzf s-hole_v0.1.0_linux_amd64.tar.gz  # Linux (unzip the .zip on Windows)
+```
+
+Each archive contains the binary, a sample `config.yaml`, `LICENSE`, `README.md`,
+and (on Linux) the `deploy/` install scripts and systemd unit. The same tag also
+publishes a container image; see [Docker](#docker) for the pull command.
+
 ### Install via the Go toolchain
 
 If your `$GOBIN` is on `PATH`, the latest commit can be fetched with:
@@ -351,10 +367,12 @@ every other interface. (Docker Desktop for Mac/Windows has no such listener, so
 a bare `-p 53:53` works there too, but the LAN-IP form below is correct
 everywhere.)
 
-**3. Build the image:**
+**3. Build the image** (or pull a pre-built one):
 
 ```bash
 docker build -t s-hole .
+# Or pull a tagged release instead of building:
+#   docker pull ghcr.io/lcsabi/s-hole:0.1.0   (and use that name in step 4)
 ```
 
 **4. Run** (substitute the address from step 2):

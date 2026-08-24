@@ -15,7 +15,7 @@ rails.
 | # | Item | Impact | Status |
 |--:|---|---|---|
 | 1 | Deploy to real hardware (Raspberry Pi) | High | procedure validated in a VM; awaiting hardware |
-| 2 | Tag `v0.1.0` + release workflow | High | not started |
+| 2 | Tag `v0.1.0` + release workflow | High | done (CL 43) |
 | 3 | Wildcard / subdomain blocking | High | done (CL 30) |
 | 4 | Wire up or delete `DBLogger.TopBlocked` | Medium | done (CL 33) |
 | 5 | DNS-over-HTTPS upstream support | Medium | not started |
@@ -48,15 +48,31 @@ disabled (`query_db: ""`). What remains is a replay on ARM hardware
 (`make pi`) plus the router cut-over and the multi-day soak, so the
 item stays open until a Raspberry Pi is available.
 
-## 2. Tag `v0.1.0` + release workflow
+## 2. Tag `v0.1.0` + release workflow (done, CL 43)
 
-CI already cross-compiles all four targets and throws the binaries
-away. Add `.github/workflows/release.yml` triggered on tag push:
-build the matrix with the version-injecting ldflags, attach the
-binaries to a GitHub Release, optionally push a Docker image to
-ghcr.io. Then cut `v0.1.0`, ideally pointing at a commit that has
-survived #1. Unlocks versioned bug reports (`s-hole -version` stops
-saying `dev`) and graduates the CHANGELOG's `[Unreleased]` section.
+CI already cross-compiled all four targets and threw the binaries away.
+**Shipped in CL 43:** `.github/workflows/release.yml` triggers on a `v*`
+tag push and builds the matrix with the version-injecting ldflags (the
+tag name is the version, so no `dev` placeholder). It attaches a
+per-target archive (`tar.gz` for Linux, `zip` for Windows, each bundling
+the binary, `config.yaml`, `LICENSE`, `README.md`, and the Linux deploy
+scripts) plus a `SHA256SUMS` file to a GitHub Release, and pushes a
+multi-arch (amd64 + arm64) image to `ghcr.io/lcsabi/s-hole`.
+
+Design decisions settled in the CL:
+
+- **`gh release create`, not a third-party release action.** The `gh`
+  CLI is preinstalled on the runner, so the release step needs no new
+  action dependency, matching the project's dependency-minimalism.
+- **`:latest` moves only for final tags.** A pre-release tag (one with a
+  `-` suffix, e.g. `v0.1.0-rc1`) is published with `--prerelease` and
+  does not move the `:latest` image, so an rc can be validated without
+  becoming the default pull.
+
+The CL also graduated the CHANGELOG's `[Unreleased]` section to
+`[0.1.0]`. The `v0.1.0` tag itself is a maintainer action (a `git tag` +
+`git push`), ideally pointing at a commit that has survived #1 (the
+real-hardware soak).
 
 ## 3. Wildcard / subdomain blocking (done, CL 30)
 

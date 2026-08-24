@@ -56,6 +56,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 40](cls/CL-40.md) | Add deploy/uninstall-linux.sh companion to the installer (roadmap #12) |
 | [CL 41](cls/CL-41.md) | Move Recent Queries below Actions on the dashboard |
 | [CL 42](cls/CL-42.md) | Act on ultrareview findings (b/040, b/041) |
+| [CL 43](cls/CL-43.md) | v0.1.0 release workflow and CHANGELOG graduation |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

@@ -232,34 +232,31 @@ func main() {
 	})
 
 	// doStop is the single shutdown path used by both the signal handler
-	// (interactive) and the Windows SCM stop event (service mode).
+	// (interactive) and the Windows SCM stop event (service mode). It wires
+	// the running subsystems into shutdown() and exits; shutdown() owns the
+	// teardown order.
 	doStop := func() {
-		mainLog.Info("shutting down")
-		// Cancel the lifecycle context first so the background tickers
-		// stop scheduling new work while we drain the rest.
-		runCancel()
-		counter.Print()
-		dnsServer.Shutdown()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := apiServer.Shutdown(ctx); err != nil {
-			mainLog.Warn("api shutdown", "err", err)
-		}
-		// Wait for any in-flight blocklist refresh to finish so it can
-		// complete its os.Rename before we exit. Bounded by the same 5s
-		// deadline as the API shutdown.
-		waitWithDeadline(ctx, &reloadWG, mainLog, "blocklist refresh")
-		if dnsCache != nil {
-			dnsCache.Close()
-		}
-		if err := fileLog.Close(); err != nil {
-			mainLog.Warn("file log close", "err", err)
-		}
-		if db != nil {
-			if err := db.Close(); err != nil {
-				mainLog.Warn("db close", "err", err)
-			}
-		}
+		shutdown(mainLog, 5*time.Second, shutdownDeps{
+			cancelTickers: runCancel,
+			printStats:    counter.Print,
+			stopDNS:       dnsServer.Shutdown,
+			drainHTTP:     apiServer.Shutdown,
+			waitForReload: func(ctx context.Context) {
+				waitWithDeadline(ctx, &reloadWG, mainLog, "blocklist refresh")
+			},
+			closeCache: func() {
+				if dnsCache != nil {
+					dnsCache.Close()
+				}
+			},
+			closeFileLog: fileLog.Close,
+			closeDB: func() error {
+				if db != nil {
+					return db.Close()
+				}
+				return nil
+			},
+		})
 		os.Exit(0)
 	}
 
@@ -476,5 +473,48 @@ func newReloadFn(mu *sync.Mutex, wg *sync.WaitGroup, work func()) func() bool {
 			work()
 		}()
 		return true
+	}
+}
+
+// shutdownDeps holds the teardown actions so the order in shutdown() can be
+// tested. main wires the real subsystems; a test injects recorders to assert
+// the sequence.
+type shutdownDeps struct {
+	cancelTickers func()                      // stop scheduling new refresh/stats work
+	printStats    func()                      // final stats line
+	stopDNS       func()                      // after this, no query touches the cache or loggers
+	drainHTTP     func(context.Context) error // drain in-flight admin requests
+	waitForReload func(context.Context)       // let an in-flight refresh finish its rename
+	closeCache    func()
+	closeFileLog  func() error
+	closeDB       func() error
+}
+
+// shutdown runs teardown in the required order and returns; the caller adds the
+// process exit. The order is not arbitrary: cancel the tickers so they stop
+// scheduling; stop the DNS server so no query touches the cache or loggers
+// after this; drain in-flight HTTP; wait for an in-flight blocklist refresh to
+// finish its os.Rename; only then close the cache and loggers. Closing a logger
+// or the cache while the DNS server or a refresh is still live risks a
+// write-to-closed-DB or a half-written cache file. TestShutdown_TeardownOrder
+// pins the sequence. A drainHTTP or closeDB error is logged, not fatal, so the
+// remaining steps still run.
+func shutdown(log *slog.Logger, timeout time.Duration, d shutdownDeps) {
+	log.Info("shutting down")
+	d.cancelTickers()
+	d.printStats()
+	d.stopDNS()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := d.drainHTTP(ctx); err != nil {
+		log.Warn("api shutdown", "err", err)
+	}
+	d.waitForReload(ctx)
+	d.closeCache()
+	if err := d.closeFileLog(); err != nil {
+		log.Warn("file log close", "err", err)
+	}
+	if err := d.closeDB(); err != nil {
+		log.Warn("db close", "err", err)
 	}
 }

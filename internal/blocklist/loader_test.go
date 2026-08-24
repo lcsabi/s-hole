@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -347,4 +348,26 @@ func swapLogger(buf *bytes.Buffer) (restore func()) {
 	prev := logger
 	logger = slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	return func() { logger = prev }
+}
+
+// BenchmarkParseHostsFormat measures parse throughput over a blocklist the size
+// of the real default lists. Parsing runs on startup and every refresh, so this
+// guards against an accidental O(n^2) in the parse or validation path.
+func BenchmarkParseHostsFormat(b *testing.B) {
+	const lines = 100_000
+	var sb strings.Builder
+	for i := 0; i < lines; i++ {
+		sb.WriteString("0.0.0.0 ad")
+		sb.WriteString(strconv.Itoa(i))
+		sb.WriteString(".example.com\n")
+	}
+	data := sb.String()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := parseHostsFormat(strings.NewReader(data)); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

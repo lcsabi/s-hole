@@ -67,6 +67,49 @@ go test -fuzz=FuzzValidDomain -fuzztime=30s ./internal/blocklist/
 `-fuzztime=30s` is a good smoke test. Run longer when you change
 `ValidDomain`, `parseHostsFormat`, or `cacheFilename`.
 
+### Benchmarking and profiling
+
+`make bench` runs each benchmark once as a regression smoke, not a measurement.
+For real numbers, run one benchmark with memory stats and several iterations
+(`-run=x` skips the unit tests so only the benchmark runs):
+
+```bash
+go test -run=x -bench=BenchmarkStore_IsBlocked -benchmem -count=8 ./internal/blocklist/
+```
+
+To compare before and after a change, capture two runs and diff them with
+`benchstat`. It reports the delta with a p-value, so a real change is
+distinguishable from run-to-run noise:
+
+```bash
+go test -run=x -bench=. -benchmem -count=8 ./internal/blocklist/ > old.txt   # before
+go test -run=x -bench=. -benchmem -count=8 ./internal/blocklist/ > new.txt   # after
+go run golang.org/x/perf/cmd/benchstat@latest old.txt new.txt
+```
+
+To see where a benchmark spends time or allocates, capture a profile and read it
+with `go tool pprof`:
+
+```bash
+go test -run=x -bench=BenchmarkHandler_ServeDNS -cpuprofile=cpu.out -memprofile=mem.out -o bench.test ./internal/dnsserver/
+go tool pprof -top bench.test cpu.out                              # hottest functions
+go tool pprof -top -sample_index=alloc_objects bench.test mem.out  # allocation sources
+go tool pprof -http=: bench.test cpu.out                           # flame graph in a browser
+```
+
+A live instance profiles the same way once `enable_pprof: true` is set. Bind
+`api_listen` to localhost first (see the README Security Notes):
+
+```bash
+go tool pprof http://127.0.0.1:8080/debug/pprof/profile?seconds=30   # 30s CPU
+go tool pprof http://127.0.0.1:8080/debug/pprof/heap                 # heap snapshot
+```
+
+Two notes. Profiling this codebase usually confirms the design (a map-lookup hot
+path) rather than revealing a problem, so reach for it when there is a symptom,
+not as a routine step. And the numbers depend on the machine: measure on the
+target hardware when the absolute value matters, not on a development box.
+
 ### Manual smoke test
 
 Unit tests cover the packages. This seven-step pass (about five minutes)

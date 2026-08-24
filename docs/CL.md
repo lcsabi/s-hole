@@ -62,6 +62,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 46](cls/CL-46.md) | Pin the IsBlocked zero-allocation invariant with a test |
 | [CL 47](cls/CL-47.md) | Pin the single-flight reload and case-sensitive cache-key invariants |
 | [CL 48](cls/CL-48.md) | Make the shutdown teardown order testable |
+| [CL 49](cls/CL-49.md) | Link two invariants to their guard tests at the enforcement site |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

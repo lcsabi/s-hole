@@ -46,6 +46,7 @@ func (s *Store) SetWhitelist(domains []string) {
 
 // Replace atomically swaps the blocked set. Concurrent IsBlocked calls
 // see either the old set or the new set, never a partial update.
+// TestStore_ReplaceIsAtomic guards this.
 func (s *Store) Replace(domains []string) {
 	next := make(map[string]struct{}, len(domains))
 	for _, d := range domains {
@@ -74,7 +75,8 @@ func (s *Store) Replace(domains []string) {
 //
 // Cost is O(labels) lookups against two O(1) hash sets, with no new data
 // structure and no per-query allocation (the walk reslices domain in place).
-// BenchmarkStore_IsBlocked guards the hot path against regression.
+// BenchmarkStore_IsBlocked guards the speed; TestStore_IsBlocked_ZeroAlloc
+// guards the zero-allocation property.
 func (s *Store) IsBlocked(domain string) bool {
 	name := normalize(domain)
 	s.mu.RLock()

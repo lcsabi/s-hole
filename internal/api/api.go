@@ -54,6 +54,7 @@ var staticFiles embed.FS
 // api package can be tested without instantiating a real cache.
 type CacheStatser interface {
 	Stats() (hits, misses uint64, size int)
+	Dropped() uint64
 }
 
 // Server exposes the admin REST API and serves the web UI.

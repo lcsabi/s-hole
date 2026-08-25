@@ -768,7 +768,14 @@ immediately usable. It adds nothing to the binary.
 
 ## Pending decisions
 
-- _None open._ (Resolved: the shipped sample `config.yaml` was restored
+- **Cache eviction beyond drop-on-full.** Now that `shole_cache_dropped_total`
+  (CL 54) and expired-slot reclaim ship, watch the counter on real traffic. A
+  sustained non-zero drop rate at a sensible `cache_size` is the trigger to add
+  sampled TTL-aware eviction: sample K entries on a full insert, evict the one
+  closest to expiry, keeping `Get` read-only. Not LRU (see "Deliberately not
+  planned" and the DESIGN eviction rationale). No policy without that evidence.
+
+- _None otherwise open._ (Resolved: the shipped sample `config.yaml` was restored
   to the conservative `query_db: "queries.db"` / `api_listen:
   "127.0.0.1:8080"` after `0.0.0.0`/SQLite-off values were accidentally
   committed with CL 27; the unauthenticated admin UI should not ship
@@ -786,8 +793,12 @@ Pi-hole/AdGuard Home:
   would imply a security property the unauthenticated design doesn't
   have; the localhost-only default is the mitigation.
 - **Per-client policies / client groups.**
-- **LRU cache eviction.** Drop-on-full is a documented simplicity
-  trade-off, fine at home-network scale.
+- **LRU cache eviction.** Move-to-front on every hit is a write on the
+  read path; `Get` is a bare `RLock` read today, so LRU would serialize
+  readers on a read-dominated cache (the contention
+  `BenchmarkCache_Get_Parallel` guards). Drop-on-full with expired-slot
+  reclaim covers home-network scale. Any future recency scheme must keep
+  `Get` read-only (CLOCK/SIEVE). See the eviction rationale in DESIGN.
 - **Pluggable blocklist formats/backends.**
 - **Web UI redesign / SPA framework.**
 - **Config-exposed dashboard poll rate.** The UI is a static

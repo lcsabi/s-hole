@@ -9,6 +9,14 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 ## [Unreleased]
 
 ### Added
+- **Cache drop metric and expired-slot reclaim.** A new
+  `shole_cache_dropped_total` counter on `/metrics` reports entries the cache
+  refused because it was full of unexpired entries, the signal that `cache_size`
+  is too small for the working set. When the cache is full, `Set` now reclaims a
+  slot from an expired entry (a bounded scan) before dropping, so a cache full
+  of not-yet-swept expired entries no longer refuses new inserts until the
+  once-a-minute sweep. Reclaimed inserts are not counted as drops, so the metric
+  reports real capacity pressure rather than sweep-timing noise. (CL 54)
 - **Audit logging for admin actions.** A whitelist add or remove now logs the
   domain and the requester address at `Info`, and each blocklist reload logs its
   trigger source, so a `POST /api/reload` is distinguishable from the periodic

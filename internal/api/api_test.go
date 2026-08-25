@@ -434,14 +434,16 @@ func TestMetricsEndpoint(t *testing.T) {
 type fakeCacheStats struct {
 	h, m uint64
 	s    int
+	d    uint64
 }
 
 func (f fakeCacheStats) Stats() (uint64, uint64, int) { return f.h, f.m, f.s }
+func (f fakeCacheStats) Dropped() uint64              { return f.d }
 
 func TestMetricsEndpoint_IncludesCacheStatsWhenWired(t *testing.T) {
 	store := blocklist.NewStore()
 	counter := stats.New()
-	s := New(counter, nil, store, fakeCacheStats{h: 7, m: 3, s: 42}, func() bool { return true })
+	s := New(counter, nil, store, fakeCacheStats{h: 7, m: 3, s: 42, d: 5}, func() bool { return true })
 	srv := httptest.NewServer(s.handler())
 	t.Cleanup(srv.Close)
 
@@ -456,6 +458,9 @@ func TestMetricsEndpoint_IncludesCacheStatsWhenWired(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "shole_cache_size 42") {
 		t.Errorf("expected cache_size=42 in body:\n%s", body)
+	}
+	if !strings.Contains(string(body), "shole_cache_dropped_total 5") {
+		t.Errorf("expected cache_dropped_total=5 in body:\n%s", body)
 	}
 }
 

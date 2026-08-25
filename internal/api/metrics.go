@@ -65,6 +65,12 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "# HELP shole_cache_size Current number of entries in the DNS response cache.")
 		fmt.Fprintln(w, "# TYPE shole_cache_size gauge")
 		fmt.Fprintf(w, "shole_cache_size %d\n", size)
+		// Cache back-pressure: non-zero means the cache filled with live
+		// entries and dropped inserts. A sustained rate means cache_size is
+		// too small for the working set.
+		fmt.Fprintln(w, "# HELP shole_cache_dropped_total DNS cache entries dropped because the cache was full of unexpired entries.")
+		fmt.Fprintln(w, "# TYPE shole_cache_dropped_total counter")
+		fmt.Fprintf(w, "shole_cache_dropped_total %d\n", s.dnsCache.Dropped())
 	}
 
 	fmt.Fprintln(w, "# HELP shole_blocklist_size Current number of domains in the block set.")

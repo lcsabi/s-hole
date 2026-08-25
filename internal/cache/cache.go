@@ -25,19 +25,27 @@ type entry struct {
 
 // Cache is a thread-safe, size-bounded DNS response cache.
 // Entries expire after their DNS TTL elapses.
-// When the cache is full, new entries are silently dropped.
+// When the cache is full, Set reclaims an expired entry if a bounded scan
+// finds one, and otherwise drops the new entry (counted by Dropped).
 //
-// hits and misses are atomic so Get and Stats do not contend on the
-// entries mutex; the entries map itself stays RWMutex-guarded.
+// hits, misses, and dropped are atomic so Get, Stats, and Dropped do not
+// contend on the entries mutex; the entries map itself stays RWMutex-guarded.
 type Cache struct {
 	mu      sync.RWMutex
 	entries map[string]*entry
 	maxSize int
 	stop    chan struct{}
 
-	hits   atomic.Uint64
-	misses atomic.Uint64
+	hits    atomic.Uint64
+	misses  atomic.Uint64
+	dropped atomic.Uint64
 }
+
+// reclaimScanLimit bounds the on-insert expired-entry scan in Set. A full
+// cache probes at most this many entries looking for one to reclaim before
+// it drops the new entry. Go randomizes map iteration order, so the bounded
+// scan samples the map rather than always probing the same entries.
+const reclaimScanLimit = 8
 
 // New returns a Cache holding at most maxSize entries and starts the
 // background cleanup goroutine. Callers must invoke Close on shutdown to
@@ -65,7 +73,7 @@ func (c *Cache) Get(q dns.Question) (*dns.Msg, bool) {
 	e, ok := c.entries[k]
 	c.mu.RUnlock()
 
-	if !ok || time.Since(e.cached) >= time.Duration(e.minTTL)*time.Second {
+	if !ok || isExpired(e, time.Now()) {
 		c.misses.Add(1)
 		return nil, false
 	}
@@ -98,10 +106,41 @@ func (c *Cache) Set(q dns.Question, msg *dns.Msg) {
 	}
 
 	c.mu.Lock()
+	if len(c.entries) >= c.maxSize {
+		// Full. Get treats expired entries as misses but does not delete
+		// them, so a cache full of not-yet-swept corpses would refuse every
+		// insert until the once-a-minute cleanupExpired runs. Reclaim one
+		// expired slot cheaply before giving up. A cache full of live entries
+		// finds nothing to reclaim and drops below, which is the honest
+		// capacity signal Dropped reports.
+		c.reclaimOneExpired(e.cached)
+	}
 	if len(c.entries) < c.maxSize {
 		c.entries[k] = e
+	} else {
+		c.dropped.Add(1)
 	}
 	c.mu.Unlock()
+}
+
+// reclaimOneExpired deletes one expired entry to free a slot for an insert,
+// scanning at most reclaimScanLimit entries. The caller must hold the write
+// lock. It is a best-effort heuristic: if the bounded sample finds no expired
+// entry, the cache is near capacity in live entries and the caller drops,
+// which is correct. O(reclaimScanLimit), far cheaper than the full O(n)
+// cleanupExpired sweep on every full insert.
+func (c *Cache) reclaimOneExpired(now time.Time) {
+	scanned := 0
+	for k, e := range c.entries {
+		if isExpired(e, now) {
+			delete(c.entries, k)
+			return
+		}
+		scanned++
+		if scanned >= reclaimScanLimit {
+			return
+		}
+	}
 }
 
 // Stats returns (hits, misses, current size).
@@ -110,6 +149,15 @@ func (c *Cache) Stats() (hits, misses uint64, size int) {
 	size = len(c.entries)
 	c.mu.RUnlock()
 	return c.hits.Load(), c.misses.Load(), size
+}
+
+// Dropped returns the cumulative number of entries Set refused because the
+// cache was full of live (not-yet-expired) entries. Surfaced via /metrics as
+// shole_cache_dropped_total; a sustained non-zero rate means cache_size is too
+// small for the working set. Inserts that reclaimed an expired slot are not
+// counted, so this reports real capacity pressure, not sweep-timing noise.
+func (c *Cache) Dropped() uint64 {
+	return c.dropped.Load()
 }
 
 func (c *Cache) runCleanup() {
@@ -134,12 +182,20 @@ func (c *Cache) cleanupExpired(now time.Time) int {
 	defer c.mu.Unlock()
 	removed := 0
 	for k, e := range c.entries {
-		if now.Sub(e.cached) >= time.Duration(e.minTTL)*time.Second {
+		if isExpired(e, now) {
 			delete(c.entries, k)
 			removed++
 		}
 	}
 	return removed
+}
+
+// isExpired reports whether e's DNS TTL has elapsed as of now. One definition
+// shared by Get (lazy expiry on read), cleanupExpired (the periodic sweep),
+// and reclaimOneExpired (the on-insert reclaim), so the three cannot disagree
+// about when an entry is dead.
+func isExpired(e *entry, now time.Time) bool {
+	return now.Sub(e.cached) >= time.Duration(e.minTTL)*time.Second
 }
 
 // key builds the cache key from (qname, qtype, qclass). The Type/Class

@@ -67,6 +67,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 51](cls/CL-51.md) | Document the benchmarking and profiling workflow |
 | [CL 52](cls/CL-52.md) | Add benchmarks for the stats, cache-write, and parse paths |
 | [CL 53](cls/CL-53.md) | Add contention benchmarks and enable mutex/block profiling |
+| [CL 54](cls/CL-54.md) | Add cache drop metric and reclaim expired slots before dropping |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

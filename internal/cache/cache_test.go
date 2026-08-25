@@ -154,6 +154,57 @@ func TestCache_DropOnFull(t *testing.T) {
 	}
 }
 
+func TestCache_DropOnFull_CountsDropped(t *testing.T) {
+	// A cache full of live entries must count the refused insert. This is the
+	// signal /metrics surfaces as shole_cache_dropped_total: real capacity
+	// pressure, not sweep-timing noise.
+	c := New(1)
+	defer c.Close()
+
+	live := dns.Question{Name: "live.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	overflow := dns.Question{Name: "overflow.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	c.Set(live, buildResponse(live, 300))
+	c.Set(overflow, buildResponse(overflow, 300)) // full of a live entry: must drop and count
+
+	if got := c.Dropped(); got != 1 {
+		t.Errorf("Dropped() = %d after one drop, want 1", got)
+	}
+	if _, ok := c.Get(overflow); ok {
+		t.Error("overflow.com should have been dropped")
+	}
+}
+
+func TestCache_ReclaimsExpiredOnFull(t *testing.T) {
+	// When the cache is full only of expired entries, Set must reclaim a slot
+	// rather than drop. Get treats an expired entry as a miss but leaves it in
+	// the map until the 1-minute sweep, so without on-insert reclaim a cache
+	// full of corpses would refuse every insert for up to a minute.
+	c := New(1)
+	defer c.Close()
+
+	stale := dns.Question{Name: "stale.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	fresh := dns.Question{Name: "fresh.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	c.Set(stale, buildResponse(stale, 5))
+
+	// Backdate the only entry past its TTL so the cache is full of a corpse.
+	c.mu.Lock()
+	c.entries[key(stale)].cached = c.entries[key(stale)].cached.Add(-10 * time.Second)
+	c.mu.Unlock()
+
+	c.Set(fresh, buildResponse(fresh, 300))
+
+	if _, ok := c.Get(fresh); !ok {
+		t.Error("fresh.com should have been admitted by reclaiming the expired slot")
+	}
+	if got := c.Dropped(); got != 0 {
+		t.Errorf("Dropped() = %d, want 0: a reclaimed insert is not a drop", got)
+	}
+	// The reclaimed corpse must be gone, not lingering alongside the new entry.
+	if _, _, size := c.Stats(); size != 1 {
+		t.Errorf("Stats size = %d, want 1 (corpse reclaimed, fresh admitted)", size)
+	}
+}
+
 func TestCache_RejectsZeroTTL(t *testing.T) {
 	c := New(10)
 	defer c.Close()

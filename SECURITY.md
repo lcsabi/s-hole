@@ -60,6 +60,10 @@ Out of scope:
 - **Domain inputs** (both from blocklists and the whitelist API) are
   validated by `blocklist.ValidDomain` (length ≤ 253, must contain a dot,
   alphanumerics + `.-_` only).
+- **Profiling endpoints** (`/debug/pprof/*`) are off by default. They
+  register only when `enable_pprof: true` is set (which also turns on
+  mutex and block profiling), and a startup WARN then recommends a
+  localhost-bound `api_listen`. Keep them off in normal operation.
 - **systemd unit** ships with `NoNewPrivileges`, `ProtectSystem=strict`,
   `ProtectHome=true`, `CapabilityBoundingSet=CAP_NET_BIND_SERVICE`.
 - **No CGO.** The binary is statically linked, so a libc or

@@ -156,10 +156,21 @@ func (s *Server) handler() http.Handler {
 	return mux
 }
 
+// statsResponse is the /api/stats body: the stats snapshot plus the
+// per-source blocklist health. Summary is embedded anonymously so its JSON
+// fields stay at the top level (existing clients that decode into
+// stats.Summary are unaffected); Sources adds the per-source array. The type
+// lives here, not in the stats package, so stats does not take a dependency on
+// blocklist.
+type statsResponse struct {
+	stats.Summary
+	Sources []blocklist.SourceStatus `json:"sources"`
+}
+
 func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
 	snap := s.counter.Snapshot(10)
 	snap.BlocklistSize = s.store.Len()
-	writeJSON(w, snap)
+	writeJSON(w, statsResponse{Summary: snap, Sources: s.store.Sources()})
 }
 
 // defaultQueriesLimit and maxQueriesLimit bound the ?limit= parameter on

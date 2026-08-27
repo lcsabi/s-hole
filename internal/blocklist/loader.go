@@ -31,17 +31,31 @@ func Update(store *Store, urls []string, cacheDir string) error {
 	var all []string
 	var ok int
 	var lastErr error
+	sources := make([]SourceStatus, 0, len(urls))
 	for _, u := range urls {
-		domains, err := fetchList(u, cacheDir)
+		domains, meta, err := fetchList(u, cacheDir)
 		if err != nil {
 			lastErr = err
 			logger.Warn("failed to load", "url", u, "err", err)
+			// Record the failure so the operator sees which source is down,
+			// not just a drop in the aggregate. Zero LastRefresh distinguishes
+			// a never-loaded source from a stale-cache fallback.
+			sources = append(sources, SourceStatus{URL: u, Stale: true})
 			continue
 		}
 		ok++
 		all = append(all, domains...)
+		sources = append(sources, SourceStatus{
+			URL:         u,
+			Count:       len(domains),
+			LastRefresh: meta.snapshot,
+			Stale:       meta.stale,
+		})
 		logger.Info("loaded", "url", u, "domains", len(domains))
 	}
+	// Publish per-source health even when every source failed, so the
+	// dashboard shows the outage rather than the last good snapshot.
+	store.setSources(sources)
 	if ok == 0 && len(urls) > 0 {
 		logger.Error("all sources failed; keeping existing block set",
 			"sources", len(urls), "current", store.Len())
@@ -67,33 +81,46 @@ func warnIfEmpty(store *Store) {
 	}
 }
 
-func fetchList(url, cacheDir string) ([]string, error) {
+// sourceMeta carries the per-source health that Update records alongside the
+// domains. snapshot is when the served data was actually fetched: the cache
+// file's mtime for a cache load, or now for a fresh download. stale is true
+// only when the served data came from the on-disk cache after the live fetch
+// failed; a fresh download or a still-valid (< cacheMaxAge) cache is not stale.
+type sourceMeta struct {
+	stale    bool
+	snapshot time.Time
+}
+
+func fetchList(url, cacheDir string) ([]string, sourceMeta, error) {
 	cachePath := filepath.Join(cacheDir, cacheFilename(url))
 
 	if info, err := os.Stat(cachePath); err == nil {
 		if time.Since(info.ModTime()) < cacheMaxAge {
-			return loadFromFile(cachePath)
+			domains, loadErr := loadFromFile(cachePath)
+			return domains, sourceMeta{snapshot: info.ModTime()}, loadErr
 		}
 	}
 
 	resp, err := httpClient.Get(url) //nolint:gosec // URL comes from operator config
 	if err != nil {
 		// Fall back to stale cache if download fails.
-		if _, statErr := os.Stat(cachePath); statErr == nil {
+		if info, statErr := os.Stat(cachePath); statErr == nil {
 			logger.Warn("download failed, using stale cache", "url", url, "err", err)
-			return loadFromFile(cachePath)
+			domains, loadErr := loadFromFile(cachePath)
+			return domains, sourceMeta{stale: true, snapshot: info.ModTime()}, loadErr
 		}
-		return nil, err
+		return nil, sourceMeta{}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		// Do not write the error-page body to the cache file.
-		if _, statErr := os.Stat(cachePath); statErr == nil {
+		if info, statErr := os.Stat(cachePath); statErr == nil {
 			logger.Warn("non-200 response, using stale cache", "url", url, "status", resp.StatusCode)
-			return loadFromFile(cachePath)
+			domains, loadErr := loadFromFile(cachePath)
+			return domains, sourceMeta{stale: true, snapshot: info.ModTime()}, loadErr
 		}
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, sourceMeta{}, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
 	// Atomic write: stream to a sibling .tmp file, then os.Rename on success.
@@ -103,7 +130,7 @@ func fetchList(url, cacheDir string) ([]string, error) {
 	tmpPath := cachePath + ".tmp"
 	f, err := os.Create(tmpPath)
 	if err != nil {
-		return nil, err
+		return nil, sourceMeta{}, err
 	}
 
 	tee := io.TeeReader(io.LimitReader(resp.Body, maxBodyBytes), f)
@@ -114,17 +141,17 @@ func fetchList(url, cacheDir string) ([]string, error) {
 	// loads, overwritten by the next download).
 	if parseErr != nil {
 		_ = os.Remove(tmpPath)
-		return nil, parseErr
+		return nil, sourceMeta{}, parseErr
 	}
 	if closeErr != nil {
 		_ = os.Remove(tmpPath)
-		return nil, closeErr
+		return nil, sourceMeta{}, closeErr
 	}
 	if err := os.Rename(tmpPath, cachePath); err != nil {
 		_ = os.Remove(tmpPath)
-		return nil, err
+		return nil, sourceMeta{}, err
 	}
-	return domains, nil
+	return domains, sourceMeta{snapshot: time.Now()}, nil
 }
 
 func loadFromFile(path string) ([]string, error) {

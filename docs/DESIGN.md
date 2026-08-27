@@ -211,7 +211,7 @@ CREATE TABLE queries (
 
 `Counter` maintains atomic counters for total queries and cache hits. The blocked count is deliberately *not* atomic: `RecordQuery` already takes the mutex to update the top-domain tally, so `blocked` is guarded by that same mutex; promoting it to an atomic would be redundant and misleading. Per-domain block counts and per-client query counts are tracked in the mutex-protected maps. Top-N extraction copies the map entries under the lock (resolving the map pointer *inside* the lock, since the prune reassigns it, R31) and sorts the copy outside it to minimise contention.
 
-`Snapshot(topN int)` returns a `Summary` struct with json tags, making it directly serialisable by the REST API without coupling the stats package to any HTTP library. Fields include uptime, totals, block percentage, local-PTR count (`local_ptr_count`, queries answered locally per RFC 6303), cache hit count and percentage, blocklist size (`blocklist_size`, set by the API handler after calling `Snapshot`, since the stats package does not depend on the blocklist package), and top-N entry lists.
+`Snapshot(topN int)` returns a `Summary` struct with json tags, making it directly serialisable by the REST API without coupling the stats package to any HTTP library. Fields include uptime, totals, block percentage, local-PTR count (`local_ptr_count`, queries answered locally per RFC 6303), cache hit count and percentage, blocklist size (`blocklist_size`, set by the API handler after calling `Snapshot`, since the stats package does not depend on the blocklist package), and top-N entry lists. The per-source blocklist health (`sources`, an array of `{url, count, last_refresh, stale}`) is added the same way: the api handler wraps `Summary` in a `statsResponse` and fills `sources` from `blocklist.Store.Sources()`, so the stats package still takes no blocklist dependency. `count` is the pre-dedup domain count each source contributed, so the sum exceeds `blocklist_size`; `stale` is true while a source is served from its on-disk cache after a failed fetch, or has never loaded.
 
 `Snapshot` loads `blocked` *before* `total`, then `localPTR` after `total`. This load order matters: `RecordQuery` increments `total` atomically *before* taking the mutex and incrementing `blocked`, so reading `total` first allows concurrent queries to inflate `blocked` past the snapshotted `total` and yield a block percentage greater than 100. Reading `blocked` first guarantees the invariant `blocked ≤ total`. `RecordLocalPTR` is called after `RecordQuery`, so `total ≥ localPTR` always holds as well. The cache-hit-rate denominator is `total − blocked − localPTR` because neither blocked nor local-PTR queries ever reach the cache or the upstream.
 
@@ -222,7 +222,7 @@ The per-domain and per-client tally maps are capped at 4 096 entries each. When 
 An HTTP server (default `127.0.0.1:8080`, localhost only) serves two things:
 
 1. **REST API.** JSON endpoints backed by `stats.Snapshot`, `querylog.DBLogger.Recent`, and `blocklist.Store` methods.
-2. **Web UI.** A single-page dashboard embedded in the binary via `//go:embed`. It polls `/api/stats` and `/api/queries` every 3 seconds and renders stat cards, top domain/client tables, an actions panel (blocklist reload, whitelist add), and a recent query log. The Top Blocked Domains panel has a "Since start / All time" toggle: "Since start" reads the in-memory `top_domains` tally from `/api/stats` (resets on restart, caps at `topNMaxEntries`), while "All time" polls `/api/top-blocked` for the persistent SQLite tally.
+2. **Web UI.** A single-page dashboard embedded in the binary via `//go:embed`. It polls `/api/stats` and `/api/queries` every 3 seconds and renders stat cards, top domain/client tables, a per-source blocklist health panel (URL, domain count, last refresh, and an OK/STALE badge), an actions panel (blocklist reload, whitelist add), and a recent query log. The Top Blocked Domains panel has a "Since start / All time" toggle: "Since start" reads the in-memory `top_domains` tally from `/api/stats` (resets on restart, caps at `topNMaxEntries`), while "All time" polls `/api/top-blocked` for the persistent SQLite tally.
 
 The web UI has no external dependencies (no CDN, no framework). It is pure HTML/CSS/JS and works without an internet connection.
 
@@ -236,7 +236,7 @@ State-changing admin requests leave an audit line in the application log. A whit
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/stats` | GET | Live stats snapshot (uptime, totals, cache rate, blocklist size, top domains/clients) |
+| `/api/stats` | GET | Live stats snapshot (uptime, totals, cache rate, blocklist size, per-source blocklist health, top domains/clients) |
 | `/api/queries` | GET | Recent queries from SQLite (`?limit=N`, default 50, capped at 1000) |
 | `/api/top-blocked` | GET | All-time most-blocked domains from SQLite (`?limit=N`, default 50, capped at 1000); empty list when `query_db` is unset |
 | `/api/whitelist` | GET | List runtime-whitelisted domains |
@@ -245,7 +245,7 @@ State-changing admin requests leave an audit line in the application log. A whit
 | `/api/reload` | POST | Trigger immediate blocklist refresh (de-duplicated via single-flight mutex) |
 | `/healthz` | GET | Liveness probe. Returns 200 OK while the HTTP server is responsive |
 | `/readyz` | GET | Readiness probe. 200 OK once the blocklist has loaded at least one entry, 503 otherwise. Used by container orchestrators to route traffic away while the initial download is in flight. |
-| `/metrics` | GET | Prometheus text exposition: `shole_queries_total`, `shole_blocked_total`, `shole_local_ptr_total`, `shole_cache_hits_total`, `shole_cache_misses_total`, `shole_cache_size`, `shole_cache_dropped_total`, `shole_blocklist_size`, `shole_whitelist_size`, `shole_query_log_dropped_total` |
+| `/metrics` | GET | Prometheus text exposition: `shole_queries_total`, `shole_blocked_total`, `shole_local_ptr_total`, `shole_cache_hits_total`, `shole_cache_misses_total`, `shole_cache_size`, `shole_cache_dropped_total`, `shole_blocklist_size`, `shole_blocklist_source_size`, `shole_blocklist_source_stale`, `shole_whitelist_size`, `shole_query_log_dropped_total` |
 | `/debug/pprof/*` | GET | Standard Go pprof handlers. **Only registered when `enable_pprof: true`** (or `S_HOLE_ENABLE_PPROF=1`). Off by default; intended for incident response on a localhost-bound admin server. |
 
 ### Observability and Logging

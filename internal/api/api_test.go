@@ -464,6 +464,53 @@ func TestMetricsEndpoint_IncludesCacheStatsWhenWired(t *testing.T) {
 	}
 }
 
+func TestStatsAndMetrics_IncludePerSourceHealth(t *testing.T) {
+	// Populate real per-source health by running Update against a list server,
+	// then confirm it rides on /api/stats and /metrics.
+	listSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("0.0.0.0 ads.example.com\n0.0.0.0 tracker.example.net\n"))
+	}))
+	defer listSrv.Close()
+
+	store := blocklist.NewStore()
+	if err := blocklist.Update(store, []string{listSrv.URL}, t.TempDir()); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	s := New(stats.New(), nil, store, nil, func() bool { return true })
+	srv := httptest.NewServer(s.handler())
+	t.Cleanup(srv.Close)
+
+	// /api/stats carries the sources array.
+	resp, err := http.Get(srv.URL + "/api/stats")
+	if err != nil {
+		t.Fatalf("GET /api/stats: %v", err)
+	}
+	defer resp.Body.Close()
+	got := decode[struct {
+		Sources []blocklist.SourceStatus `json:"sources"`
+	}](t, resp.Body)
+	if len(got.Sources) != 1 {
+		t.Fatalf("sources len = %d, want 1", len(got.Sources))
+	}
+	if got.Sources[0].URL != listSrv.URL || got.Sources[0].Count != 2 || got.Sources[0].Stale {
+		t.Errorf("source = %+v, want {URL:%s Count:2 Stale:false}", got.Sources[0], listSrv.URL)
+	}
+
+	// /metrics carries the labeled per-source gauges.
+	mResp, err := http.Get(srv.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer mResp.Body.Close()
+	body, _ := io.ReadAll(mResp.Body)
+	if !strings.Contains(string(body), "shole_blocklist_source_size{url=\""+listSrv.URL+"\"} 2") {
+		t.Errorf("missing per-source size gauge in body:\n%s", body)
+	}
+	if !strings.Contains(string(body), "shole_blocklist_source_stale{url=\""+listSrv.URL+"\"} 0") {
+		t.Errorf("missing per-source stale gauge in body:\n%s", body)
+	}
+}
+
 func TestStatsEndpoint_ReturnsSummary(t *testing.T) {
 	s, srv := newTestServer(t, nil)
 	s.counter.RecordQuery("1.1.1.1", "ads.com.", true)

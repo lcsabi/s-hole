@@ -87,12 +87,18 @@ func TestFetchList_DownloadAndCache(t *testing.T) {
 	defer srv.Close()
 
 	dir := t.TempDir()
-	domains, err := fetchList(srv.URL, dir)
+	domains, meta, err := fetchList(srv.URL, dir)
 	if err != nil {
 		t.Fatalf("fetchList: %v", err)
 	}
 	if len(domains) != 2 {
 		t.Fatalf("got %d domains, want 2", len(domains))
+	}
+	if meta.stale {
+		t.Error("fresh download reported stale")
+	}
+	if meta.snapshot.IsZero() {
+		t.Error("fresh download has zero snapshot time")
 	}
 
 	// Cache file should now exist.
@@ -112,7 +118,7 @@ func TestFetchList_Non200FallsBackToStaleCache(t *testing.T) {
 		w.Write([]byte("0.0.0.0 ads.example.com\n"))
 	}))
 	url := srvOK.URL
-	if _, err := fetchList(url, dir); err != nil {
+	if _, _, err := fetchList(url, dir); err != nil {
 		t.Fatalf("seed cache: %v", err)
 	}
 	srvOK.Close()
@@ -140,12 +146,20 @@ func TestFetchList_Non200FallsBackToStaleCache(t *testing.T) {
 		t.Fatalf("backdate cache mtime: %v", err)
 	}
 
-	domains, err := fetchList(srv503.URL, dir)
+	domains, meta, err := fetchList(srv503.URL, dir)
 	if err != nil {
 		t.Fatalf("expected fallback to stale cache, got error: %v", err)
 	}
 	if len(domains) != 1 || domains[0] != "ads.example.com" {
 		t.Errorf("stale cache not served: got %v", domains)
+	}
+	// The fallback must be flagged stale and report the cached snapshot's
+	// mtime (the backdated time), not "now".
+	if !meta.stale {
+		t.Error("stale-cache fallback not flagged stale")
+	}
+	if meta.snapshot.After(time.Now().Add(-time.Hour)) {
+		t.Errorf("stale snapshot = %v, want the backdated cache mtime", meta.snapshot)
 	}
 
 	// Cache file must not have been overwritten with the 503 body.
@@ -257,6 +271,72 @@ func TestUpdate_PartialSuccessReplaces(t *testing.T) {
 	}
 }
 
+func TestUpdate_RecordsPerSourceStatus(t *testing.T) {
+	// One healthy source contributes a pre-dedup count; one hard-failing
+	// source (no cache to fall back to) is recorded as stale with a zero
+	// LastRefresh. Sources() must report both.
+	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Two lines, one a duplicate of a domain the other source would also
+		// carry; Count is pre-dedup, so it counts both this source's lines.
+		w.Write([]byte("0.0.0.0 ads.example.com\n0.0.0.0 tracker.example.net\n"))
+	}))
+	defer ok.Close()
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "down", http.StatusServiceUnavailable)
+	}))
+	badURL := bad.URL
+	bad.Close() // force a hard connection failure with no cache
+
+	store := NewStore()
+	if err := Update(store, []string{ok.URL, badURL}, t.TempDir()); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	sources := store.Sources()
+	if len(sources) != 2 {
+		t.Fatalf("Sources() len = %d, want 2", len(sources))
+	}
+
+	byURL := map[string]SourceStatus{}
+	for _, s := range sources {
+		byURL[s.URL] = s
+	}
+	healthy, gotOK := byURL[ok.URL]
+	if !gotOK {
+		t.Fatalf("healthy source %q missing from Sources()", ok.URL)
+	}
+	if healthy.Count != 2 {
+		t.Errorf("healthy Count = %d, want 2 (pre-dedup)", healthy.Count)
+	}
+	if healthy.Stale {
+		t.Error("healthy source flagged stale")
+	}
+	if healthy.LastRefresh.IsZero() {
+		t.Error("healthy source has zero LastRefresh")
+	}
+
+	failed, gotBad := byURL[badURL]
+	if !gotBad {
+		t.Fatalf("failed source %q missing from Sources()", badURL)
+	}
+	if failed.Count != 0 {
+		t.Errorf("failed Count = %d, want 0", failed.Count)
+	}
+	if !failed.Stale {
+		t.Error("failed source not flagged stale")
+	}
+	if !failed.LastRefresh.IsZero() {
+		t.Errorf("failed source LastRefresh = %v, want zero (never loaded)", failed.LastRefresh)
+	}
+}
+
+func TestStore_SourcesEmptyBeforeUpdate(t *testing.T) {
+	s := NewStore()
+	if got := s.Sources(); len(got) != 0 {
+		t.Errorf("Sources() before Update = %v, want empty", got)
+	}
+}
+
 func TestCacheFilename_Deterministic(t *testing.T) {
 	a := cacheFilename("https://example.com/list.txt")
 	b := cacheFilename("https://example.com/list.txt")
@@ -309,7 +389,7 @@ func TestFetchList_AtomicRename(t *testing.T) {
 	defer srv.Close()
 
 	dir := t.TempDir()
-	domains, err := fetchList(srv.URL, dir)
+	domains, _, err := fetchList(srv.URL, dir)
 	if err != nil {
 		t.Fatalf("fetchList: %v", err)
 	}

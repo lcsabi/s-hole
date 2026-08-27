@@ -11,8 +11,25 @@ package blocklist
 import (
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 	"unicode/utf8"
 )
+
+// SourceStatus is the per-source health of one configured blocklist URL,
+// captured at each refresh and exposed read-only via /api/stats and /metrics.
+// Count is the number of domains the source contributed BEFORE the in-memory
+// set deduplicates them, so the sum of Count across sources is greater than or
+// equal to the aggregate blocklist size. The three states encode as:
+//   - fresh:         Stale=false, LastRefresh=refresh time.
+//   - stale cache:   Stale=true,  LastRefresh=cached snapshot's mtime.
+//   - hard failure:  Stale=true,  LastRefresh=zero (never loaded, no cache).
+type SourceStatus struct {
+	URL         string    `json:"url"`
+	Count       int       `json:"count"`
+	LastRefresh time.Time `json:"last_refresh"`
+	Stale       bool      `json:"stale"`
+}
 
 // Store is a thread-safe in-memory set of blocked domains plus an in-memory
 // whitelist that overrides it. A lookup walks the domain's label suffixes
@@ -22,6 +39,12 @@ type Store struct {
 	mu        sync.RWMutex
 	blocked   map[string]struct{}
 	whitelist map[string]struct{}
+
+	// sources holds the last refresh's per-source health. It is kept in an
+	// atomic pointer rather than under mu so the /api/stats poll never
+	// contends the RWMutex that every IsBlocked call takes. Update swaps it;
+	// Sources reads it.
+	sources atomic.Pointer[[]SourceStatus]
 }
 
 // NewStore returns an empty Store. The block set is populated by the first
@@ -56,6 +79,23 @@ func (s *Store) Replace(domains []string) {
 	s.mu.Lock()
 	s.blocked = next
 	s.mu.Unlock()
+}
+
+// setSources swaps in the per-source health from the latest refresh. Called
+// by Update, which runs single-flight, so there is one writer at a time.
+func (s *Store) setSources(sources []SourceStatus) {
+	s.sources.Store(&sources)
+}
+
+// Sources returns the per-source health captured at the last refresh, or an
+// empty slice before the first Update. The returned slice is not copied;
+// callers must not mutate it (Update replaces the pointer, never the backing
+// array, so a reader holding an old slice keeps a consistent snapshot).
+func (s *Store) Sources() []SourceStatus {
+	if p := s.sources.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // IsBlocked reports whether domain (or any of its parent domains) is on

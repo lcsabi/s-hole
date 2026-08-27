@@ -158,11 +158,14 @@ router change above. Network-wide blocking begins only after DHCP hands
 out s-hole's address and clients renew their leases. Then devices are
 filtered without naming the server.
 
-If a query times out, check s-hole's log (stdout, or
+If a query times out, check s-hole's query log (stdout, or
 `journalctl -u s-hole -f` under systemd): every query that reaches the
 process produces one `ALLOW`/`BLOCK` line. A missing line means the
 query never arrived. Look at the network path (firewall, wrong IP,
-client tool) rather than at s-hole.
+client tool) rather than at s-hole. Under the Windows service stdout is
+discarded, so set `log_file` to capture these query lines; the
+application log (startup, refresh, and audit messages) goes to the
+Windows Event Log automatically.
 
 ---
 
@@ -484,6 +487,13 @@ Run once as Administrator to register s-hole as an auto-start Windows Service:
 
 The service can also be managed through the standard Windows Services panel (`services.msc`) or `sc.exe`.
 
+A service has no console, so s-hole routes its application log (startup,
+blocklist refresh, and audit messages) to the Windows Event Log. Read it in
+Event Viewer under **Windows Logs > Application**, source **s-hole**. `-service
+install` registers the event source and `-service uninstall` removes it. The
+per-query `ALLOW`/`BLOCK` log is separate: set `log_file` to keep it, since
+stdout is discarded under the service.
+
 ---
 
 ## Building from Source
@@ -622,7 +632,7 @@ The "afternoon's reading" claim extends to the dependency graph: four direct mod
 | `github.com/miekg/dns` | Complete RFC-compliant DNS codec, server, and client; rolling our own would be a correctness minefield |
 | `modernc.org/sqlite` | Pure-Go SQLite for the query log; no CGO, so cross-compilation stays a one-liner |
 | `gopkg.in/yaml.v3` | Parses `config.yaml` |
-| `golang.org/x/sys` | Windows Service Control Manager integration |
+| `golang.org/x/sys` | Windows Service Control Manager and Event Log integration |
 
 The indirect modules in `go.mod` are almost all pulled in by the pure-Go SQLite port; none are used directly. Everything else is deliberately hand-rolled or omitted. The Prometheus exposition is written by hand rather than importing `client_golang`, the web UI is framework-free embedded HTML/CSS/JS, and the systemd integration is a static unit file rather than a service library. The reasoning behind each choice (and the alternatives rejected) is in `docs/DESIGN.md`. New dependencies need discussion first; see `CONTRIBUTING.md`.
 

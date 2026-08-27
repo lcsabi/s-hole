@@ -70,6 +70,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 54](cls/CL-54.md) | Add cache drop metric and reclaim expired slots before dropping |
 | [CL 55](cls/CL-55.md) | Expose per-source blocklist health in /api/stats, dashboard, and /metrics |
 | [CL 56](cls/CL-56.md) | Add /api/check "why is this blocked?" diagnostic endpoint |
+| [CL 57](cls/CL-57.md) | Route slog to the Windows Event Log under the SCM |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

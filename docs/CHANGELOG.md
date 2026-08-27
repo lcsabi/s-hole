@@ -9,6 +9,13 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 ## [Unreleased]
 
 ### Added
+- **Windows service logging.** When launched by the Windows SCM (which gives the
+  process no console), s-hole routes its application log to the Windows Event Log
+  (source `s-hole`, mapping INFO/WARN/ERROR to the three Event Log severities)
+  instead of a discarded stdout. `-service install` registers the event source
+  and `-service uninstall` removes it. Startup errors, blocklist-refresh
+  failures, and admin audit lines are now visible in Event Viewer. Linux and
+  interactive runs are unchanged. (CL 57)
 - **"Why is this blocked?" endpoint.** `GET /api/check?domain=NAME` returns the
   block decision (blocked, whitelisted, or allowed) and the full suffix walk that
   produced it: which parent entry matched the block set, and which whitelist

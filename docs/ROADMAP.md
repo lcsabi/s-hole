@@ -20,7 +20,7 @@ rails.
 | 4 | Wire up or delete `DBLogger.TopBlocked` | Medium | done (CL 33) |
 | 5 | DNS-over-HTTPS upstream support | Medium | not started |
 | 6 | Hardening batch: goleak, govulncheck, empty-blocklist alarm | Medium | done (CL 29) |
-| 7 | Windows service logging (slog is lost under the SCM) | Low | not started |
+| 7 | Windows service logging (slog is lost under the SCM) | Low | done (CL 57) |
 | 8 | Benchmark companions for the hot path | Low | done (CL 32) |
 | 9 | Answer private-range PTR queries locally (RFC 6303) | Low | done (CL 27) |
 | 10 | Blocklist size in `/api/stats` + dashboard | Medium | done (CL 28) |
@@ -168,7 +168,7 @@ never hit it.
   failed path and the source-returned-200-but-parsed-to-zero path,
   which previously logged `total=0` at Info like a healthy refresh).
 
-## 7. Windows service logging
+## 7. Windows service logging (done, CL 57)
 
 A Windows service process has no console, so the stdout-bound slog
 stream vanishes under the SCM, so startup errors and refresh failures
@@ -178,6 +178,30 @@ Route slog to a file (or the Windows Event Log) when
 (journald captures stdout). Rated Low while the primary deployment
 target is a Linux/Pi box; promote it if the Windows service becomes a
 first-class use case.
+
+**Shipped in CL 57:** the Windows Event Log, not a file. It is where a Windows
+operator looks for service logs (Event Viewer > Windows Logs > Application), and
+it adds no new dependency: `golang.org/x/sys` was already vendored for the SCM,
+and `.../svc/eventlog` is a subpackage of it. `setupLogger` installs an
+event-log slog handler when `IsWindowsService()` is true (falling back to stdout
+if the source cannot be opened, so the process is never left with no logger);
+`-service install` registers the event source and `-service uninstall` removes
+it. The handler maps INFO/WARN/ERROR to the three Event Log severities and drops
+the redundant time/level from the message text.
+
+Design decisions settled in the CL:
+
+- **Event Log over a file.** A file reintroduces the "where does it live, is the
+  dir writable, who rotates it" questions that the Event Log answers by
+  construction, and it would need a new config key; the Event Log needs none and
+  is the idiomatic Windows sink.
+- **Handler logic behind an `eventWriter` interface, no build tag.** The
+  level-mapping and formatting live in `eventlog.go` (testable on Linux with a
+  fake writer); only the `eventlog.Open` constructor is Windows-tagged. This is
+  what lets the feature carry unit tests despite CI being Linux-only.
+- **The query log is untouched.** The `ALLOW`/`BLOCK` stream is the separate
+  `FileLogger`; under the service it still needs `log_file`. Only the slog
+  application stream moved.
 
 ## 8. Benchmark companions (done, CL 32)
 

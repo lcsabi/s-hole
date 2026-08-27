@@ -44,6 +44,72 @@ func TestStore_WhitelistOverridesBlocklist(t *testing.T) {
 	}
 }
 
+func TestStore_Explain(t *testing.T) {
+	s := NewStore()
+	s.Replace([]string{"ads.example.com"})
+	s.SetWhitelist([]string{"safe.example.com"})
+
+	t.Run("blocked by parent", func(t *testing.T) {
+		// A subdomain of a blocked entry: decision blocked, matched on the
+		// parent that is on the list, not the queried leaf.
+		e := s.Explain("x.ads.example.com")
+		if e.Decision != "blocked" {
+			t.Errorf("Decision = %q, want blocked", e.Decision)
+		}
+		if e.MatchedBlock != "ads.example.com" {
+			t.Errorf("MatchedBlock = %q, want ads.example.com", e.MatchedBlock)
+		}
+		if e.MatchedWhitelist != "" {
+			t.Errorf("MatchedWhitelist = %q, want empty", e.MatchedWhitelist)
+		}
+		// Full walk: leaf → ... → TLD, four levels.
+		if len(e.Walk) != 4 {
+			t.Errorf("Walk length = %d, want 4 (%+v)", len(e.Walk), e.Walk)
+		}
+	})
+
+	t.Run("whitelist overrides block", func(t *testing.T) {
+		// safe.example.com is whitelisted; block ads.example.com does not
+		// apply here, but a block on the whitelisted subtree should still be
+		// reported alongside the overriding whitelist entry.
+		s2 := NewStore()
+		s2.Replace([]string{"ads.example.com"})
+		s2.SetWhitelist([]string{"ads.example.com"})
+		e := s2.Explain("ads.example.com")
+		if e.Decision != "whitelisted" {
+			t.Errorf("Decision = %q, want whitelisted", e.Decision)
+		}
+		if e.MatchedWhitelist != "ads.example.com" {
+			t.Errorf("MatchedWhitelist = %q, want ads.example.com", e.MatchedWhitelist)
+		}
+		if e.MatchedBlock != "ads.example.com" {
+			t.Errorf("MatchedBlock = %q, want ads.example.com (still reported)", e.MatchedBlock)
+		}
+	})
+
+	t.Run("allowed", func(t *testing.T) {
+		e := s.Explain("example.org")
+		if e.Decision != "allowed" {
+			t.Errorf("Decision = %q, want allowed", e.Decision)
+		}
+		if e.MatchedBlock != "" || e.MatchedWhitelist != "" {
+			t.Errorf("allowed domain has matches: %+v", e)
+		}
+	})
+
+	t.Run("normalizes and reports the queried name", func(t *testing.T) {
+		// A trailing dot and mixed case must normalize the same way IsBlocked
+		// does, and Domain echoes the normalized name.
+		e := s.Explain("ADS.Example.com.")
+		if e.Domain != "ads.example.com" {
+			t.Errorf("Domain = %q, want ads.example.com (normalized)", e.Domain)
+		}
+		if e.Decision != "blocked" {
+			t.Errorf("Decision = %q, want blocked", e.Decision)
+		}
+	})
+}
+
 // TestStore_SubdomainBlocking pins the suffix-match semantics (ROADMAP #3):
 // a blocked domain blocks every domain beneath it, but matching is on label
 // boundaries, not substrings, and unrelated names stay unblocked.

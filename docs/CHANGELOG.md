@@ -9,6 +9,12 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 ## [Unreleased]
 
 ### Added
+- **"Why is this blocked?" endpoint.** `GET /api/check?domain=NAME` returns the
+  block decision (blocked, whitelisted, or allowed) and the full suffix walk that
+  produced it: which parent entry matched the block set, and which whitelist
+  entry overrode it. The dashboard Actions panel gets a matching "check a domain"
+  box that shows the decision and the full walk. It is a read-only diagnostic: it
+  bumps no counter and writes no query-log row. (CL 56)
 - **Per-source blocklist health.** `/api/stats` now carries a `sources` array
   (URL, domain count, last-refresh time, and a stale flag) for each configured
   blocklist, the dashboard renders it as a "Blocklist Sources" panel with an

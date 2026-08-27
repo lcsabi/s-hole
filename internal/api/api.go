@@ -12,6 +12,7 @@
 // Routes:
 //
 //	GET    /api/stats            JSON Snapshot
+//	GET    /api/check            block decision for ?domain=NAME (diagnostic; no stats/log side effects)
 //	GET    /api/queries          recent rows from SQLite (?limit=N, default 50, max 1000)
 //	GET    /api/top-blocked      all-time most-blocked domains from SQLite (?limit=N, default 50, max 1000)
 //	GET    /api/whitelist        runtime whitelist (sorted)
@@ -128,6 +129,7 @@ func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/stats", s.handleStats)
+	mux.HandleFunc("GET /api/check", s.handleCheck)
 	mux.HandleFunc("GET /api/queries", s.handleQueries)
 	mux.HandleFunc("GET /api/top-blocked", s.handleTopBlocked)
 	mux.HandleFunc("GET /api/whitelist", s.handleWhitelistList)
@@ -171,6 +173,22 @@ func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
 	snap := s.counter.Snapshot(10)
 	snap.BlocklistSize = s.store.Len()
 	writeJSON(w, statsResponse{Summary: snap, Sources: s.store.Sources()})
+}
+
+// handleCheck answers "why is this domain blocked?" by running the name through
+// the same block decision as a real query and returning the outcome plus the
+// full suffix walk (which parent matched, which whitelist entry overrode). It
+// is a diagnostic: it bumps no stats counter and writes no query-log row,
+// because it never touches the DNS handler path. It reveals nothing the UI
+// could not already infer from the block set and whitelist, so it does not
+// widen the read surface.
+func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
+	domain := r.URL.Query().Get("domain")
+	if !blocklist.ValidDomain(domain) {
+		http.Error(w, "invalid or missing domain", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, s.store.Explain(domain))
 }
 
 // defaultQueriesLimit and maxQueriesLimit bound the ?limit= parameter on

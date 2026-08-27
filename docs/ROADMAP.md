@@ -31,7 +31,7 @@ rails.
 | 15 | Local DNS records (host overrides) | High | not started |
 | 16 | Conditional / split-horizon forwarding | Medium | not started |
 | 17 | Per-source blocklist health in `/api/stats` + dashboard | Medium | done (CL 55) |
-| 18 | "Why is this blocked?" diagnostic endpoint (`/api/check`) | Low | not started |
+| 18 | "Why is this blocked?" diagnostic endpoint (`/api/check`) | Low | done (CL 56) |
 | 19 | Temporary "pause blocking" (timed bypass, auto-resume) | High | not started |
 | 20 | Query-volume-over-time graph on the dashboard | Medium | not started |
 | 21 | Query-log privacy modes (write-time client anonymization) | Medium | not started |
@@ -486,7 +486,7 @@ Design decisions to settle in the CL:
 Rated Medium: an observability win that turns a silent per-source failure into a
 visible one. It changes no filtering behavior.
 
-## 18. "Why is this domain blocked?" diagnostic endpoint
+## 18. "Why is this domain blocked?" diagnostic endpoint (done, CL 56)
 
 A false-positive report ("site X is broken") sends the operator digging through
 blocklists to find which entry matched and whether a whitelist entry should

@@ -241,7 +241,8 @@ The admin web UI is served at **`http://127.0.0.1:8080`** by default. This is lo
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/stats` | Live stats: uptime, query totals, block rate, cache hit rate, blocklist size, top domains/clients |
+| `GET` | `/api/stats` | Live stats: uptime, query totals, block rate, cache hit rate, blocklist size, per-source blocklist health, top domains/clients |
+| `GET` | `/api/check?domain=NAME` | Why a domain is blocked: the decision plus the full suffix walk (matched block entry, overriding whitelist entry). Diagnostic; changes no state and does not count in stats |
 | `GET` | `/api/queries?limit=N` | Last N queries from SQLite, newest first (default: 50, max: 1000) |
 | `GET` | `/api/top-blocked?limit=N` | All-time most-blocked domains from SQLite (default: 50, max: 1000); empty when `query_db` is unset |
 | `GET` | `/api/whitelist` | List all runtime-whitelisted domains |

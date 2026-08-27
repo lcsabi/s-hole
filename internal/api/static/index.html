@@ -298,6 +298,17 @@
     .action-msg.err {
       color: var(--red);
     }
+
+    .check-result { font-size: 13px; flex-basis: 100%; }
+    .check-result .dec-blocked { color: var(--red); font-weight: 700; }
+    .check-result .dec-whitelisted { color: var(--green); font-weight: 700; }
+    .check-result .dec-allowed { font-weight: 700; }
+    .check-walk {
+      margin-top: 5px;
+      padding-left: 10px;
+      border-left: 2px solid var(--border);
+    }
+    .check-walk div { line-height: 1.6; }
   </style>
 </head>
 
@@ -401,7 +412,12 @@
         <input id="wl-input" type="text" placeholder="domain to whitelist…">
         <button type="submit" class="btn-primary">+ Whitelist</button>
       </form>
+      <form onsubmit="checkDomain(event)" style="display:flex;gap:8px;align-items:center">
+        <input id="check-input" type="text" placeholder="why is this blocked?…">
+        <button type="submit" class="btn-secondary">? Check</button>
+      </form>
       <span id="action-msg" class="action-msg"></span>
+      <div id="check-result" class="check-result"></div>
     </div>
   </div>
 
@@ -558,6 +574,40 @@
       el.textContent = text;
       el.className = 'action-msg ' + (ok ? 'ok' : 'err');
       setTimeout(() => { el.textContent = ''; el.className = 'action-msg'; }, 3000);
+    }
+
+    // Diagnostic: ask the server why a domain is (or is not) blocked. Shows the
+    // decision, the block entry that matched, any whitelist entry that overrode
+    // it, and the full suffix walk that produced the decision. Changes no state.
+    async function checkDomain(e) {
+      e.preventDefault();
+      const domain = $('check-input').value.trim();
+      const el = $('check-result');
+      if (!domain) return;
+      try {
+        const res = await fetch('/api/check?domain=' + encodeURIComponent(domain));
+        if (!res.ok) { el.innerHTML = '<span style="color:var(--red)">✗ invalid domain</span>'; return; }
+        const r = await res.json();
+
+        let summary = `<span class="dec-${esc(r.decision)}">${esc(r.domain)}: ${r.decision.toUpperCase()}</span>`;
+        if (r.decision === 'blocked') {
+          summary += ` <span class="muted">matched ${esc(r.matched_block)}</span>`;
+        } else if (r.decision === 'whitelisted') {
+          summary += ` <span class="muted">by ${esc(r.matched_whitelist)}`;
+          summary += r.matched_block ? `, overrides block ${esc(r.matched_block)}</span>` : '</span>';
+        }
+
+        // Full walk: each label-suffix that was checked, most specific first,
+        // with a badge on the level that matched the block set or whitelist.
+        const walk = (r.walk || []).map(l => {
+          let tags = '';
+          if (l.blocked) tags += ' <span class="badge badge-block">BLOCK</span>';
+          if (l.whitelisted) tags += ' <span class="badge badge-allow">ALLOW</span>';
+          return `<div><span class="mono muted">${esc(l.suffix)}</span>${tags}</div>`;
+        }).join('');
+
+        el.innerHTML = summary + `<div class="check-walk">${walk}</div>`;
+      } catch (e) { el.innerHTML = '<span style="color:var(--red)">✗ ' + esc(e.message) + '</span>'; }
     }
 
     // Top Blocked "Since start / All time" toggle.

@@ -511,6 +511,62 @@ func TestStatsAndMetrics_IncludePerSourceHealth(t *testing.T) {
 	}
 }
 
+func TestCheckEndpoint(t *testing.T) {
+	// newTestServer seeds the store with "ads.example.com" blocked.
+	s, srv := newTestServer(t, nil)
+
+	t.Run("blocked domain", func(t *testing.T) {
+		resp, err := http.Get(srv.URL + "/api/check?domain=x.ads.example.com")
+		if err != nil {
+			t.Fatalf("GET /api/check: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Fatalf("status = %d", resp.StatusCode)
+		}
+		got := decode[blocklist.Explanation](t, resp.Body)
+		if got.Decision != "blocked" || got.MatchedBlock != "ads.example.com" {
+			t.Errorf("got %+v, want blocked/ads.example.com", got)
+		}
+	})
+
+	t.Run("allowed domain", func(t *testing.T) {
+		resp, err := http.Get(srv.URL + "/api/check?domain=example.org")
+		if err != nil {
+			t.Fatalf("GET /api/check: %v", err)
+		}
+		defer resp.Body.Close()
+		got := decode[blocklist.Explanation](t, resp.Body)
+		if got.Decision != "allowed" {
+			t.Errorf("Decision = %q, want allowed", got.Decision)
+		}
+	})
+
+	for _, bad := range []string{"", "not-a-domain", "com."} {
+		t.Run("rejects "+bad, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + "/api/check?domain=" + bad)
+			if err != nil {
+				t.Fatalf("GET /api/check: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("status = %d for %q, want 400", resp.StatusCode, bad)
+			}
+		})
+	}
+
+	t.Run("does not count in stats", func(t *testing.T) {
+		before := s.counter.Snapshot(0).TotalQueries
+		for i := 0; i < 3; i++ {
+			resp, _ := http.Get(srv.URL + "/api/check?domain=ads.example.com")
+			resp.Body.Close()
+		}
+		if after := s.counter.Snapshot(0).TotalQueries; after != before {
+			t.Errorf("TotalQueries moved from %d to %d; /api/check must not count", before, after)
+		}
+	})
+}
+
 func TestStatsEndpoint_ReturnsSummary(t *testing.T) {
 	s, srv := newTestServer(t, nil)
 	s.counter.RecordQuery("1.1.1.1", "ads.com.", true)

@@ -142,6 +142,67 @@ func (s *Store) IsBlocked(domain string) bool {
 	}
 }
 
+// LevelResult is one label-suffix visited by Explain, with its block-set and
+// whitelist membership at that level.
+type LevelResult struct {
+	Suffix      string `json:"suffix"`
+	Blocked     bool   `json:"blocked"`
+	Whitelisted bool   `json:"whitelisted"`
+}
+
+// Explanation is the outcome of the block decision for one domain, plus the
+// full suffix walk that produced it. Decision is "blocked", "whitelisted", or
+// "allowed". MatchedBlock is the most-specific suffix on the block set (empty
+// if none); MatchedWhitelist is the most-specific whitelisted suffix (empty if
+// none). A non-empty MatchedWhitelist always wins, so an entry can be both on
+// the block set and allowed: the operator sees the matched block entry and the
+// whitelist entry that overrides it.
+type Explanation struct {
+	Domain           string        `json:"domain"`
+	Decision         string        `json:"decision"`
+	MatchedBlock     string        `json:"matched_block,omitempty"`
+	MatchedWhitelist string        `json:"matched_whitelist,omitempty"`
+	Walk             []LevelResult `json:"walk"`
+}
+
+// Explain runs domain through the same block decision as IsBlocked and returns
+// the full walk and the reason. It is a diagnostic for the /api/check endpoint,
+// not a hot-path call, so unlike IsBlocked it allocates freely (the walk slice
+// and the strings) and does not need to stay zero-alloc. Decision semantics
+// mirror IsBlocked: a whitelist match at any level wins over a block match at
+// any level.
+func (s *Store) Explain(domain string) Explanation {
+	name := normalize(domain)
+	exp := Explanation{Domain: name}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for cur := name; ; {
+		_, blk := s.blocked[cur]
+		_, wl := s.whitelist[cur]
+		exp.Walk = append(exp.Walk, LevelResult{Suffix: cur, Blocked: blk, Whitelisted: wl})
+		if blk && exp.MatchedBlock == "" {
+			exp.MatchedBlock = cur
+		}
+		if wl && exp.MatchedWhitelist == "" {
+			exp.MatchedWhitelist = cur
+		}
+		i := strings.IndexByte(cur, '.')
+		if i < 0 {
+			break
+		}
+		cur = cur[i+1:]
+	}
+	switch {
+	case exp.MatchedWhitelist != "":
+		exp.Decision = "whitelisted"
+	case exp.MatchedBlock != "":
+		exp.Decision = "blocked"
+	default:
+		exp.Decision = "allowed"
+	}
+	return exp
+}
+
 // AddToWhitelist adds domain to the runtime whitelist. Effective
 // immediately; not persisted across restarts.
 func (s *Store) AddToWhitelist(domain string) {

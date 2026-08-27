@@ -3,7 +3,16 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"strings"
 )
+
+// labelEscaper escapes a Prometheus label value per the text exposition
+// format: backslash, double-quote, and newline. URLs from operator config
+// rarely contain any of these, but a label value must never break the line
+// format or inject a second label.
+var labelEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`)
+
+func escapeLabel(v string) string { return labelEscaper.Replace(v) }
 
 // handleHealth is a liveness probe. It returns 200 as long as the HTTP
 // server itself is responsive. The endpoint deliberately makes no
@@ -76,6 +85,28 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintln(w, "# HELP shole_blocklist_size Current number of domains in the block set.")
 	fmt.Fprintln(w, "# TYPE shole_blocklist_size gauge")
 	fmt.Fprintf(w, "shole_blocklist_size %d\n", s.store.Len())
+
+	// Per-source breakdown: the aggregate above hides a single source that
+	// silently returned an empty or truncated list. size is pre-dedup, so the
+	// samples sum to more than shole_blocklist_size. stale is 1 while a source
+	// is served from its on-disk cache after a failed fetch, or has never
+	// loaded. Cardinality is bounded by the configured URL count.
+	if sources := s.store.Sources(); len(sources) > 0 {
+		fmt.Fprintln(w, "# HELP shole_blocklist_source_size Domains contributed by one blocklist source (pre-dedup).")
+		fmt.Fprintln(w, "# TYPE shole_blocklist_source_size gauge")
+		for _, src := range sources {
+			fmt.Fprintf(w, "shole_blocklist_source_size{url=\"%s\"} %d\n", escapeLabel(src.URL), src.Count)
+		}
+		fmt.Fprintln(w, "# HELP shole_blocklist_source_stale Whether a blocklist source is serving stale or no data (1) or fresh data (0).")
+		fmt.Fprintln(w, "# TYPE shole_blocklist_source_stale gauge")
+		for _, src := range sources {
+			stale := 0
+			if src.Stale {
+				stale = 1
+			}
+			fmt.Fprintf(w, "shole_blocklist_source_stale{url=\"%s\"} %d\n", escapeLabel(src.URL), stale)
+		}
+	}
 
 	fmt.Fprintln(w, "# HELP shole_whitelist_size Current number of domains in the runtime whitelist.")
 	fmt.Fprintln(w, "# TYPE shole_whitelist_size gauge")

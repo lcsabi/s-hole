@@ -250,7 +250,7 @@ The admin web UI is served at **`http://127.0.0.1:8080`** by default. This is lo
 | `POST` | `/api/reload` | Trigger an immediate blocklist refresh. De-duplicated via a single-flight mutex; returns `"reload already in progress"` if one is already running |
 | `GET`  | `/healthz` | Liveness probe. Always 200 OK while the HTTP server is responsive |
 | `GET`  | `/readyz` | Readiness probe. 200 OK once the blocklist has loaded at least one entry, 503 otherwise |
-| `GET`  | `/metrics` | Prometheus text exposition: `shole_queries_total`, `shole_blocked_total`, `shole_local_ptr_total`, `shole_cache_hits_total`, `shole_cache_misses_total`, `shole_cache_size`, `shole_cache_dropped_total`, `shole_blocklist_size`, `shole_whitelist_size`, `shole_query_log_dropped_total` |
+| `GET`  | `/metrics` | Prometheus text exposition: `shole_queries_total`, `shole_blocked_total`, `shole_local_ptr_total`, `shole_cache_hits_total`, `shole_cache_misses_total`, `shole_cache_size`, `shole_cache_dropped_total`, `shole_blocklist_size`, `shole_blocklist_source_size`, `shole_blocklist_source_stale`, `shole_whitelist_size`, `shole_query_log_dropped_total` |
 | `GET`  | `/debug/pprof/*` | Standard Go pprof endpoints. Registered **only** when `enable_pprof: true` is set in config (or `S_HOLE_ENABLE_PPROF=1`). Pair with `api_listen: "127.0.0.1:8080"`. |
 
 Runtime whitelist changes take effect immediately but do not persist across restarts. To make a whitelist entry permanent, add it to `config.yaml`.

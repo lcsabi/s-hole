@@ -9,6 +9,13 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 ## [Unreleased]
 
 ### Added
+- **Per-source blocklist health.** `/api/stats` now carries a `sources` array
+  (URL, domain count, last-refresh time, and a stale flag) for each configured
+  blocklist, the dashboard renders it as a "Blocklist Sources" panel with an
+  OK/STALE badge, and `/metrics` adds `shole_blocklist_source_size` and
+  `shole_blocklist_source_stale` gauges. When one source silently returns an
+  empty or truncated list, the operator now sees which one, instead of only a
+  drop in the aggregate size. (CL 55)
 - **Cache drop metric and expired-slot reclaim.** A new
   `shole_cache_dropped_total` counter on `/metrics` reports entries the cache
   refused because it was full of unexpired entries, the signal that `cache_size`

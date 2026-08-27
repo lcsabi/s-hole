@@ -30,7 +30,7 @@ rails.
 | 14 | CNAME deep-inspection (block cloaked trackers) | Medium | not started |
 | 15 | Local DNS records (host overrides) | High | not started |
 | 16 | Conditional / split-horizon forwarding | Medium | not started |
-| 17 | Per-source blocklist health in `/api/stats` + dashboard | Medium | not started |
+| 17 | Per-source blocklist health in `/api/stats` + dashboard | Medium | done (CL 55) |
 | 18 | "Why is this blocked?" diagnostic endpoint (`/api/check`) | Low | not started |
 | 19 | Temporary "pause blocking" (timed bypass, auto-resume) | High | not started |
 | 20 | Query-volume-over-time graph on the dashboard | Medium | not started |
@@ -452,7 +452,7 @@ Design decisions to settle in the CL:
 Rated Medium: a niche-deployment win for LANs that run an internal domain
 alongside s-hole. It changes no filtering behavior.
 
-## 17. Per-source blocklist health in `/api/stats` and dashboard
+## 17. Per-source blocklist health in `/api/stats` and dashboard (done, CL 55)
 
 The dashboard shows the aggregate blocklist size (CL 28) and the startup log
 records each source, but the running service exposes nothing per-source over the

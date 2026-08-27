@@ -377,6 +377,23 @@
   </div>
 
   <div class="full panel">
+    <div class="panel-hd"><span>Blocklist Sources <span class="count" id="sources-count"></span></span></div>
+    <table>
+      <thead>
+        <tr>
+          <th>Source</th>
+          <th>Domains</th>
+          <th>Last refresh</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="sources">
+        <tr><td colspan="4" class="empty">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="full panel">
     <div class="panel-hd">Actions</div>
     <div class="actions-body">
       <button class="btn-secondary" onclick="reloadBlocklists()">↺ Reload Blocklists</button>
@@ -416,6 +433,33 @@
     const stripDot = s => String(s).replace(/\.$/, '');
 
     function setTbody(id, html) { $(id).innerHTML = html; }
+
+    // Render the per-source blocklist health from /api/stats. A source is
+    // STALE when it is served from its on-disk cache after a failed fetch, or
+    // has never loaded (zero last_refresh, shown as "never").
+    function renderSources(sources) {
+      const list = sources || [];
+      $('sources-count').textContent = list.length ? `(${list.length})` : '';
+      setTbody('sources', list.length
+        ? list.map(s => {
+            let label = s.url;
+            try { const u = new URL(s.url); label = u.hostname + u.pathname; } catch (e) {}
+            const never = new Date(s.last_refresh).getFullYear() < 1970;
+            const when = never
+              ? '<span class="muted">never</span>'
+              : new Date(s.last_refresh).toLocaleString();
+            const status = s.stale
+              ? '<span class="badge badge-block">STALE</span>'
+              : '<span class="badge badge-allow">OK</span>';
+            return `<tr>
+              <td class="mono">${esc(label)}</td>
+              <td class="muted num">${fmt(s.count)}</td>
+              <td class="muted">${when}</td>
+              <td>${status}</td>
+            </tr>`;
+          }).join('')
+        : '<tr><td colspan="4" class="empty">No blocklist sources configured</td></tr>');
+    }
 
     // 'start' = in-memory tally from /api/stats (resets on restart);
     // 'all' = persistent tally from /api/top-blocked (SQLite, survives restart).
@@ -463,6 +507,8 @@
           ).join('')
           : '<tr><td colspan="2" class="empty">No queries yet</td></tr>');
         $('clients-count').textContent = clients.length ? `(${clients.length})` : '';
+
+        renderSources(s.sources || []);
       } catch (e) { console.error('stats fetch failed:', e); }
 
       try {

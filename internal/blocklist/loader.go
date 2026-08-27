@@ -37,9 +37,9 @@ func Update(store *Store, urls []string, cacheDir string) error {
 		if err != nil {
 			lastErr = err
 			logger.Warn("failed to load", "url", u, "err", err)
-			// Record the failure so the operator sees which source is down,
-			// not just a drop in the aggregate. Zero LastRefresh distinguishes
-			// a never-loaded source from a stale-cache fallback.
+			// Record the failure so a down source is visible by URL, instead
+			// of hiding behind a drop in the aggregate. Zero LastRefresh
+			// distinguishes a never-loaded source from a stale-cache fallback.
 			sources = append(sources, SourceStatus{URL: u, Stale: true})
 			continue
 		}

@@ -40,7 +40,7 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
 - **Resilient upstream forwarding.** Tries upstreams in order over UDP, falls back to TCP on truncation, and skips recently-failed resolvers until they recover.
 - **Local reverse DNS.** Answers PTR queries for the RFC 6303 private ranges (`10/8`, `172.16/12`, `192.168/16`, and IPv6 ULA and link-local) locally, so internal LAN addressing never leaks to the upstream resolver. On by default; opt out with `local_ptr: false`.
 - **Dual query log.** A plain-text file for `grep` and `tail`, plus a SQLite database for historical queries.
-- **Admin web UI.** Live stats, top blocked domains, recent query log, and whitelist management. Auto-refreshes every 3 seconds.
+- **Admin web UI.** Live stats, top blocked domains, per-source blocklist health, recent query log, whitelist management, and a "why is this blocked?" domain check. Auto-refreshes every 3 seconds.
 - **REST API.** All UI data is available as JSON, ready for scripting and future integrations.
 - **Observability.** Serves Prometheus metrics at `/metrics` and liveness and readiness probes at `/healthz` and `/readyz`, with no external metrics library.
 - **Configurable sinkhole mode.** Returns `0.0.0.0` (the default, a silent failure) or `NXDOMAIN`.
@@ -652,12 +652,12 @@ Coverage by package (after `go test -cover ./...`):
 | `internal/config` | 100 % |
 | `internal/version` | 100 % |
 | `internal/cache` | 94.4 % |
-| `internal/api` | 90.1 % |
-| `internal/blocklist` | 91.4 % |
+| `internal/api` | 90.6 % |
+| `internal/blocklist` | 92.9 % |
 | `internal/dnsserver` | 90.3 % |
 | `internal/querylog` | 85.7 % |
 | `cmd/s-hole` | 41.7 % |
-| **module-wide** | **80.6 %** |
+| **module-wide** | **81.5 %** |
 
 The uncovered region is the `main()` bootstrap and the Windows-only SCM glue, both exercised by manual smoke tests, not unit tests.
 

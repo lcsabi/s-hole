@@ -2,7 +2,8 @@
 //
 // Lifecycle:
 //   - install the default slog handler (text on a TTY, JSON when
-//     S_HOLE_LOG_FORMAT=json)
+//     S_HOLE_LOG_FORMAT=json, or the Windows Event Log when launched by the
+//     SCM, where stdout is discarded)
 //   - parse flags; if -service is set, perform the SCM action and exit
 //   - load and validate config (YAML + S_HOLE_* env-var overrides); bail
 //     on any duration/enum failure
@@ -56,7 +57,22 @@ import (
 // setupLogger installs the default slog handler. Format is text on a TTY
 // for human readability; switch to JSON via S_HOLE_LOG_FORMAT=json for
 // production / container deployments.
+//
+// Under the Windows SCM the process has no console, so a stdout-bound handler
+// is discarded and every startup error, refresh failure, and audit line is
+// lost. When launched by the SCM, route slog to the Windows Event Log instead;
+// if opening the source fails, fall through to the stdout handler so the
+// process is never left with no logger (never worse than today). The
+// interactive -service subcommands are not SCM-launched, so IsWindowsService()
+// is false for them and their console output is unchanged; Linux is
+// unaffected (journald captures stdout).
 func setupLogger() {
+	if service.IsWindowsService() {
+		if h, err := service.NewEventLogHandler(); err == nil {
+			slog.SetDefault(slog.New(h))
+			return
+		}
+	}
 	var h slog.Handler
 	opts := &slog.HandlerOptions{Level: slog.LevelInfo}
 	if os.Getenv("S_HOLE_LOG_FORMAT") == "json" {

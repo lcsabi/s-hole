@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/eventlog"
 	"golang.org/x/sys/windows/svc/mgr"
 )
 
@@ -84,6 +86,17 @@ func Install(configPath string) error {
 		return fmt.Errorf("create service: %w", err)
 	}
 	s.Close()
+
+	// Register an event-log source so Event Viewer renders s-hole's messages
+	// without the "description cannot be found" preamble. The service still
+	// runs and logs without this (against the default application source), so
+	// a registration failure is a warning, not a fatal install error. An
+	// already-registered source (a reinstall) is not an error.
+	if err := eventlog.InstallAsEventCreate(svcName, eventlog.Error|eventlog.Warning|eventlog.Info); err != nil &&
+		!strings.Contains(err.Error(), "already exists") {
+		fmt.Printf("warning: could not register event-log source %q: %v\n", svcName, err)
+	}
+
 	fmt.Printf("service %q installed (auto-start)\n  binary: %s\n  config: %s\n", svcName, exePath, configPath)
 	return nil
 }
@@ -105,6 +118,14 @@ func Uninstall() error {
 	if err := s.Delete(); err != nil {
 		return fmt.Errorf("delete service: %w", err)
 	}
+
+	// Deregister the event-log source registered by Install. A missing source
+	// (never registered, or a partial install) is not an error, so removal
+	// stays idempotent.
+	if err := eventlog.Remove(svcName); err != nil && !strings.Contains(err.Error(), "cannot find") {
+		fmt.Printf("warning: could not remove event-log source %q: %v\n", svcName, err)
+	}
+
 	fmt.Printf("service %q uninstalled\n", svcName)
 	return nil
 }

@@ -542,7 +542,7 @@ $env:GOOS=""; $env:GOARCH=""
 - **Every change is a small, self-contained change-list** with motivation, files touched, and testing notes ([`docs/cls/`](docs/cls)).
 - **A bug tracker with priorities and structured root-cause/fix records** ([`docs/BUGS.md`](docs/BUGS.md)), including entries deliberately marked *Won't Fix (by design)*.
 - **Documentation drift is treated as a bug.** Code and docs are updated in the same change.
-- **CI gate on every push**: `gofmt`, `go vet`, `golangci-lint`, race-enabled tests, `govulncheck`, and a four-target cross-compile. The `internal/` packages hold 85–100% line coverage (see the [table under Development](#development)).
+- **CI gate on every push**: `gofmt`, `go vet`, `golangci-lint`, race-enabled tests, `govulncheck`, and a four-target cross-compile. The core `internal/` packages meet 85–100% coverage targets (see the [targets under Development](#development)).
 
 ---
 
@@ -654,22 +654,20 @@ make install     # go install into $GOBIN
 make version     # print the version that the next build would embed
 ```
 
-Coverage by package (after `go test -cover ./...`):
+Coverage targets (checked in review, not a strict CI gate; run
+`go test -cover ./...` for the current numbers):
 
-| Package | Coverage |
+| Package | Target |
 |---|---|
-| `internal/stats` | 100 % |
-| `internal/config` | 100 % |
-| `internal/version` | 100 % |
-| `internal/cache` | 94.4 % |
-| `internal/api` | 90.6 % |
-| `internal/blocklist` | 92.9 % |
-| `internal/dnsserver` | 90.3 % |
-| `internal/querylog` | 85.7 % |
-| `cmd/s-hole` | 41.7 % |
-| **module-wide** | **81.5 %** |
+| `internal/stats`, `internal/config`, `internal/version` | 100 % |
+| `internal/cache` | ≥ 94 % |
+| `internal/api`, `internal/blocklist`, `internal/dnsserver`, `internal/querylog` | ≥ 85 % |
 
-The uncovered region is the `main()` bootstrap and the Windows-only SCM glue, both exercised by manual smoke tests, not unit tests.
+The `cmd/s-hole` bootstrap and the platform-specific `internal/service` glue sit
+below these targets: the uncovered region is the `main()` wiring and the
+Windows-only SCM and Event Log glue, which need a running binary or Windows and
+are exercised by manual smoke tests, not unit tests. Module-wide coverage tracks
+around 80 %.
 
 The binary reports its build identity at any time:
 

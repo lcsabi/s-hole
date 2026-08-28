@@ -9,6 +9,14 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+## [0.2.0] - 2026-08-28
+
+### Added
 - **Windows service logging.** When launched by the Windows SCM (which gives the
   process no console), s-hole routes its application log to the Windows Event Log
   (source `s-hole`, mapping INFO/WARN/ERROR to the three Event Log severities)
@@ -50,8 +58,6 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   by default. Both sample rather than record every event, so the cost is small
   and is paid only while pprof is enabled, which stays off by default and should
   be bound to localhost. (CL 53)
-
-### Fixed
 
 ## [0.1.0] - 2026-08-24
 

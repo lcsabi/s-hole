@@ -40,6 +40,7 @@ rails.
 | 24 | Query-log export (CSV / JSON) | Medium | not started |
 | 25 | Regex / pattern blocking | High | not started |
 | 26 | Grafana dashboard + Prometheus scrape/alert examples | Low | not started |
+| 27 | Install/uninstall robustness hardening (preflight, health check, shellcheck) | Medium | not started |
 
 Items 19-26 came out of a 2026-08-24 feature-ideas session. Items 21-24 are a
 dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
@@ -799,6 +800,112 @@ Design decisions to settle in the CL:
 
 Rated Low: a distribution and documentation win that makes the existing metrics
 immediately usable. It adds nothing to the binary.
+
+## 27. Install/uninstall robustness hardening
+
+The Linux deploy scripts (`deploy/install-linux.sh`, `deploy/uninstall-linux.sh`)
+are sound at the level of steps taken, but they trust their inputs and their own
+outcome too much. Each gap below has bitten a real deploy or can bite one
+silently, and that is the exact path item #1 (real-hardware deploy) depends on.
+
+Gaps to close, most impactful first:
+
+- **Post-install health check.** The installer runs `systemctl restart` and
+  prints `systemctl status`, but never reads the result. A unit that crash-loops
+  (bad config, port 53 taken, wrong-arch binary) still ends at exit 0 with the
+  "Router setup" banner over a dead service. That defeats the b/030 intent behind
+  the "Installed build" box: a bad deploy must not look green. After the restart,
+  poll `systemctl is-active` for a bounded few seconds; if the unit is not
+  active, print the last journal lines and exit non-zero.
+
+- **Port-53 preflight and the resolved-stub asymmetry.** The most common Linux
+  DNS-server install failure is the `systemd-resolved` stub listener holding
+  `:53`. The README documents the `DNSStubListener=no` drop-in, and the
+  *uninstaller* offers to restore it (`--restore-resolved`), yet the installer
+  neither detects the conflict nor creates the drop-in. So the uninstaller
+  reverses a step the installer never performs. Detect a busy `:53` before the
+  start and name the likely cause.
+
+- **Argument validation (the swapped-argument mistake).** The installer takes
+  `BINARY` then `CONFIG_SRC` as positional args, both with defaults, and
+  validates neither. Passing them in the wrong order (config first, binary
+  second) makes `install` copy the YAML over `/usr/local/bin/s-hole` and the ELF
+  binary over `config.yaml`. The service then cannot start and nothing useful was
+  installed. Validate that the binary argument is an executable s-hole build and
+  the config argument is a readable text file; if they look swapped, say so and
+  show the correct order.
+
+- **`-h`/`--help` and usage for the installer.** The uninstaller has `-h/--help`
+  and a usage block; the installer has neither, so the argument order is
+  discoverable only by reading the script. Add a matching usage block and the
+  flag, so a first-time operator sees the expected call.
+
+- **Config dry-run before the service starts.** There is no way to validate a
+  config without starting the service, so a bad config surfaces only as a failed
+  start (which loops back to the health-check gap). Add a `-check-config` flag to
+  the binary that loads and validates the config and exits, then have the
+  installer run it before `systemctl restart`.
+
+- **shellcheck in CI.** The scripts are hand-maintained bash with non-trivial
+  quoting (the `api_listen` parse block). Nothing guards a quoting regression
+  today. Add a shellcheck job to `ci.yml` and a `make lint-sh` target.
+
+Design decisions to settle in the CL:
+
+- **How to tell a real s-hole binary from a wrong-arch or wrong-kind file.**
+  Running `"$BINARY" -version` is the surest test, since it proves the file runs
+  on this host and is s-hole, but it executes an unvetted file as root before
+  install. Do a cheap structural check first (ELF magic via `file`, plus the host
+  architecture), then run `-version` once the file looks like a native binary.
+  Record the ordering so a reviewer does not read the exec as careless.
+
+- **Warn about the port-53 conflict, or fix it.** Creating the
+  `DNSStubListener=no` drop-in and restarting `systemd-resolved` is a system-wide
+  change that briefly drops the operator's own DNS. An installer that does this
+  silently is surprising. Default to a clear warning that prints the exact drop-in
+  to create, and offer the fix behind an explicit `--free-port-53` flag that
+  mirrors the uninstaller's `--restore-resolved`. That closes the asymmetry
+  without changing resolver state by default.
+
+- **How long to wait for health, and what "healthy" means.** `is-active` can
+  read `activating` during a slow first blocklist download. Poll `is-active` with
+  a short bounded timeout (the `RestartSec=5s` window is a sane anchor), treat
+  `active` as pass and a `failed` or inactive unit as fail, and on failure print
+  `journalctl -u s-hole -n 20 --no-pager` so the cause is on screen. A slow-start
+  false negative must not fail a good install, so keep the timeout generous.
+
+- **Where `-check-config` lives and what it prints.** A dedicated flag on the
+  binary keeps the logic in one place (`config.Load` then `Validate`), reused by
+  the installer and by an operator editing the live config. On a bad config it
+  exits non-zero and prints the same validation error `main` prints at startup,
+  not a second wording of it.
+
+- **Argument style for the installer.** Keep the positional binary and config
+  args, so the common `install-linux.sh ./s-hole ./config.yaml` call stays short.
+  Add the `-h/--help` flag and the validation around the positionals, rather than
+  converting the installer to the full flag loop it does not need. If a flag and
+  positionals must coexist, settle the parse order (flags first, then the two
+  paths) and document it in the usage block.
+
+- **Do not touch the systemd unit.** The hardening is around the unit, not in it.
+  The heredoc in `install-linux.sh` must stay byte-identical to
+  `deploy/s-hole.service` (the doc-drift rule); a CL that adds preflight or a
+  health check must not quietly edit the unit body.
+
+- **shellcheck scope and severity.** Decide which directives to fix versus allow
+  inline, and whether the job fails on warnings or only errors. Start at the
+  default level and fix what it reports, so the gate is honest from its first run.
+
+- **Idempotency and partial-failure behavior stay as they are.** The installer is
+  not transactional and does not roll back a partial install. At this scale a
+  re-run after fixing the cause is the recovery path, and a re-run is already safe
+  (user creation, config copy, and unit write are each guarded or
+  overwrite-safe). Record this so the health check is not misread as a promise of
+  rollback.
+
+Rated Medium: a deploy-reliability win with no runtime behavior change. It turns
+silent install failures (a dead service, a port-53 conflict, swapped arguments)
+into loud, self-explaining ones, on the path the #1 hardware deploy depends on.
 
 ## Pending decisions
 

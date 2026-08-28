@@ -15,7 +15,7 @@ rails.
 | # | Item | Impact | Status |
 |--:|---|---|---|
 | 1 | Deploy to real hardware (Raspberry Pi) | High | procedure validated in a VM; awaiting hardware |
-| 2 | Tag `v0.1.0` + release workflow | High | done (CL 43, CL 44); v0.1.0 tagged 2026-08-24 |
+| 2 | Tag `v0.1.0` + release workflow | High | done (CL 43, CL 44); v0.1.0 tagged 2026-08-24, v0.2.0 tagged 2026-08-28 |
 | 3 | Wildcard / subdomain blocking | High | done (CL 30) |
 | 4 | Wire up or delete `DBLogger.TopBlocked` | Medium | done (CL 33) |
 | 5 | DNS-over-HTTPS upstream support | Medium | not started |
@@ -101,6 +101,16 @@ placeholder); CL 44 fixed it and a `v0.1.0-rc2` dry-run confirmed the fix before
 the final tag. The tag was cut ahead of the #1 hardware soak. The release
 machinery was validated on its own through the rc dry-runs, so any issue the
 soak surfaces later ships as `v0.1.1`.
+
+**2026-08-28:** `v0.2.0` was tagged and pushed (commit `a5d2ef3`). CL 58 first
+graduated the CHANGELOG's `[Unreleased]` section to `[0.2.0]`, so the tag points
+at a commit whose release notes were already in place. The section carried the
+operator-visible work since `v0.1.0`: admin audit logging (CL 45), mutex/block
+profiling (CL 53), the cache drop metric (CL 54), per-source blocklist health
+(CL 55), the `/api/check` diagnostic (CL 56), and Windows Event Log routing
+(CL 57). A `v0.2.0-rc1` dry-run confirmed the four archives, `SHA256SUMS`, the
+rendered notes, and the `ghcr.io/lcsabi/s-hole:0.2.0-rc1` image before the final
+tag, which moved `:latest` to `0.2.0`. Cut ahead of the #1 soak, like `v0.1.0`.
 
 ## 3. Wildcard / subdomain blocking (done, CL 30)
 

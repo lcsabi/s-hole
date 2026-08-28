@@ -809,6 +809,36 @@ immediately usable. It adds nothing to the binary.
   closest to expiry, keeping `Get` read-only. Not LRU (see "Deliberately not
   planned" and the DESIGN eviction rationale). No policy without that evidence.
 
+- **Cache entry memory layout, only at much larger scale.** Cloudflare's DNS
+  team cut their resolver cache footprint 56% (953 to 420 bytes per entry) and
+  gained insert and lookup throughput by changing how a cached record is stored
+  (`blog.cloudflare.com/dns-cache-memory-optimization-1111`). Recorded here as
+  theory to weigh if s-hole ever grows a large cache, not as work to pick up. The
+  five ideas, ranked by how much they could apply to us:
+  - **Store records in wire format, not parsed structs.** The one idea with a CPU
+    angle at our scale. On a hit `Cache.Get` clones the parsed `*dns.Msg` and the
+    handler re-packs it to send. Holding the packed bytes and patching TTLs in
+    place would skip both. It is also the riskiest: TTL patching in a raw buffer
+    has to track byte offsets under EDNS0 (which we mirror), name compression, and
+    the dns-0x20 case we keep in `key()` (b/037). That is high complexity against
+    the "auditable in an afternoon" identity, for a `msg.Copy()` cost that is not
+    a measured bottleneck at home scale.
+  - **Immutable storage over growable buffers** (their `Vec`/`String` to `Box`).
+    A Rust memory-layout win with no direct Go analog. The enabler behind it,
+    treating a cached entry as read-only, we already have: `entry` is never
+    mutated after `Set`, and `Get` clones before decrementing TTLs.
+  - **Byte-squeezing on the parsed record:** merging the answer/authority/
+    additional sections into one buffer with offset markers, omitting a record
+    owner equal to the qname, and boxing the rare large record variants (NAPTR)
+    while keeping A/AAAA inline. These pay off at 250 billion entries. At a home
+    cache of a few thousand they save kilobytes.
+
+  Why parked, not declined: none of it pays off at the `cache_size` a Raspberry
+  Pi holds, and most of it trades the small, readable cache for memory we are not
+  short of. The trigger to revisit is a deployment that holds a large working set
+  under real memory pressure. At that point weigh the wire-format store first (it
+  is the one that helps both memory and lookup CPU), the byte-squeezing second.
+
 - _None otherwise open._ (Resolved: the shipped sample `config.yaml` was restored
   to the conservative `query_db: "queries.db"` / `api_listen:
   "127.0.0.1:8080"` after `0.0.0.0`/SQLite-off values were accidentally

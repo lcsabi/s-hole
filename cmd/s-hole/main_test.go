@@ -396,3 +396,94 @@ func TestShutdown_ContinuesAfterErrors(t *testing.T) {
 		t.Errorf("teardown did not complete after errors: order = %v, want %v", order, want)
 	}
 }
+
+// TestBlockUntilStopped_WaitsForTeardown pins the b/043 guarantee: the process
+// exits only after the full ordered teardown runs. It composes the real
+// shutdown() with a doStop that closes done afterward, and asserts the last
+// teardown step (closeDB) has run by the time blockUntilStopped returns. The
+// pre-fix code returned as soon as stopDNS unblocked Start(), before http,
+// reload, cache, and db ran.
+func TestBlockUntilStopped_WaitsForTeardown(t *testing.T) {
+	done := make(chan struct{})
+	var mu sync.Mutex
+	var order []string
+	rec := func(n string) { mu.Lock(); order = append(order, n); mu.Unlock() }
+
+	// start models dnsServer.Start(): it blocks until stopDNS unblocks it, then
+	// returns nil (a clean shutdown).
+	dnsStopped := make(chan struct{})
+	start := func() error { <-dnsStopped; return nil }
+
+	// doStop models main's closure: run the ordered teardown, then close done.
+	doStop := func() {
+		shutdown(slog.With("pkg", "test"), 50*time.Millisecond, shutdownDeps{
+			cancelTickers: func() { rec("cancel") },
+			printStats:    func() { rec("stats") },
+			stopDNS:       func() { rec("dns"); close(dnsStopped) },
+			drainHTTP:     func(context.Context) error { rec("http"); return nil },
+			waitForReload: func(context.Context) { rec("reload") },
+			closeCache:    func() { rec("cache") },
+			closeFileLog:  func() error { rec("filelog"); return nil },
+			closeDB:       func() error { rec("db"); return nil },
+		})
+		close(done)
+	}
+
+	go func() {
+		time.Sleep(5 * time.Millisecond)
+		doStop()
+	}()
+
+	if code := blockUntilStopped(start, done); code != 0 {
+		t.Fatalf("blockUntilStopped code = %d, want 0", code)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"cancel", "stats", "dns", "http", "reload", "cache", "filelog", "db"}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("teardown incomplete at exit: order = %v, want %v", order, want)
+	}
+}
+
+// TestBlockUntilStopped_StartupErrorExitsNonZero verifies a startup serve error
+// (a bind failure) returns exit code 1 without needing a stop signal.
+func TestBlockUntilStopped_StartupErrorExitsNonZero(t *testing.T) {
+	done := make(chan struct{}) // never closed: only the serve error should fire
+	start := func() error { return errors.New("bind failed") }
+	if code := blockUntilStopped(start, done); code != 1 {
+		t.Fatalf("blockUntilStopped code = %d, want 1", code)
+	}
+}
+
+// TestShutdown_ReloadGetsOwnBudget pins open question B: a slow HTTP drain must
+// not shrink the reload wait's timeout. drainHTTP consumes most of its budget,
+// yet waitForReload must still see close to the full timeout remaining. A shared
+// context (the pre-fix behavior) would leave it only timeout minus the drain.
+func TestShutdown_ReloadGetsOwnBudget(t *testing.T) {
+	const timeout = 200 * time.Millisecond
+	var reloadBudget time.Duration
+
+	shutdown(slog.With("pkg", "test"), timeout, shutdownDeps{
+		cancelTickers: func() {},
+		printStats:    func() {},
+		stopDNS:       func() {},
+		drainHTTP: func(context.Context) error {
+			time.Sleep(120 * time.Millisecond) // burn most of the drain budget
+			return nil
+		},
+		waitForReload: func(ctx context.Context) {
+			if dl, ok := ctx.Deadline(); ok {
+				reloadBudget = time.Until(dl)
+			}
+		},
+		closeCache:   func() {},
+		closeFileLog: func() error { return nil },
+		closeDB:      func() error { return nil },
+	})
+
+	// Separate budgets: reload sees ~timeout. Shared budget would give ~80ms.
+	if reloadBudget < 150*time.Millisecond {
+		t.Errorf("reload budget = %v, want > 150ms (its own full timeout, not shared with drain)", reloadBudget)
+	}
+}

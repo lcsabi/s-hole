@@ -13,6 +13,13 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 ### Changed
 
 ### Fixed
+- **Clean shutdown no longer loses data.** On `systemctl stop`, restart, or
+  Ctrl+C, s-hole now completes its ordered teardown before the process exits: it
+  drains in-flight admin requests, waits for an in-flight blocklist refresh to
+  finish its atomic rename, and flushes the query-log database. A race let the
+  process exit early and skip these steps, which could drop the final batch of
+  logged queries or cut off a refresh mid-write. The in-flight reload wait also
+  gets its own timeout so a slow HTTP drain cannot shorten it. (CL 59)
 
 ## [0.2.0] - 2026-08-28
 

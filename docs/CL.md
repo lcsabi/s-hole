@@ -72,6 +72,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 56](cls/CL-56.md) | Add /api/check "why is this blocked?" diagnostic endpoint |
 | [CL 57](cls/CL-57.md) | Route slog to the Windows Event Log under the SCM |
 | [CL 58](cls/CL-58.md) | Graduate the CHANGELOG to v0.2.0 |
+| [CL 59](cls/CL-59.md) | Make doStop the sole exit authority (b/043, b/044) |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

@@ -1278,3 +1278,77 @@ other content changed. CL files are immutable historical records, so this edit
 was a one-time exception, approved by the maintainer, on the grounds that the
 tags are accidental serialization garbage and never part of the record's content.
 The narrative and decisions of each CL are untouched.
+
+---
+
+## b/043 — main: interactive shutdown races its own ordered teardown (data loss on `systemctl stop`)
+
+**Priority:** P1
+**Component:** main
+**Status:** Fixed in CL 59
+**Filed:** 2026-08-30
+
+### Description
+
+`doStop` ran `shutdown()` in the signal goroutine and then called `os.Exit(0)`.
+Step 3 of `shutdown()` (`stopDNS`) unblocks `dnsServer.Start()` in the main
+goroutine, so `main()` returns and the Go runtime terminates the process. Nothing
+forced the remaining teardown steps (drain HTTP, wait for an in-flight reload,
+close the cache and loggers, close the DB) to finish first. The main goroutine's
+remaining work is trivial, so it usually won the race and those steps were
+skipped.
+
+The Linux binary takes this interactive path, so every `systemctl stop` or
+restart sends SIGTERM into it. The DBLogger "final batch never lost on clean
+exit" guarantee (R34) and the "wait for an in-flight reload so a refresh is not
+killed mid os.Rename" guarantee (R53) were defeated in production, and in-flight
+admin HTTP was not drained. Found by ultrareview. `-race` detects memory races,
+not process-exit ordering, and `TestShutdown_TeardownOrder` calls `shutdown()`
+directly, so it bypassed the `main`-return exit route.
+
+### Root Cause
+
+Two exit routes raced the same teardown: the `main`-return after `Start()`
+unblocked, and `os.Exit(0)` in `doStop`. The teardown order in `shutdown()` was
+correct, but nothing made the process wait for it to finish.
+
+### Fix
+
+Make `doStop` the sole exit authority. Run `dnsServer.Start()` in a goroutine and
+block the interactive path (`blockUntilStopped`) on a `done` channel that `doStop`
+closes only after `shutdown()` returns. Remove the `os.Exit(0)` from `doStop`. A
+startup bind failure still exits non-zero via the serve-error channel. `doStop` is
+wrapped in `sync.Once` so a second stop request cannot re-run teardown.
+`waitForReload` also gets its own timeout budget so a slow HTTP drain cannot
+starve it (open question B). Regression: `TestBlockUntilStopped_WaitsForTeardown`
+asserts the last teardown step runs before the process is allowed to exit.
+
+---
+
+## b/044 — service (Windows): Execute relied on doStop calling os.Exit
+
+**Priority:** P2
+**Component:** service
+**Status:** Fixed in CL 59
+**Filed:** 2026-08-30
+
+### Description
+
+`handler.Execute` sent `StopPending`, called `h.stop()`, and never sent
+`svc.Stopped`. It relied on `doStop` (via `h.stop()`) calling `os.Exit` to
+terminate the process before `Execute` returned. The b/043 fix removes that
+`os.Exit`, so `doStop` now returns instead of exiting. Without a change here, the
+SCM would hang in `StopPending` after a stop control. Found by ultrareview
+(coupled to b/043). Windows-only; not reachable on the Linux review host.
+
+### Root Cause
+
+`Execute` depended on a side effect (`os.Exit` inside `doStop`) for its state
+machine to complete, instead of reporting the service state itself.
+
+### Fix
+
+After `h.stop()` returns, send `svc.Status{State: svc.Stopped}` and return from
+`Execute`. The SCM then sees the service reach `Stopped`, `svc.Run` returns, and
+`main` exits. Verify on a Windows/SCM host (part of the R58 checklist): a real
+SCM stop reaches `Stopped` and does not hang in `StopPending`.

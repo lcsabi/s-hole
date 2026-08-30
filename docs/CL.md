@@ -77,6 +77,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 61](cls/CL-61.md) | Robustness and doc fixes from ultrareview (b/046–b/048) |
 | [CL 62](cls/CL-62.md) | Minor robustness and cleanups from ultrareview (b/049–b/051) |
 | [CL 63](cls/CL-63.md) | Surface an admin-server bind failure at startup (b/052) |
+| [CL 64](cls/CL-64.md) | Make the admin http.Server field race-free (b/053) |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

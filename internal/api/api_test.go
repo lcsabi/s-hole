@@ -186,11 +186,51 @@ func TestListenAndServe_BindFailureSurfaces(t *testing.T) {
 
 func TestShutdown_BeforeListenIsNoOp(t *testing.T) {
 	// If the caller calls Shutdown without ever calling ListenAndServe,
-	// the helper must not panic; s.httpServer is nil at that point.
+	// the helper must not panic; s.httpServer.Load() is nil at that point.
 	store := blocklist.NewStore()
 	s := New(stats.New(), nil, store, nil, func() bool { return true })
 	if err := s.Shutdown(context.Background()); err != nil {
 		t.Errorf("Shutdown on never-started server = %v, want nil", err)
+	}
+}
+
+func TestServe_ConcurrentShutdownIsRaceFree(t *testing.T) {
+	// Serve stores s.httpServer in a background goroutine (as main runs it)
+	// while Shutdown reads it from another goroutine. The field must be safe
+	// for that concurrent access; a plain pointer was an unsynchronised
+	// write/read that -race flagged (b/053). Hammer Shutdown concurrently with
+	// Serve's store and rely on -race to guard the field. The atomic.Pointer is
+	// clean; the pre-fix code races here under -race.
+	store := blocklist.NewStore()
+	s := New(stats.New(), nil, store, nil, func() bool { return true })
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- s.Serve(l) }()
+
+	// A Shutdown that wins the race against Serve's store sees Load()==nil and
+	// no-ops, so retry until the store is visible and Serve returns. This keeps
+	// the test deterministic regardless of which goroutine runs first.
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case err := <-serveErr:
+			if err != nil {
+				t.Errorf("Serve returned %v", err)
+			}
+			return
+		case <-deadline:
+			t.Fatal("Serve did not return after repeated Shutdown")
+		default:
+			if err := s.Shutdown(context.Background()); err != nil {
+				t.Errorf("Shutdown returned %v", err)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
 	}
 }
 

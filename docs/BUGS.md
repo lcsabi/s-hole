@@ -1665,3 +1665,43 @@ makes `Server` race-free regardless of how the caller sequences `Serve` and
 `Shutdown`, so a later change to main's startup order cannot reintroduce the race.
 The public API is unchanged. Test: `TestServe_ConcurrentShutdownIsRaceFree` drives
 `Serve` and `Shutdown` concurrently and is clean under `-race`.
+
+---
+
+## b/054 — api: a Shutdown before Serve stores the server drops the stop and leaks the serve loop
+
+**Priority:** P4
+**Component:** api
+**Status:** Fixed in CL 65
+**Filed:** 2026-08-30
+
+### Description
+
+CL 64 made `api.Server.httpServer` an `atomic.Pointer`, which removed the data
+race on the field. A second-order timing gap survived. `main` binds the listener
+synchronously (CL 63) and then runs `Serve` in a background goroutine, so a stop
+signal can arrive in the small window after the goroutine starts but before
+`Serve` stores the server. In that window `Shutdown` loads a nil pointer and
+no-ops, and `Serve` then calls `hs.Serve(ln)` and blocks in Accept with no one
+left to drain or stop it. The process is exiting, so the leaked goroutine is
+reaped by process exit and the drain has nothing in flight to lose. The gap is
+therefore harmless in practice, but it is a real ordering hazard that a future
+change to the drain path could make matter. Raised as the open question in the
+CL 64 code review.
+
+### Root Cause
+
+`Shutdown` and `Serve` coordinated only through the `httpServer` pointer, which is
+nil until `Serve` stores it. A stop that read that nil had no other record that a
+stop had been requested, so `Serve` could not know it should not start serving.
+
+### Fix
+
+Add a second field, `shutdownRequested atomic.Bool`, as a double-check.
+`Shutdown` sets it before it loads `httpServer`; `Serve` checks it right after it
+stores the server. The two set/load pairs cross, so a stop in the window cannot
+be lost: either `Shutdown` loads the stored pointer and drains it, or `Serve`
+sees the flag and closes the listener instead of blocking in Accept. Go's atomics
+are sequentially consistent, so no both-miss interleaving exists. The public API
+is unchanged. Test: `TestShutdown_BeforeServeStopsTheServeLoop` calls `Shutdown`
+before `Serve` to hit the window deterministically and asserts `Serve` returns.

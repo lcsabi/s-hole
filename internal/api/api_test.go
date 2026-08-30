@@ -234,6 +234,37 @@ func TestServe_ConcurrentShutdownIsRaceFree(t *testing.T) {
 	}
 }
 
+func TestShutdown_BeforeServeStopsTheServeLoop(t *testing.T) {
+	// b/054: a Shutdown that runs before Serve has stored the server used to
+	// no-op on a nil load and leave Serve blocked in Accept with no one to
+	// drain it. Shutdown now records the request and Serve honors it right
+	// after it stores the server, so Serve returns instead of blocking. Calling
+	// Shutdown first hits that window deterministically.
+	store := blocklist.NewStore()
+	s := New(stats.New(), nil, store, nil, func() bool { return true })
+
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown before Serve: %v", err)
+	}
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- s.Serve(l) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Serve after a preceding Shutdown returned %v, want nil", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Serve did not return after a Shutdown that preceded it")
+	}
+}
+
 // queriesResponse mirrors the JSON shape returned by /api/queries, kept
 // local so the test does not depend on api package internals.
 type queriesResponse struct {

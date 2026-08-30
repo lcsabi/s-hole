@@ -74,8 +74,17 @@ type Server struct {
 	// atomic.Pointer so those two goroutines never race on the field; a plain
 	// pointer was an unsynchronised write/read (b/053). Load returns nil until
 	// Serve has stored the server, which Shutdown treats as "nothing to drain".
-	httpServer  atomic.Pointer[http.Server]
-	enablePprof bool
+	httpServer atomic.Pointer[http.Server]
+	// shutdownRequested closes the stop-before-store window (b/054). Shutdown
+	// sets it before it loads httpServer; Serve checks it right after it stores
+	// the server. Because the two set/load pairs cross, a Shutdown that runs
+	// before Serve has stored the server cannot be lost: either Shutdown loads
+	// the stored pointer and drains it, or Serve sees the flag and stops itself
+	// before it blocks in Accept. Go's atomics are sequentially consistent, so
+	// no both-miss interleaving exists. Without the flag such a stop read a nil
+	// pointer, no-oped, and left Serve blocked with no one to drain it.
+	shutdownRequested atomic.Bool
+	enablePprof       bool
 }
 
 // New constructs a Server. db and dnsCache may be nil to disable the
@@ -130,6 +139,14 @@ func (s *Server) Serve(ln net.Listener) error {
 		IdleTimeout:       idleTimeout,
 	}
 	s.httpServer.Store(hs)
+	// Double-check against a Shutdown that ran before the Store above (b/054).
+	// Shutdown sets shutdownRequested before it loads httpServer, so if it saw a
+	// nil pointer and no-oped, the flag is set here. Nothing has served on ln
+	// yet, so close the listener directly and skip the serve loop instead of
+	// blocking in Accept with no one to drain.
+	if s.shutdownRequested.Load() {
+		return ln.Close()
+	}
 	if err := hs.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -138,6 +155,9 @@ func (s *Server) Serve(ln net.Listener) error {
 
 // Shutdown gracefully stops the HTTP server, waiting up to the deadline in ctx.
 func (s *Server) Shutdown(ctx context.Context) error {
+	// Record the stop before loading the server so a Serve that has not stored
+	// it yet sees the request and stops itself (b/054); see shutdownRequested.
+	s.shutdownRequested.Store(true)
 	hs := s.httpServer.Load()
 	if hs == nil {
 		return nil

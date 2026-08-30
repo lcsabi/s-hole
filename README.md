@@ -225,8 +225,8 @@ For container deployments where editing `config.yaml` requires a re-bind-mount, 
 | `S_HOLE_CACHE_SIZE` | `cache_size` (integer) |
 | `S_HOLE_BLOCK_TTL` | `block_ttl` (integer) |
 | `S_HOLE_RETENTION_DAYS` | `query_db_retention_days` (integer) |
-| `S_HOLE_ENABLE_PPROF` | `enable_pprof` (`1`/`true`/`yes` enable) |
-| `S_HOLE_LOCAL_PTR` | `local_ptr` (`1`/`true`/`yes` keep on; `0`/`false`/`no` opt out) |
+| `S_HOLE_ENABLE_PPROF` | `enable_pprof` (`1`/`true`/`yes` enable, case-insensitive) |
+| `S_HOLE_LOCAL_PTR` | `local_ptr` (`1`/`true`/`yes` keep on; `0`/`false`/`no` opt out; case-insensitive) |
 | `S_HOLE_LOG_FORMAT` | Slog handler format: `text` (default) or `json` |
 | `S_HOLE_ASCII_BANNER` | set to `1` to use ASCII box-drawing on the startup banner |
 

@@ -151,8 +151,10 @@ func filterWhitelist(entries []string) (valid, dropped []string) {
 // applyEnvOverrides reads S_HOLE_* environment variables and overrides
 // the corresponding YAML fields. Container deployments use this to avoid
 // rebuilding a config bind-mount for every change. Unknown keys are
-// ignored; malformed numeric values are silently ignored to preserve
-// startup. Env overrides are best-effort container knobs (an orchestrator
+// ignored; malformed numeric values and unrecognised boolean values are
+// silently ignored to preserve startup (a bad boolean keeps the current
+// setting rather than flipping it, b/047). Env overrides are best-effort
+// container knobs (an orchestrator
 // may inject a stray value), so a per-typo WARN on every restart is noise,
 // not signal; the invariant is only that a bad env var never blocks
 // startup. The invalid-whitelist path in Load does WARN (CL 31), because a
@@ -173,8 +175,8 @@ func filterWhitelist(entries []string) (valid, dropped []string) {
 //	S_HOLE_CACHE_SIZE          → cache_size (integer)
 //	S_HOLE_BLOCK_TTL           → block_ttl  (integer)
 //	S_HOLE_RETENTION_DAYS      → query_db_retention_days (integer)
-//	S_HOLE_ENABLE_PPROF        → enable_pprof (1/true/yes turns it on)
-//	S_HOLE_LOCAL_PTR           → local_ptr    (1/true/yes keeps it on; 0/false/no opts out)
+//	S_HOLE_ENABLE_PPROF        → enable_pprof (1/true/yes turns it on, case-insensitive)
+//	S_HOLE_LOCAL_PTR           → local_ptr    (1/true/yes keeps it on; 0/false/no opts out; case-insensitive)
 func (c *Config) applyEnvOverrides() {
 	if v, ok := os.LookupEnv("S_HOLE_LISTEN"); ok {
 		c.Listen = v

@@ -13,6 +13,15 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 ### Changed
 
 ### Fixed
+- **A non-positive `db_flush_interval` now fails cleanly at startup.** A value
+  like `0s` or `-5s` used to crash the daemon from a background goroutine after
+  the database was already open. It is now rejected with a clear config error,
+  the same as a malformed duration string. (CL 61)
+- **Boolean env overrides are case-insensitive and fail safe.**
+  `S_HOLE_LOCAL_PTR` and `S_HOLE_ENABLE_PPROF` now accept `1`/`true`/`yes` and
+  `0`/`false`/`no` in any case, and leave the setting at its default on an
+  unrecognised value. Previously a value such as `TRUE` or an empty string turned
+  local PTR answering (on by default) off, leaking LAN reverse-DNS upstream. (CL 61)
 - **Upstream failover no longer doubles work during an outage.** When every
   upstream is failing, s-hole now contacts each configured resolver at most once
   per query. A retry-sweep bug re-contacted the resolvers that had just failed,

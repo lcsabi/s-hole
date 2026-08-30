@@ -1397,3 +1397,104 @@ exactly that set in sweep 2, instead of re-deriving it from timestamps. Each
 upstream is now contacted at most once per query. Regression:
 `TestForward_AllFailContactsEachOnce` uses a counting fast-failing upstream and
 asserts each is contacted exactly once on the all-fail path.
+
+---
+
+## b/046 — querylog/config: non-positive db_flush_interval panics the writer goroutine
+
+**Priority:** P2
+**Component:** querylog
+**Status:** Fixed in CL 61
+**Filed:** 2026-08-30
+
+### Description
+
+`config.ParsedDBFlushInterval` accepted a well-formed but non-positive duration
+(`"0s"`, `"-5s"`), and `Validate()` never checked it. The value reached
+`NewDBLogger`, which stores it and later calls `time.NewTicker(d.flushInterval)`
+in the writer goroutine. `time.NewTicker` panics on a non-positive duration, so
+the daemon crashed from a goroutine stack after the SQLite file was already open.
+Every other malformed-config value does a clean log-and-exit; this one did not.
+Found by ultrareview.
+
+### Root Cause
+
+The duration was parsed but never range-checked. A malformed string (`"abc"`) was
+rejected at the config gate, but a well-formed non-positive value passed through
+to the point of use, where `time.NewTicker` enforces the constraint by panicking.
+
+### Fix
+
+Reject a non-positive interval in `ParsedDBFlushInterval` so main's config-error
+path logs and exits cleanly, consistent with how a malformed duration string is
+handled. Guard `NewDBLogger` too (defense-in-depth) so the type can never panic
+its goroutine regardless of caller. Tests:
+`TestParsedDBFlushInterval_RejectsNonPositive` and
+`TestNewDBLogger_NonPositiveFlushIntervalErrors`.
+
+---
+
+## b/047 — config: S_HOLE_LOCAL_PTR case-sensitive parse silently disables a default-on feature
+
+**Priority:** P2
+**Component:** config
+**Status:** Fixed in CL 61
+**Filed:** 2026-08-30
+
+### Description
+
+`applyEnvOverrides` set `c.LocalPTR = v == "1" || v == "true" || v == "yes"`.
+The check was case-sensitive with no fallback, so `TRUE`, `On`, `enabled`, and a
+present-but-empty value all evaluated to false. `LocalPTR` defaults to true, so an
+operator who set the var intending to keep local PTR on instead flipped it off:
+local PTR answering stopped and LAN reverse-DNS queries leaked upstream, the exact
+thing the feature prevents, with no warning. `S_HOLE_ENABLE_PPROF` used the same
+pattern; its default is false, so its direction was harmless. Found by
+ultrareview.
+
+### Root Cause
+
+A hand-rolled truthy check matched three exact lowercase tokens and treated
+everything else, including unrecognised-but-truthy input, as false. For a
+default-on setting that is fail-unsafe.
+
+### Fix
+
+Add `parseBoolEnv(v, def)`: it accepts the documented tokens (1/true/yes and
+0/false/no) case-insensitively and returns the default on anything else, so an
+unrecognised value never flips the setting. Use it for both `S_HOLE_LOCAL_PTR` and
+`S_HOLE_ENABLE_PPROF`. `strconv.ParseBool` was not used: it rejects `yes`/`no`,
+which the README documents for these vars, so it would break documented input.
+Tests updated: the empty and unrecognised cases now assert the default is kept.
+
+---
+
+## b/048 — docs: DESIGN mis-states the stats counter load order (b/033 hazard in prose)
+
+**Priority:** P3
+**Component:** docs
+**Status:** Fixed in CL 61
+**Filed:** 2026-08-30
+
+### Description
+
+`docs/DESIGN.md` (Statistics section) said `Snapshot` loads `blocked` before
+`total`, then `localPTR` after `total`, and justified it with "`total >= localPTR`
+always holds". Reading `localPTR` after `total` is exactly the b/033 regression:
+two atomics read at different instants can yield `local_ptr/total > 100%`. The
+code is correct (it reads `blocked`, `localPTR`, and `cacheHit` all before
+`total`, per the b/036 general invariant) and its comments agree; the DESIGN
+sentence contradicted the code. CLAUDE.md treats doc-vs-code drift as a bug. Found
+by ultrareview. Doc-only.
+
+### Root Cause
+
+The DESIGN prose was not updated when b/033 (localPTR) and b/036 (cacheHit)
+generalised the load-order rule to every counter incremented after `total`.
+
+### Fix
+
+State that `Snapshot` loads `blocked`, `localPTR`, and `cacheHit` all before
+`total`, and that each is read before `total` because each is incremented after
+it. Drop the false "`total >= localPTR` always holds" justification. No code
+change.

@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -221,10 +222,26 @@ func (c *Config) applyEnvOverrides() {
 		}
 	}
 	if v, ok := os.LookupEnv("S_HOLE_ENABLE_PPROF"); ok {
-		c.EnablePprof = v == "1" || v == "true" || v == "yes"
+		c.EnablePprof = parseBoolEnv(v, c.EnablePprof)
 	}
 	if v, ok := os.LookupEnv("S_HOLE_LOCAL_PTR"); ok {
-		c.LocalPTR = v == "1" || v == "true" || v == "yes"
+		c.LocalPTR = parseBoolEnv(v, c.LocalPTR)
+	}
+}
+
+// parseBoolEnv reads a boolean env override. It accepts the documented tokens
+// (1/true/yes and 0/false/no) case-insensitively and returns def on anything
+// else, so an unrecognised value never flips the setting. This is not
+// strconv.ParseBool: that rejects yes/no, which the README documents for these
+// vars, so it would break documented input and silently flip the default.
+func parseBoolEnv(v string, def bool) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes":
+		return true
+	case "0", "false", "no":
+		return false
+	default:
+		return def
 	}
 }
 
@@ -289,6 +306,13 @@ func (c *Config) ParsedDBFlushInterval() (time.Duration, error) {
 	d, err := time.ParseDuration(c.DBFlushInterval)
 	if err != nil {
 		return 0, fmt.Errorf("db_flush_interval %q: %w", c.DBFlushInterval, err)
+	}
+	// A non-positive interval is well-formed but unusable: it panics
+	// time.NewTicker in the DB writer goroutine. Reject it here so main's
+	// config-error path logs and exits cleanly, the same as a malformed
+	// duration string (b/046).
+	if d <= 0 {
+		return 0, fmt.Errorf("db_flush_interval %q: must be positive", c.DBFlushInterval)
 	}
 	return d, nil
 }

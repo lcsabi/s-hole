@@ -86,6 +86,13 @@ PRAGMA temp_store=MEMORY;
 // or initialised; callers should treat the error as non-fatal and
 // continue without SQLite logging.
 func NewDBLogger(path, logQueries string, flushInterval time.Duration, retentionDays int) (*DBLogger, error) {
+	// Defense-in-depth: config.ParsedDBFlushInterval already rejects a
+	// non-positive interval before main reaches here (b/046). Guard the
+	// constructor too so the type can never panic its writer goroutine on
+	// time.NewTicker regardless of caller.
+	if flushInterval <= 0 {
+		return nil, fmt.Errorf("flush interval must be positive, got %s", flushInterval)
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)

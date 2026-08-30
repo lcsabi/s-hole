@@ -87,7 +87,7 @@ func New(counter *stats.Counter, db *querylog.DBLogger, store *blocklist.Store, 
 }
 
 // EnablePprof toggles whether the server registers the net/http/pprof
-// handlers under /debug/pprof/. Off by default. Call before
+// handlers under /debug/pprof/. Off by default. Call before Serve or
 // ListenAndServe; toggling after the server is built has no effect.
 func (s *Server) EnablePprof(on bool) {
 	s.enablePprof = on

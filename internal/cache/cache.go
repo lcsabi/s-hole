@@ -226,14 +226,17 @@ func decrementTTLs(msg *dns.Msg, elapsed uint32) {
 }
 
 func minAnswerTTL(msg *dns.Msg) uint32 {
-	min := ^uint32(0)
+	// Named smallest, not min, so it does not shadow the predeclared builtin
+	// min (Go 1.21+); a later edit calling builtin min in scope would otherwise
+	// bind to this uint32 local by mistake.
+	smallest := ^uint32(0)
 	for _, rr := range msg.Answer {
-		if t := rr.Header().Ttl; t < min {
-			min = t
+		if t := rr.Header().Ttl; t < smallest {
+			smallest = t
 		}
 	}
-	if min == ^uint32(0) {
+	if smallest == ^uint32(0) {
 		return 0
 	}
-	return min
+	return smallest
 }

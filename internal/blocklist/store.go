@@ -95,7 +95,9 @@ func (s *Store) Sources() []SourceStatus {
 	if p := s.sources.Load(); p != nil {
 		return *p
 	}
-	return nil
+	// Empty slice, not nil, so /api/stats emits [] rather than null before the
+	// first refresh, matching this function's documented contract (b/049).
+	return []SourceStatus{}
 }
 
 // IsBlocked reports whether domain (or any of its parent domains) is on

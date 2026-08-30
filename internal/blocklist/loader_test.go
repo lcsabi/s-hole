@@ -172,6 +172,75 @@ func TestFetchList_Non200FallsBackToStaleCache(t *testing.T) {
 	}
 }
 
+func TestFetchList_TruncatedAtCapFallsBackToStale(t *testing.T) {
+	// b/051: a body larger than the cap is truncated. It must not be renamed in
+	// as a fresh cache. With a prior cache present, serve that (stale) and WARN,
+	// mirroring the non-200 fallback.
+	orig := maxBodyBytes
+	maxBodyBytes = 32
+	t.Cleanup(func() { maxBodyBytes = orig })
+
+	dir := t.TempDir()
+	// Body well over the 32-byte cap.
+	big := "0.0.0.0 " + strings.Repeat("a", 100) + ".example.com\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(big))
+	}))
+	defer srv.Close()
+
+	// Seed a stale cache file under this URL's filename.
+	cachePath := filepath.Join(dir, cacheFilename(srv.URL))
+	if err := os.WriteFile(cachePath, []byte("0.0.0.0 cached.example.com\n"), 0644); err != nil {
+		t.Fatalf("seed cache file: %v", err)
+	}
+	staleTime := mustOldTime(t)
+	if err := os.Chtimes(cachePath, staleTime, staleTime); err != nil {
+		t.Fatalf("backdate cache mtime: %v", err)
+	}
+
+	domains, meta, err := fetchList(srv.URL, dir)
+	if err != nil {
+		t.Fatalf("expected stale-cache fallback, got error: %v", err)
+	}
+	if !meta.stale {
+		t.Error("truncated fallback not flagged stale")
+	}
+	if len(domains) != 1 || domains[0] != "cached.example.com" {
+		t.Errorf("stale cache not served: got %v", domains)
+	}
+	// The truncated body must not have overwritten the cache.
+	body, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatalf("read cache: %v", err)
+	}
+	if strings.Contains(string(body), "aaaa") {
+		t.Errorf("cache overwritten with truncated body: %q", string(body))
+	}
+}
+
+func TestFetchList_TruncatedAtCapNoCacheErrors(t *testing.T) {
+	// b/051: a body over the cap with no prior cache is a hard failure, not a
+	// fresh cache of the truncated content.
+	orig := maxBodyBytes
+	maxBodyBytes = 32
+	t.Cleanup(func() { maxBodyBytes = orig })
+
+	dir := t.TempDir()
+	big := "0.0.0.0 " + strings.Repeat("b", 100) + ".example.com\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(big))
+	}))
+	defer srv.Close()
+
+	if _, _, err := fetchList(srv.URL, dir); err == nil {
+		t.Error("expected error on over-cap body with no cache, got nil")
+	}
+	// No cache file should have been left behind.
+	if _, err := os.Stat(filepath.Join(dir, cacheFilename(srv.URL))); err == nil {
+		t.Error("truncated body was written to the cache file")
+	}
+}
+
 func TestUpdate_PreservesStoreOnFullFailure(t *testing.T) {
 	// Regression for b/024: if every URL fails AND there is no usable
 	// cache, Update must not call store.Replace(nil); it must preserve
@@ -332,7 +401,13 @@ func TestUpdate_RecordsPerSourceStatus(t *testing.T) {
 
 func TestStore_SourcesEmptyBeforeUpdate(t *testing.T) {
 	s := NewStore()
-	if got := s.Sources(); len(got) != 0 {
+	got := s.Sources()
+	if got == nil {
+		// b/049: must be an empty slice, not nil, so /api/stats emits [] not
+		// null. len(nil) == 0, so the length check alone would not catch this.
+		t.Fatal("Sources() before Update = nil, want empty slice")
+	}
+	if len(got) != 0 {
 		t.Errorf("Sources() before Update = %v, want empty", got)
 	}
 }
@@ -345,6 +420,28 @@ func TestCacheFilename_Deterministic(t *testing.T) {
 	}
 	if !strings.HasPrefix(a, "blocklist_") {
 		t.Errorf("cacheFilename = %q, want blocklist_ prefix", a)
+	}
+}
+
+func TestCacheFilename_DistinctURLsDistinctFiles(t *testing.T) {
+	// b/050: URLs differing only in characters the old scheme collapsed to "_"
+	// (".", "/", ":", "?", "&", "=") must map to distinct cache files, or one
+	// source clobbers another's cache and breaks the per-source stale fallback.
+	urls := []string{
+		"https://a.example.com/list.txt",
+		"https://a-example.com/list.txt",
+		"https://a.example.com/list?txt",
+		"https://a.example.com:8080/list.txt",
+		"https://a.example.com/list.txt?v=1",
+		"https://a.example.com/list.txt?v=2",
+	}
+	seen := make(map[string]string, len(urls))
+	for _, u := range urls {
+		name := cacheFilename(u)
+		if prev, ok := seen[name]; ok {
+			t.Errorf("cache filename collision: %q and %q both map to %q", prev, u, name)
+		}
+		seen[name] = u
 	}
 }
 

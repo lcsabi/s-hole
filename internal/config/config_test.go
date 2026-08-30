@@ -225,6 +225,20 @@ func TestParsedDurations_InvalidErrors(t *testing.T) {
 	}
 }
 
+func TestParsedDBFlushInterval_RejectsNonPositive(t *testing.T) {
+	// A well-formed but non-positive interval must be rejected here so main's
+	// config-error path logs and exits, instead of panicking the DB writer
+	// goroutine on time.NewTicker later (b/046).
+	for _, v := range []string{"0s", "-5s"} {
+		t.Run("value="+v, func(t *testing.T) {
+			cfg := &Config{DBFlushInterval: v}
+			if _, err := cfg.ParsedDBFlushInterval(); err == nil {
+				t.Errorf("ParsedDBFlushInterval(%q) = nil error, want non-positive rejected", v)
+			}
+		})
+	}
+}
+
 func TestApplyEnvOverrides(t *testing.T) {
 	// R5: S_HOLE_* env vars must override the corresponding YAML fields
 	// after applyDefaults. Each env var is cleared at test exit via
@@ -298,20 +312,21 @@ func TestApplyEnvOverrides_AllStringFields(t *testing.T) {
 }
 
 func TestApplyEnvOverrides_EnablePprof(t *testing.T) {
-	// Only 1/true/yes turn pprof on. Everything else, including an env
-	// var explicitly set to the empty string (LookupEnv ok=true, value=""),
-	// leaves it at the default false.
+	// Recognised tokens (1/true/yes and 0/false/no) set pprof case-insensitively.
+	// An empty or unrecognised value leaves the default (false) in place (b/047).
 	cases := []struct {
 		value string
 		want  bool
 	}{
 		{"1", true},
 		{"true", true},
+		{"TRUE", true},
 		{"yes", true},
 		{"0", false},
 		{"false", false},
 		{"no", false},
-		{"", false},
+		{"", false},        // unrecognised: default (false) preserved
+		{"garbage", false}, // unrecognised: default preserved
 	}
 	for _, tc := range cases {
 		t.Run("value="+tc.value, func(t *testing.T) {
@@ -354,17 +369,24 @@ func TestLoad_LocalPTRFalseHonored(t *testing.T) {
 }
 
 func TestApplyEnvOverrides_LocalPTR(t *testing.T) {
+	// local_ptr defaults to true. Recognised tokens set it case-insensitively;
+	// an empty or unrecognised value must leave the default in place, never flip
+	// a default-on privacy feature off (b/047).
 	cases := []struct {
 		value string
 		want  bool
 	}{
 		{"1", true},
 		{"true", true},
+		{"TRUE", true},
 		{"yes", true},
+		{"Yes", true},
 		{"0", false},
 		{"false", false},
 		{"no", false},
-		{"", false},
+		{"NO", false},
+		{"", true},        // unrecognised: default (true) preserved
+		{"garbage", true}, // unrecognised: default preserved, not flipped off
 	}
 	for _, tc := range cases {
 		t.Run("value="+tc.value, func(t *testing.T) {

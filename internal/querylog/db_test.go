@@ -17,6 +17,18 @@ func newDB(t *testing.T, logQueries string) (*DBLogger, string) {
 	return db, path
 }
 
+func TestNewDBLogger_NonPositiveFlushIntervalErrors(t *testing.T) {
+	// A non-positive flush interval would panic time.NewTicker in the writer
+	// goroutine. The constructor must reject it (no panic, no goroutine started)
+	// so the caller degrades cleanly (b/046).
+	path := filepath.Join(t.TempDir(), "queries.db")
+	for _, d := range []time.Duration{0, -5 * time.Second} {
+		if _, err := NewDBLogger(path, "all", d, 0); err == nil {
+			t.Errorf("NewDBLogger with flushInterval=%s returned nil error, want rejected", d)
+		}
+	}
+}
+
 func TestNewDBLogger_BadPathErrors(t *testing.T) {
 	// A path inside a nonexistent directory cannot be created. Verify
 	// NewDBLogger surfaces the error rather than returning a half-built

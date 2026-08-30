@@ -2,6 +2,8 @@ package blocklist
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
@@ -20,7 +22,9 @@ const cacheMaxAge = 24 * time.Hour
 // a runaway download from filling the disk.
 var httpClient = &http.Client{Timeout: 60 * time.Second}
 
-const maxBodyBytes = 256 << 20 // 256 MiB
+// maxBodyBytes caps a single source download. It is a var, not a const, so a
+// test can lower it; production always uses 256 MiB.
+var maxBodyBytes int64 = 256 << 20 // 256 MiB
 
 // Update downloads (or loads from cache) all lists and replaces the store.
 // If every configured URL fails (network outage, all servers down), the
@@ -147,6 +151,21 @@ func fetchList(url, cacheDir string) ([]string, sourceMeta, error) {
 		_ = os.Remove(tmpPath)
 		return nil, sourceMeta{}, closeErr
 	}
+	// Detect a source that exceeded the cap. parseHostsFormat drained the
+	// LimitReader, so any byte still readable from resp.Body means the body was
+	// truncated. A truncated body is unusable like a non-200 response, so take
+	// the same stale-cache fallback rather than renaming a partial list in as
+	// fresh (b/051).
+	var probe [1]byte
+	if n, _ := io.ReadFull(resp.Body, probe[:]); n > 0 {
+		_ = os.Remove(tmpPath)
+		if info, statErr := os.Stat(cachePath); statErr == nil {
+			logger.Warn("response truncated at cap, using stale cache", "url", url, "cap_bytes", maxBodyBytes)
+			domains, loadErr := loadFromFile(cachePath)
+			return domains, sourceMeta{stale: true, snapshot: info.ModTime()}, loadErr
+		}
+		return nil, sourceMeta{}, fmt.Errorf("response exceeded %d-byte cap", maxBodyBytes)
+	}
 	if err := os.Rename(tmpPath, cachePath); err != nil {
 		_ = os.Remove(tmpPath)
 		return nil, sourceMeta{}, err
@@ -236,20 +255,13 @@ func ValidDomain(s string) bool {
 	return true
 }
 
-// cacheFilename converts a URL to a safe filename.
-//
-// Colon escapes are important: a bare ":" in the URL (e.g. an embedded
-// port like "127.0.0.1:8080") is a path-separator character on Windows
-// and would make the file impossible to rename across NTFS streams.
+// cacheFilename maps a URL to a stable, collision-free cache filename by
+// hashing it. The old character-replacement scheme collapsed ".", "/", ":",
+// "?", "&", and "=" all to "_", so two similar URLs could map to one file and
+// clobber each other's cache, breaking the per-source stale fallback (b/050).
+// A sha256 hex digest is injective in practice and filesystem-safe on every
+// target OS (hex has no path separators, so the NTFS-rename concern is gone).
 func cacheFilename(url string) string {
-	r := strings.NewReplacer(
-		"://", "_",
-		"/", "_",
-		".", "_",
-		"?", "_",
-		"&", "_",
-		"=", "_",
-		":", "_",
-	)
-	return "blocklist_" + r.Replace(url) + ".txt"
+	sum := sha256.Sum256([]byte(url))
+	return "blocklist_" + hex.EncodeToString(sum[:]) + ".txt"
 }

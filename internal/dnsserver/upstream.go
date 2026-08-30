@@ -134,18 +134,25 @@ func forwardWith(ctx context.Context, req *dns.Msg, upstreams []string, tracker 
 // the truncated UDP reply is returned instead: the upstream is
 // demonstrably alive, and a TC-flagged partial answer is more useful to
 // the client than a SERVFAIL.
+// udpClient and tcpClient are reused across queries. dns.Client is a
+// concurrency-safe config object with no per-call state, so one of each
+// suffices instead of allocating a fresh pair per cache-miss query (matching
+// forwardTracker's package-level lifetime above).
+var (
+	udpClient = &dns.Client{Timeout: perUpstreamTimeout}
+	tcpClient = &dns.Client{Net: "tcp", Timeout: perUpstreamTimeout}
+)
+
 func exchange(ctx context.Context, req *dns.Msg, upstream string) (*dns.Msg, error) {
-	udp := &dns.Client{Timeout: perUpstreamTimeout}
 	attemptCtx, cancel := context.WithTimeout(ctx, perUpstreamTimeout)
-	resp, _, err := udp.ExchangeContext(attemptCtx, req, upstream)
+	resp, _, err := udpClient.ExchangeContext(attemptCtx, req, upstream)
 	cancel()
 	if err != nil || !resp.Truncated {
 		return resp, err
 	}
 
-	tcp := &dns.Client{Net: "tcp", Timeout: perUpstreamTimeout}
 	attemptCtx, cancel = context.WithTimeout(ctx, perUpstreamTimeout)
-	full, _, tcpErr := tcp.ExchangeContext(attemptCtx, req, upstream)
+	full, _, tcpErr := tcpClient.ExchangeContext(attemptCtx, req, upstream)
 	cancel()
 	if tcpErr != nil {
 		return resp, nil

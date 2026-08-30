@@ -13,6 +13,15 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 ### Changed
 
 ### Fixed
+- **Blocklist source cache files no longer collide.** Cache filenames are now
+  derived from a hash of the source URL, so two similar URLs cannot map to one
+  file and clobber each other's cached copy. (CL 62)
+- **An over-size blocklist source is no longer silently truncated.** If a source
+  exceeds the 256 MiB per-source cap, s-hole now logs a WARN and keeps the
+  previous cached copy (marked stale) instead of caching the truncated download
+  as fresh. (CL 62)
+- **`/api/stats` reports `sources` as `[]`, never `null`,** before the first
+  blocklist refresh completes. (CL 62)
 - **A non-positive `db_flush_interval` now fails cleanly at startup.** A value
   like `0s` or `-5s` used to crash the daemon from a background goroutine after
   the database was already open. It is now rejected with a clear config error,

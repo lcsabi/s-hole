@@ -1498,3 +1498,96 @@ State that `Snapshot` loads `blocked`, `localPTR`, and `cacheHit` all before
 `total`, and that each is read before `total` because each is incremented after
 it. Drop the false "`total >= localPTR` always holds" justification. No code
 change.
+
+---
+
+## b/049 — blocklist: Sources() returns nil, not the documented empty slice
+
+**Priority:** P3
+**Component:** blocklist
+**Status:** Fixed in CL 62
+**Filed:** 2026-08-30
+
+### Description
+
+`Store.Sources()` documents "an empty slice before the first Update" but returned
+`nil`. Marshaled by `/api/stats`, a `nil` slice serializes as JSON `null`, not
+`[]`, so in the brief pre-first-refresh window a client that expects an array sees
+a different type. Doc-vs-code drift, which CLAUDE.md treats as a bug. Found by
+ultrareview.
+
+### Root Cause
+
+The zero-value return path used `return nil` instead of an empty slice literal.
+
+### Fix
+
+Return `[]SourceStatus{}` when no snapshot has loaded. The existing
+`TestStore_SourcesEmptyBeforeUpdate` used `len() != 0`, which passes for `nil`
+too, so it did not guard this; it now also asserts the result is non-nil.
+
+---
+
+## b/050 — blocklist: cacheFilename is many-to-one (URL collision)
+
+**Priority:** P3
+**Component:** blocklist
+**Status:** Fixed in CL 62
+**Filed:** 2026-08-30
+
+### Description
+
+`cacheFilename` collapsed `://`, `/`, `.`, `?`, `&`, `=`, and `:` all to `_`. Two
+source URLs that differ only in those characters mapped to the same cache file
+and overwrote each other's `os.Rename`, silently breaking the per-source stale
+fallback (each source is supposed to keep its own on-disk cache to serve when a
+fetch fails). Low likelihood, but silent. Found by ultrareview.
+
+### Root Cause
+
+The character-replacement scheme was not injective: distinct URLs could produce
+the same filename.
+
+### Fix
+
+Hash the URL: `blocklist_` + hex(sha256(url)) + `.txt`. The mapping is injective
+in practice, so distinct URLs get distinct files. The output keeps the
+`blocklist_` prefix and contains only hex characters, so `FuzzCacheFilename`
+stays green (and the NTFS-rename concern the old colon-escape addressed is gone).
+Existing cache files under the old naming are re-downloaded once under the new
+name, the same cost as a cache miss. Test:
+`TestCacheFilename_DistinctURLsDistinctFiles`.
+
+---
+
+## b/051 — blocklist: over-cap source is silently truncated and cached as fresh
+
+**Priority:** P3
+**Component:** blocklist
+**Status:** Fixed in CL 62
+**Filed:** 2026-08-30
+
+### Description
+
+`fetchList` streamed the body through `io.LimitReader(resp.Body, maxBodyBytes)`
+with a 256 MiB cap. If a source exceeded the cap, the reader stopped at the cap
+with no error, `parseHostsFormat` parsed the truncated bytes, and the result was
+renamed in as a fresh cache with `stale: false`. The operator got a partial
+blocklist presented as healthy, with no signal. Theoretical at real blocklist
+sizes. Raised as open question A by ultrareview.
+
+### Root Cause
+
+`io.LimitReader` truncates silently; nothing checked whether the source had more
+bytes than the cap allowed.
+
+### Fix
+
+After `parseHostsFormat` drains the LimitReader, probe `resp.Body` for one more
+byte. If a byte is readable, the body was truncated: remove the `.tmp` and take
+the same fallback as a non-200 response (serve the previous cache marked stale
+and WARN if one exists, else return an error). A truncated 200 is thus handled
+like any other unusable 200. `maxBodyBytes` became a package var so a test can
+lower it. Docs: the README blocklist section documents the cap and the truncation
+behavior. Tests: `TestFetchList_TruncatedAtCapFallsBackToStale` and
+`TestFetchList_TruncatedAtCapNoCacheErrors`.

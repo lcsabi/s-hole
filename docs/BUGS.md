@@ -1352,3 +1352,48 @@ After `h.stop()` returns, send `svc.Status{State: svc.Stopped}` and return from
 `Execute`. The SCM then sees the service reach `Stopped`, `svc.Run` returns, and
 `main` exits. Verify on a Windows/SCM host (part of the R58 checklist): a real
 SCM stop reaches `Stopped` and does not hang in `StopPending`.
+
+---
+
+## b/045 — dnsserver: upstream second sweep re-tries the upstreams that just failed
+
+**Priority:** P1
+**Component:** dnsserver
+**Status:** Fixed in CL 60
+**Filed:** 2026-08-30
+
+### Description
+
+`forwardWith` runs two sweeps. Sweep 1 skips upstreams in cooldown and tries the
+rest. Sweep 2 is meant to retry only the upstreams that were already in cooldown
+at function entry. The sweep-2 gate reused the entry-time `now` in `shouldSkip`,
+but sweep 1 records each fresh failure with `recordFailure(upstream, time.Now())`
+at a time after `now`. So for an upstream that just failed in sweep 1,
+`now.Sub(last)` is negative, `negative < 30s` is true, `shouldSkip` returns true,
+and the gate re-exchanged it. Sweep 2 retried exactly the upstreams it was
+written to skip. The comment claimed the entry-time `now` prevented this; it did
+not. Found by ultrareview.
+
+On a total upstream outage every upstream was contacted twice per query. With
+timeout (black-hole) upstreams the query burned the full 10 s `queryDeadline` and
+returned `context deadline exceeded` instead of the faster "all upstreams
+failed". Doubled failure-path latency and upstream load during an outage. The
+client-visible result was unchanged (SERVFAIL either way), so this was a
+robustness and efficiency defect, not a resolution-correctness defect.
+
+`TestForward_AllFailReturnsError` used connection-refused ports (instant) and
+asserted only `err != nil`, so it could not see the double attempt.
+
+### Root Cause
+
+Sweep 2 re-derived "not yet tried" from timestamps that sweep 1 had just
+mutated. The entry-time `now` was older than every fresh failure stamp, so the
+just-failed upstreams read as still in cooldown.
+
+### Fix
+
+Track the set actually attempted in sweep 1 (`tried map[string]bool`) and skip
+exactly that set in sweep 2, instead of re-deriving it from timestamps. Each
+upstream is now contacted at most once per query. Regression:
+`TestForward_AllFailContactsEachOnce` uses a counting fast-failing upstream and
+asserts each is contacted exactly once on the all-fail path.

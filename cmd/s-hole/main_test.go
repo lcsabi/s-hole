@@ -98,7 +98,7 @@ func TestPrintNetworkHint_EmitsBanner(t *testing.T) {
 	t.Setenv("S_HOLE_LOG_FORMAT", "")
 	t.Setenv("S_HOLE_ASCII_BANNER", "")
 	out := captureStdout(t, func() {
-		printNetworkHint("53", "0.0.0.0", "8080")
+		printNetworkHint("53", "0.0.0.0", "8080", true)
 	})
 	if !strings.Contains(out, "Router setup") {
 		t.Skipf("no LAN interface in test env; banner skipped (got: %q)", out)
@@ -111,6 +111,25 @@ func TestPrintNetworkHint_EmitsBanner(t *testing.T) {
 	}
 }
 
+func TestPrintNetworkHint_AdminDownShowsUnavailable(t *testing.T) {
+	// b/052: when the admin listener failed to bind, the banner must not
+	// advertise a URL that refuses connections; it says the UI is unavailable.
+	t.Setenv("S_HOLE_LOG_FORMAT", "")
+	t.Setenv("S_HOLE_ASCII_BANNER", "")
+	out := captureStdout(t, func() {
+		printNetworkHint("53", "127.0.0.1", "8080", false)
+	})
+	if !strings.Contains(out, "Router setup") {
+		t.Skipf("no LAN interface in test env; banner skipped (got: %q)", out)
+	}
+	if strings.Contains(out, "http://") {
+		t.Errorf("banner advertised an Admin UI URL while the bind failed:\n%s", out)
+	}
+	if !strings.Contains(out, "unavailable") {
+		t.Errorf("banner missing the admin-unavailable note:\n%s", out)
+	}
+}
+
 func TestPrintNetworkHint_LoopbackAPIPointsAtLocalhost(t *testing.T) {
 	// T4 regression: with the localhost-only api_listen default, the
 	// banner must not advertise http://<lan-ip>:8080. That URL is
@@ -118,7 +137,7 @@ func TestPrintNetworkHint_LoopbackAPIPointsAtLocalhost(t *testing.T) {
 	t.Setenv("S_HOLE_LOG_FORMAT", "")
 	t.Setenv("S_HOLE_ASCII_BANNER", "")
 	out := captureStdout(t, func() {
-		printNetworkHint("53", "127.0.0.1", "8080")
+		printNetworkHint("53", "127.0.0.1", "8080", true)
 	})
 	if !strings.Contains(out, "Router setup") {
 		t.Skipf("no LAN interface in test env; banner skipped (got: %q)", out)
@@ -156,7 +175,7 @@ func TestIsLoopbackHost(t *testing.T) {
 func TestPrintNetworkHint_ASCIIFallback(t *testing.T) {
 	t.Setenv("S_HOLE_ASCII_BANNER", "1")
 	out := captureStdout(t, func() {
-		printNetworkHint("53", "0.0.0.0", "8080")
+		printNetworkHint("53", "0.0.0.0", "8080", true)
 	})
 	if strings.Contains(out, "─") || strings.Contains(out, "│") || strings.Contains(out, "┌") {
 		t.Errorf("ASCII fallback still emitted box-drawing characters:\n%s", out)

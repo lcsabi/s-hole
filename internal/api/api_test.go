@@ -117,6 +117,73 @@ func TestListenAndServe_LifecycleAndShutdown(t *testing.T) {
 	}
 }
 
+func TestServe_OnBoundListener(t *testing.T) {
+	// main binds the listener itself and hands it to Serve so a bind failure is
+	// caught synchronously at startup (b/052). Exercise that path: Serve on a
+	// live listener answers /healthz, then Shutdown returns.
+	store := blocklist.NewStore()
+	s := New(stats.New(), nil, store, nil, func() bool { return true })
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := l.Addr().String()
+
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- s.Serve(l) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	var resp *http.Response
+	for time.Now().Before(deadline) {
+		resp, err = http.Get("http://" + addr + "/healthz")
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		s.Shutdown(context.Background())
+		t.Fatalf("server never accepted a connection: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("/healthz status = %d", resp.StatusCode)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := s.Shutdown(ctx); err != nil {
+		t.Errorf("Shutdown returned %v", err)
+	}
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			t.Errorf("Serve returned %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after Shutdown")
+	}
+}
+
+func TestListenAndServe_BindFailureSurfaces(t *testing.T) {
+	// A bind failure must be returned synchronously; main relies on this to
+	// detect a bad api_listen at startup and degrade the admin UI without
+	// killing DNS (b/052). Occupy a port, then point ListenAndServe at the same
+	// address and expect an error, not a hang.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer l.Close()
+
+	store := blocklist.NewStore()
+	s := New(stats.New(), nil, store, nil, func() bool { return true })
+	if err := s.ListenAndServe(l.Addr().String()); err == nil {
+		t.Error("ListenAndServe on an occupied address returned nil, want a bind error")
+	}
+}
+
 func TestShutdown_BeforeListenIsNoOp(t *testing.T) {
 	// If the caller calls Shutdown without ever calling ListenAndServe,
 	// the helper must not panic; s.httpServer is nil at that point.

@@ -226,7 +226,9 @@ An HTTP server (default `127.0.0.1:8080`, localhost only) serves two things:
 
 The web UI has no external dependencies (no CDN, no framework). It is pure HTML/CSS/JS and works without an internet connection.
 
-The HTTP server is held as an `*http.Server` so it can be gracefully shut down. `doStop` in `cmd/s-hole/main.go` calls `apiServer.Shutdown(ctx)` with a 5-second context before terminating the process, which drains in-flight admin requests. `http.ErrServerClosed` is suppressed inside `ListenAndServe` so a clean shutdown does not log a spurious error.
+The HTTP server is held as an `*http.Server` so it can be gracefully shut down. `doStop` in `cmd/s-hole/main.go` calls `apiServer.Shutdown(ctx)` with a 5-second context before terminating the process, which drains in-flight admin requests. `http.ErrServerClosed` is suppressed inside `Serve` so a clean shutdown does not log a spurious error.
+
+main binds `api_listen` synchronously (`net.Listen`, then `apiServer.Serve(ln)`) so a bad address or a port conflict is caught at startup, not inside a goroutine. A failed admin bind is fail-open: main logs a WARN, keeps serving DNS, and the startup banner reports the admin UI as unavailable rather than advertising a URL that refuses connections. DNS is the critical service, so it must not die because the optional dashboard could not bind (b/052). `ListenAndServe(addr)` remains as the one-call bind-and-serve form.
 
 Explicit timeouts are configured on the server (`ReadHeaderTimeout=5s`, `ReadTimeout=15s`, `WriteTimeout=30s`, `IdleTimeout=60s`) to defend the unauthenticated LAN-facing endpoint from slowloris-style attacks. POST handlers that accept JSON bodies wrap `r.Body` in `http.MaxBytesReader` (64 KiB) so an attacker cannot exhaust memory by streaming an unbounded payload.
 

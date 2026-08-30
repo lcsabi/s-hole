@@ -13,6 +13,11 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 ### Changed
 
 ### Fixed
+- **A failed admin-server bind is now surfaced at startup.** If `api_listen` is
+  misconfigured or its port is taken, s-hole logs a clear WARN, keeps serving
+  DNS, and the startup banner reports the admin UI as unavailable instead of
+  advertising a URL that refuses connections. Previously the failure was a single
+  easy-to-miss log line and the banner still advertised the UI. (CL 63)
 - **Blocklist source cache files no longer collide.** Cache filenames are now
   derived from a hash of the source URL, so two similar URLs cannot map to one
   file and clobber each other's cached copy. (CL 62)

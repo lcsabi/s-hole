@@ -228,15 +228,29 @@ func main() {
 		mainLog.Warn("pprof endpoints enabled; bind api_listen to localhost only",
 			"api_listen", cfg.APIListen)
 	}
-	go func() {
-		if err := apiServer.ListenAndServe(cfg.APIListen); err != nil {
-			mainLog.Error("api server", "err", err)
-		}
-	}()
+	// Bind the admin listener synchronously so a bad api_listen or a port
+	// conflict is caught here, in order, before the banner. DNS is the critical
+	// service, so a failed admin bind is a WARN and continue (fail-open), not
+	// fatal: killing DNS because the optional dashboard could not bind would
+	// invert the priority. The banner then reports the admin UI as unavailable
+	// instead of advertising a URL that refuses connections (b/052).
+	apiUp := false
+	if apiLn, err := net.Listen("tcp", cfg.APIListen); err != nil {
+		mainLog.Warn("admin UI failed to bind; continuing without it (DNS still serving)",
+			"api_listen", cfg.APIListen, "err", err,
+			"hint", "check for a port conflict or fix api_listen")
+	} else {
+		apiUp = true
+		go func() {
+			if err := apiServer.Serve(apiLn); err != nil {
+				mainLog.Error("api server", "err", err)
+			}
+		}()
+	}
 
 	_, dnsPort, _ := net.SplitHostPort(cfg.Listen)
 	apiHost, apiPort, _ := net.SplitHostPort(cfg.APIListen)
-	printNetworkHint(dnsPort, apiHost, apiPort)
+	printNetworkHint(dnsPort, apiHost, apiPort, apiUp)
 
 	// runCtx is the application-wide lifecycle context. doStop cancels
 	// it before tearing down subsystems so the background tickers exit
@@ -364,8 +378,10 @@ func blockUntilStopped(start func() error, done <-chan struct{}) int {
 // The Admin UI line honors where the API server is actually bound: with
 // the localhost-only default, advertising http://<lan-ip>:8080 would be
 // a lie (every other device gets connection-refused), so the banner
-// points at 127.0.0.1 and says so (T4).
-func printNetworkHint(dnsPort, apiHost, apiPort string) {
+// points at 127.0.0.1 and says so (T4). When apiUp is false the admin
+// listener failed to bind, so the banner says the UI is unavailable rather
+// than advertising a URL that refuses connections (b/052).
+func printNetworkHint(dnsPort, apiHost, apiPort string, apiUp bool) {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return
@@ -400,8 +416,12 @@ func printNetworkHint(dnsPort, apiHost, apiPort string) {
 		for _, ip := range lanIPs {
 			fmt.Printf("[main] |   DNS server -> %s:%s\n", ip, dnsPort)
 		}
-		for _, h := range adminHosts {
-			fmt.Printf("[main] |   Admin UI   -> http://%s:%s%s\n", h, apiPort, adminNote)
+		if apiUp {
+			for _, h := range adminHosts {
+				fmt.Printf("[main] |   Admin UI   -> http://%s:%s%s\n", h, apiPort, adminNote)
+			}
+		} else {
+			fmt.Println("[main] |   Admin UI   -> unavailable (api_listen bind failed)")
 		}
 		fmt.Println("[main] +------------------------------------------------------")
 		return
@@ -411,8 +431,12 @@ func printNetworkHint(dnsPort, apiHost, apiPort string) {
 	for _, ip := range lanIPs {
 		fmt.Printf("[main] │  DNS server → %s:%s\n", ip, dnsPort)
 	}
-	for _, h := range adminHosts {
-		fmt.Printf("[main] │  Admin UI   → http://%s:%s%s\n", h, apiPort, adminNote)
+	if apiUp {
+		for _, h := range adminHosts {
+			fmt.Printf("[main] │  Admin UI   → http://%s:%s%s\n", h, apiPort, adminNote)
+		}
+	} else {
+		fmt.Println("[main] │  Admin UI   → unavailable (api_listen bind failed)")
 	}
 	fmt.Println("[main] └──────────────────────────────────────────────────────")
 }

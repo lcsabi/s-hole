@@ -1591,3 +1591,40 @@ like any other unusable 200. `maxBodyBytes` became a package var so a test can
 lower it. Docs: the README blocklist section documents the cap and the truncation
 behavior. Tests: `TestFetchList_TruncatedAtCapFallsBackToStale` and
 `TestFetchList_TruncatedAtCapNoCacheErrors`.
+
+---
+
+## b/052 — main: admin-server bind failure degrades silently
+
+**Priority:** P3
+**Component:** main
+**Status:** Fixed in CL 63
+**Filed:** 2026-08-30
+
+### Description
+
+`api.Server.ListenAndServe` bound the socket and served, both inside the
+background goroutine in main. So a bind failure (a bad `api_listen`, a port
+conflict, a privileged port) was only visible to that goroutine, which logged one
+ERROR line and exited while DNS kept serving. By then main had already printed
+the startup banner advertising the admin UI, so the banner and the goroutine's
+ERROR line raced and the banner advertised a UI that was not there. The admin
+server also serves `/healthz`, `/readyz`, and `/metrics`, so a bind failure
+silently removed the health and metrics surface while DNS looked healthy. Raised
+as P4 #10 by ultrareview.
+
+### Root Cause
+
+Bind and serve were coupled in one call inside a goroutine, so the bind result
+never reached main. main had no chance to react before advertising the UI.
+
+### Fix
+
+Split bind from serve. `api.Server` gains `Serve(net.Listener)`; `ListenAndServe`
+is reimplemented as `net.Listen` then `Serve`. main now binds `api_listen`
+synchronously before backgrounding the serve loop. On failure it logs a WARN with
+remediation, keeps DNS serving (fail-open: the optional admin surface must not
+take DNS down), and the banner reports the admin UI as unavailable instead of
+advertising a dead URL. Tests: `TestServe_OnBoundListener`,
+`TestListenAndServe_BindFailureSurfaces`, and
+`TestPrintNetworkHint_AdminDownShowsUnavailable`.

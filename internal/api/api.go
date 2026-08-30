@@ -97,13 +97,26 @@ const (
 	maxRequestBytes   = 64 * 1024
 )
 
-// ListenAndServe binds addr and serves the admin UI and REST API.
+// ListenAndServe binds addr and serves the admin UI and REST API. It is the
+// one-call form (Listen then Serve). A caller that wants to detect a bind
+// failure synchronously, before backgrounding the serve loop, should bind with
+// net.Listen itself and call Serve; main does this so a bad api_listen is
+// surfaced at startup instead of in a goroutine (b/052).
+func (s *Server) ListenAndServe(addr string) error {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return s.Serve(ln)
+}
+
+// Serve serves the admin UI and REST API on an already-bound listener.
 // http.ErrServerClosed (raised by a clean Shutdown) is suppressed so callers
 // can treat any returned error as an actual failure.
-func (s *Server) ListenAndServe(addr string) error {
+func (s *Server) Serve(ln net.Listener) error {
+	addr := ln.Addr().String()
 	logger.Info("admin UI listening", "addr", addr, "url", "http://"+addr)
 	hs := &http.Server{
-		Addr:              addr,
 		Handler:           s.handler(),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
@@ -111,7 +124,7 @@ func (s *Server) ListenAndServe(addr string) error {
 		IdleTimeout:       idleTimeout,
 	}
 	s.httpServer = hs
-	if err := hs.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := hs.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil

@@ -48,7 +48,13 @@ func (h *handler) Execute(_ []string, r <-chan svc.ChangeRequest, s chan<- svc.S
 		switch c.Cmd {
 		case svc.Stop, svc.Shutdown:
 			s <- svc.Status{State: svc.StopPending}
-			h.stop() // calls os.Exit(0); process exits before Execute returns
+			// doStop runs the ordered teardown and returns; it no longer calls
+			// os.Exit (b/043). Report Stopped so the SCM does not hang in
+			// StopPending, then return. After Execute returns, svc.Run returns
+			// and main exits (b/044).
+			h.stop()
+			s <- svc.Status{State: svc.Stopped}
+			return false, 0
 		}
 	}
 	return false, 0

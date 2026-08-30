@@ -14,8 +14,9 @@
 //     enable_pprof, /debug/pprof/* alongside the REST API)
 //   - launch background tickers for stats printing and blocklist refresh,
 //     both panic-recovered
-//   - either enter the Windows SCM event loop (service mode) or block on
-//     the DNS server (interactive mode)
+//   - either enter the Windows SCM event loop (service mode) or run the DNS
+//     server in the background and block until doStop completes the ordered
+//     teardown (interactive mode)
 //
 // Signals: SIGINT and SIGTERM trigger a clean shutdown. On non-Windows
 // builds, SIGHUP triggers a blocklist refresh through the same
@@ -247,33 +248,44 @@ func main() {
 		reloadFn()
 	})
 
+	// done is closed by doStop after the ordered teardown finishes. The
+	// interactive path blocks on it, so the process exits only once shutdown()
+	// has run to completion. This makes doStop the sole exit authority and
+	// removes the race where dnsServer.Start() returning (unblocked by stopDNS)
+	// let main() return before the later teardown steps ran (b/043).
+	done := make(chan struct{})
+
 	// doStop is the single shutdown path used by both the signal handler
-	// (interactive) and the Windows SCM stop event (service mode). It wires
-	// the running subsystems into shutdown() and exits; shutdown() owns the
-	// teardown order.
+	// (interactive) and the Windows SCM stop event (service mode). It wires the
+	// running subsystems into shutdown(); shutdown() owns the teardown order.
+	// stopOnce guards against a second stop request re-running teardown. The
+	// old os.Exit(0) made re-entry impossible; without it, guard explicitly.
+	var stopOnce sync.Once
 	doStop := func() {
-		shutdown(mainLog, 5*time.Second, shutdownDeps{
-			cancelTickers: runCancel,
-			printStats:    counter.Print,
-			stopDNS:       dnsServer.Shutdown,
-			drainHTTP:     apiServer.Shutdown,
-			waitForReload: func(ctx context.Context) {
-				waitWithDeadline(ctx, &reloadWG, mainLog, "blocklist refresh")
-			},
-			closeCache: func() {
-				if dnsCache != nil {
-					dnsCache.Close()
-				}
-			},
-			closeFileLog: fileLog.Close,
-			closeDB: func() error {
-				if db != nil {
-					return db.Close()
-				}
-				return nil
-			},
+		stopOnce.Do(func() {
+			shutdown(mainLog, 5*time.Second, shutdownDeps{
+				cancelTickers: runCancel,
+				printStats:    counter.Print,
+				stopDNS:       dnsServer.Shutdown,
+				drainHTTP:     apiServer.Shutdown,
+				waitForReload: func(ctx context.Context) {
+					waitWithDeadline(ctx, &reloadWG, mainLog, "blocklist refresh")
+				},
+				closeCache: func() {
+					if dnsCache != nil {
+						dnsCache.Close()
+					}
+				},
+				closeFileLog: fileLog.Close,
+				closeDB: func() error {
+					if db != nil {
+						return db.Close()
+					}
+					return nil
+				},
+			})
+			close(done)
 		})
-		os.Exit(0)
 	}
 
 	// Signal handler for interactive (non-service) use.
@@ -298,7 +310,8 @@ func main() {
 	}()
 
 	// When launched by the Windows SCM, enter the service event loop instead
-	// of blocking directly on the DNS server.
+	// of blocking directly on the DNS server. The SCM stop control calls doStop,
+	// which runs the same ordered teardown as the interactive path.
 	if service.IsWindowsService() {
 		if err := service.Run(func() {
 			if err := dnsServer.Start(); err != nil {
@@ -311,10 +324,33 @@ func main() {
 		return
 	}
 
-	// Interactive mode: block until the DNS server exits.
-	if err := dnsServer.Start(); err != nil {
-		mainLog.Error("dns server", "err", err)
-		os.Exit(1)
+	// Interactive mode: run the DNS server in the background so doStop, not a
+	// returning Start(), owns the exit.
+	if code := blockUntilStopped(dnsServer.Start, done); code != 0 {
+		os.Exit(code)
+	}
+}
+
+// blockUntilStopped runs start (the DNS server) in a goroutine and blocks until
+// doStop closes done. It returns the process exit code: 1 on a startup serve
+// error, 0 on a clean stop. The serve goroutine reports only a non-nil error,
+// which in practice is a startup bind failure; a clean Shutdown makes start()
+// return nil, which is dropped so it cannot race the done signal. Extracted from
+// main so the guarantee "the process exits only after shutdown() has fully run"
+// is unit-testable (b/043).
+func blockUntilStopped(start func() error, done <-chan struct{}) int {
+	serveErr := make(chan error, 1)
+	go func() {
+		if err := start(); err != nil {
+			serveErr <- err
+		}
+	}()
+	select {
+	case err := <-serveErr:
+		slog.With("pkg", "main").Error("dns server", "err", err)
+		return 1
+	case <-done:
+		return 0
 	}
 }
 
@@ -514,18 +550,25 @@ type shutdownDeps struct {
 // or the cache while the DNS server or a refresh is still live risks a
 // write-to-closed-DB or a half-written cache file. TestShutdown_TeardownOrder
 // pins the sequence. A drainHTTP or closeDB error is logged, not fatal, so the
-// remaining steps still run.
+// remaining steps still run. drainHTTP and waitForReload each run under their
+// own timeout so a slow drain does not starve the reload wait.
 func shutdown(log *slog.Logger, timeout time.Duration, d shutdownDeps) {
 	log.Info("shutting down")
 	d.cancelTickers()
 	d.printStats()
 	d.stopDNS()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	if err := d.drainHTTP(ctx); err != nil {
+	// Separate timeout budgets. A shared context let a slow HTTP drain eat into
+	// the reload wait; the reload wait protects an in-flight refresh from being
+	// killed mid os.Rename (R53), so it must get its full budget regardless of
+	// how long the drain took.
+	hctx, hcancel := context.WithTimeout(context.Background(), timeout)
+	if err := d.drainHTTP(hctx); err != nil {
 		log.Warn("api shutdown", "err", err)
 	}
-	d.waitForReload(ctx)
+	hcancel()
+	rctx, rcancel := context.WithTimeout(context.Background(), timeout)
+	d.waitForReload(rctx)
+	rcancel()
 	d.closeCache()
 	if err := d.closeFileLog(); err != nil {
 		log.Warn("file log close", "err", err)

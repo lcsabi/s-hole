@@ -23,7 +23,13 @@ const cacheMaxAge = 24 * time.Hour
 var httpClient = &http.Client{Timeout: 60 * time.Second}
 
 // maxBodyBytes caps a single source download. It is a var, not a const, so a
-// test can lower it; production always uses 256 MiB.
+// test can lower it; production always uses 256 MiB and never writes it.
+//
+// Only tests mutate this, and blocklist tests run sequentially (none call
+// t.Parallel), so the fetch-path read never races a test's write. The same
+// no-parallel rule protects swapLogger in loader_test.go. Keep it that way: if
+// a blocklist test ever needs t.Parallel, pass the cap in explicitly rather
+// than mutating this global, or the mutation races the read under -race.
 var maxBodyBytes int64 = 256 << 20 // 256 MiB
 
 // Update downloads (or loads from cache) all lists and replaces the store.

@@ -1628,3 +1628,40 @@ take DNS down), and the banner reports the admin UI as unavailable instead of
 advertising a dead URL. Tests: `TestServe_OnBoundListener`,
 `TestListenAndServe_BindFailureSurfaces`, and
 `TestPrintNetworkHint_AdminDownShowsUnavailable`.
+
+---
+
+## b/053 — api: admin http.Server field is read/written across goroutines unsynchronized
+
+**Priority:** P4
+**Component:** api
+**Status:** Fixed in CL 64
+**Filed:** 2026-08-30
+
+### Description
+
+`api.Server.httpServer` is written by `Serve` and read by `Shutdown` from two
+different goroutines with no synchronization. `main` runs `Serve` in a background
+goroutine (`go apiServer.Serve(apiLn)`), and `doStop` calls `Shutdown` from the
+signal goroutine, so the assignment in `Serve` races the read in `Shutdown`. With
+a plain `*http.Server` field this is a data race that `-race` flags. The race
+predates the CL 59-63 series (the old `ListenAndServe` set the field the same way
+inside the same background goroutine), so it is pre-existing, not a regression.
+Raised by the CL 59-63 ultrareview follow-up.
+
+### Root Cause
+
+A shared struct field (`httpServer`) was written on the serve goroutine and read
+on the shutdown goroutine with no memory barrier. The nil-check in `Shutdown` also
+meant a stop that arrived before `Serve` stored the server would read the zero
+value and no-op, skipping the in-flight-request drain; CL 63's synchronous bind
+makes that window tiny, but the field race is real regardless of timing.
+
+### Fix
+
+Change the field to `atomic.Pointer[http.Server]`. `Serve` stores with `Store`;
+`Shutdown` reads with `Load` and treats a nil result as "nothing to drain". This
+makes `Server` race-free regardless of how the caller sequences `Serve` and
+`Shutdown`, so a later change to main's startup order cannot reintroduce the race.
+The public API is unchanged. Test: `TestServe_ConcurrentShutdownIsRaceFree` drives
+`Serve` and `Shutdown` concurrently and is clean under `-race`.

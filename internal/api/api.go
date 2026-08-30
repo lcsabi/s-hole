@@ -38,6 +38,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/lcsabi/s-hole/internal/blocklist"
@@ -67,8 +68,13 @@ type Server struct {
 	// reloadFn is the single-flight blocklist refresh; the caller owns the
 	// mutex so the periodic timer and the API are serialised against the
 	// same gate. Returns false if a refresh is already running.
-	reloadFn    func() bool
-	httpServer  *http.Server
+	reloadFn func() bool
+	// httpServer is stored by Serve, which runs in a background goroutine in
+	// main, and read by Shutdown, which runs on the signal goroutine. It is an
+	// atomic.Pointer so those two goroutines never race on the field; a plain
+	// pointer was an unsynchronised write/read (b/053). Load returns nil until
+	// Serve has stored the server, which Shutdown treats as "nothing to drain".
+	httpServer  atomic.Pointer[http.Server]
 	enablePprof bool
 }
 
@@ -123,7 +129,7 @@ func (s *Server) Serve(ln net.Listener) error {
 		WriteTimeout:      writeTimeout,
 		IdleTimeout:       idleTimeout,
 	}
-	s.httpServer = hs
+	s.httpServer.Store(hs)
 	if err := hs.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -132,10 +138,11 @@ func (s *Server) Serve(ln net.Listener) error {
 
 // Shutdown gracefully stops the HTTP server, waiting up to the deadline in ctx.
 func (s *Server) Shutdown(ctx context.Context) error {
-	if s.httpServer == nil {
+	hs := s.httpServer.Load()
+	if hs == nil {
 		return nil
 	}
-	return s.httpServer.Shutdown(ctx)
+	return hs.Shutdown(ctx)
 }
 
 func (s *Server) handler() http.Handler {

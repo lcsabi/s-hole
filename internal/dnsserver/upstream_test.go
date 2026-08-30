@@ -111,6 +111,34 @@ func startTruncatingUpstream(t *testing.T, ip net.IP, withTCP bool) (addr string
 	return addr, udpHits, tcpHits
 }
 
+// startFailingUpstream runs a UDP server that counts each query and replies
+// with bytes that are not a valid DNS message, so the client's Exchange returns
+// an error. It exercises the failure path while still counting the contact. A
+// dead port cannot be counted (nothing listens), and a black-hole server would
+// burn the full per-upstream timeout, so this fast-failing shape is used for the
+// double-contact regression (b/045).
+func startFailingUpstream(t *testing.T) (addr string, hits *atomic.Int64) {
+	t.Helper()
+	hits = new(atomic.Int64)
+
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	srv := &dns.Server{
+		PacketConn: pc,
+		Handler: dns.HandlerFunc(func(w dns.ResponseWriter, _ *dns.Msg) {
+			hits.Add(1)
+			w.Write([]byte{0x00}) // too short to unpack: client Exchange errors
+		}),
+	}
+	go srv.ActivateAndServe()
+	t.Cleanup(func() { srv.Shutdown() })
+
+	return pc.LocalAddr().String(), hits
+}
+
 func TestForward_HappyPath(t *testing.T) {
 	addr, hits := startMockUpstream(t, net.IPv4(1, 2, 3, 4))
 
@@ -249,6 +277,31 @@ func TestForward_AllFailReturnsError(t *testing.T) {
 	_, err := forwardWith(ctx, req, []string{"127.0.0.1:1", "127.0.0.1:2"}, newUpstreamTracker())
 	if err == nil {
 		t.Error("expected error when every upstream fails")
+	}
+}
+
+func TestForward_AllFailContactsEachOnce(t *testing.T) {
+	// b/045: on a total outage the second sweep must not re-contact upstreams
+	// already tried in the first sweep. With a fresh tracker neither upstream
+	// is in cooldown, so sweep 1 tries both; sweep 2 must skip both. Each is
+	// contacted exactly once, not twice. The pre-fix code re-derived "not yet
+	// tried" from timestamps sweep 1 had just stamped, so it hit each twice.
+	a1, h1 := startFailingUpstream(t)
+	a2, h2 := startFailingUpstream(t)
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if _, err := forwardWith(ctx, req, []string{a1, a2}, newUpstreamTracker()); err == nil {
+		t.Fatal("expected error when every upstream fails")
+	}
+	if got := h1.Load(); got != 1 {
+		t.Errorf("upstream 1 contacted %d times, want 1", got)
+	}
+	if got := h2.Load(); got != 1 {
+		t.Errorf("upstream 2 contacted %d times, want 1", got)
 	}
 }
 

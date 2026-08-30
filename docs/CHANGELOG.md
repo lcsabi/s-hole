@@ -13,6 +13,11 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 ### Changed
 
 ### Fixed
+- **Upstream failover no longer doubles work during an outage.** When every
+  upstream is failing, s-hole now contacts each configured resolver at most once
+  per query. A retry-sweep bug re-contacted the resolvers that had just failed,
+  which doubled failure-path latency and upstream load during an outage (the
+  client result, SERVFAIL, was unaffected). (CL 60)
 - **Clean shutdown no longer loses data.** On `systemctl stop`, restart, or
   Ctrl+C, s-hole now completes its ordered teardown before the process exits: it
   drains in-flight admin requests, waits for an in-flight blocklist refresh to

@@ -75,7 +75,16 @@ func forward(ctx context.Context, req *dns.Msg, upstreams []string) (*dns.Msg, e
 func forwardWith(ctx context.Context, req *dns.Msg, upstreams []string, tracker *upstreamTracker) (*dns.Msg, error) {
 	now := time.Now()
 
-	// First sweep: skip upstreams in cooldown.
+	// tried records the upstreams actually contacted in the first sweep, so the
+	// second sweep retries only the ones the first sweep skipped for cooldown.
+	// Deriving that set from timestamps does not work: the first sweep stamps
+	// each fresh failure with a time after `now`, so a shouldSkip(now) check
+	// would read those just-failed upstreams as still in cooldown and contact
+	// them a second time (b/045). The set keeps each upstream to one contact
+	// per query.
+	tried := make(map[string]bool, len(upstreams))
+
+	// First sweep: skip upstreams in cooldown, try the rest.
 	for _, upstream := range upstreams {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -83,6 +92,7 @@ func forwardWith(ctx context.Context, req *dns.Msg, upstreams []string, tracker 
 		if tracker.shouldSkip(upstream, now) {
 			continue
 		}
+		tried[upstream] = true
 		resp, err := exchange(ctx, req, upstream)
 		if err == nil {
 			tracker.recordSuccess(upstream)
@@ -91,23 +101,16 @@ func forwardWith(ctx context.Context, req *dns.Msg, upstreams []string, tracker 
 		tracker.recordFailure(upstream, time.Now())
 	}
 
-	// Second sweep: every non-cooldown upstream we tried in sweep 1 has
-	// failed. Now retry the ones that were in cooldown *at function
-	// entry*: those are upstreams that failed within the last 30 s on
-	// some prior call, not the ones that just failed in sweep 1 above.
-	//
-	// We deliberately keep the entry-time `now` here rather than refreshing
-	// to time.Now(): sweep 1 just recorded fresh failures, so a refreshed
-	// `now` would mark those same upstreams as still in cooldown and we'd
-	// retry them again. Using the entry `now` means shouldSkip returns
-	// true only for upstreams that were *already* in cooldown when we
-	// arrived, which is exactly the set we haven't tried yet.
+	// Second sweep: every upstream tried in sweep 1 has failed. Retry the ones
+	// sweep 1 skipped (the cooldown set at entry), so a transient outage of the
+	// preferred upstream does not turn into a hard failure. Skipping the tried
+	// set means no upstream is contacted twice.
 	for _, upstream := range upstreams {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if !tracker.shouldSkip(upstream, now) {
-			continue // already tried in sweep 1
+		if tried[upstream] {
+			continue // already contacted in sweep 1
 		}
 		resp, err := exchange(ctx, req, upstream)
 		if err == nil {

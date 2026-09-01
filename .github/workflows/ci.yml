@@ -53,6 +53,17 @@ jobs:
         # benchmark body is caught here, not a perf measurement.
         run: go test -run=^$ -bench=. -benchtime=1x ./...
 
+  lint-sh:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # ubuntu-latest ships shellcheck preinstalled, so no setup step is
+      # needed. Kept as its own job (like vuln) so a script quoting regression
+      # surfaces independently of the Go build/test job.
+      - name: shellcheck deploy scripts
+        run: shellcheck deploy/*.sh
+
   vuln:
     name: govulncheck
     runs-on: ubuntu-latest

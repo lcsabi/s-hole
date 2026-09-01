@@ -338,3 +338,39 @@ func (c *Config) ParsedStatsInterval() (time.Duration, error) {
 	}
 	return d, nil
 }
+
+// parsedDurations parses the three duration fields in the order startup needs
+// them, returning the first error. Each field error names itself, so the
+// caller logs it once rather than per field.
+func (c *Config) parsedDurations() (refresh, stats, dbFlush time.Duration, err error) {
+	if refresh, err = c.ParsedRefreshInterval(); err != nil {
+		return 0, 0, 0, err
+	}
+	if stats, err = c.ParsedStatsInterval(); err != nil {
+		return 0, 0, 0, err
+	}
+	if dbFlush, err = c.ParsedDBFlushInterval(); err != nil {
+		return 0, 0, 0, err
+	}
+	return refresh, stats, dbFlush, nil
+}
+
+// LoadAndValidate loads the config at path, validates its enumerated fields,
+// and parses the three duration fields, returning the parsed durations. It is
+// the single startup sequence main runs, so a `-check-config` dry-run and the
+// running service accept and reject exactly the same configs; there is no
+// second copy of the sequence to drift.
+func LoadAndValidate(path string) (cfg *Config, refresh, stats, dbFlush time.Duration, err error) {
+	cfg, err = Load(path)
+	if err != nil {
+		return nil, 0, 0, 0, err
+	}
+	if err = cfg.Validate(); err != nil {
+		return nil, 0, 0, 0, err
+	}
+	refresh, stats, dbFlush, err = cfg.parsedDurations()
+	if err != nil {
+		return nil, 0, 0, 0, err
+	}
+	return cfg, refresh, stats, dbFlush, nil
+}

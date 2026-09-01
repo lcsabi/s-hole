@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func writeTemp(t *testing.T, content string) string {
@@ -222,6 +223,61 @@ func TestParsedDurations_InvalidErrors(t *testing.T) {
 				t.Errorf("%s parser accepted garbage", tc.name)
 			}
 		})
+	}
+}
+
+func TestLoadAndValidate_HappyPathReturnsDurations(t *testing.T) {
+	// An empty config decodes to all defaults, which are valid; the helper must
+	// return the parsed default durations (24h / 5m / 30s) with no error.
+	cfg, refresh, stats, dbFlush, err := LoadAndValidate(writeTemp(t, ""))
+	if err != nil {
+		t.Fatalf("LoadAndValidate on defaults: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("LoadAndValidate returned nil config on success")
+	}
+	if refresh != 24*time.Hour {
+		t.Errorf("refresh = %v, want 24h", refresh)
+	}
+	if stats != 5*time.Minute {
+		t.Errorf("stats = %v, want 5m", stats)
+	}
+	if dbFlush != 30*time.Second {
+		t.Errorf("dbFlush = %v, want 30s", dbFlush)
+	}
+}
+
+func TestLoadAndValidate_RejectsEachStage(t *testing.T) {
+	// One case per stage of the startup sequence, so a config the installer's
+	// -check-config dry-run accepts is one the service will start on (ROADMAP #27).
+	cases := []struct {
+		name string
+		yaml string
+	}{
+		{"load_bad_yaml", "block_mode: : :\n"},
+		{"validate_bad_block_mode", "block_mode: bogus\n"},
+		{"duration_bad_refresh", "refresh_interval: soon\n"},
+		{"duration_nonpositive_db_flush", "db_flush_interval: 0s\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, refresh, stats, dbFlush, err := LoadAndValidate(writeTemp(t, tc.yaml))
+			if err == nil {
+				t.Fatalf("LoadAndValidate(%q) = nil error, want rejection", tc.yaml)
+			}
+			// On failure every value is the zero value, so a caller cannot
+			// mistake a partial result for a valid one.
+			if cfg != nil || refresh != 0 || stats != 0 || dbFlush != 0 {
+				t.Errorf("LoadAndValidate error path returned non-zero values: cfg=%v r=%v s=%v d=%v",
+					cfg, refresh, stats, dbFlush)
+			}
+		})
+	}
+}
+
+func TestLoadAndValidate_MissingFile(t *testing.T) {
+	if _, _, _, _, err := LoadAndValidate(filepath.Join(t.TempDir(), "nope.yaml")); err == nil {
+		t.Fatal("LoadAndValidate on missing file should error")
 	}
 }
 

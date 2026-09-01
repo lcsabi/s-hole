@@ -9,6 +9,17 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 ## [Unreleased]
 
 ### Added
+- **`s-hole -check-config -config <path>`** loads and validates a config the way
+  startup does, then exits (`0` and a `config OK` line when valid, non-zero with
+  the failing field otherwise). Use it to check an edit before restarting the
+  service. (CL 66)
+- **The Linux installer is hardened against silent failures.** It validates its
+  arguments (a swapped binary/config pair is now rejected, not written over each
+  other), dry-runs the config before starting, warns when `systemd-resolved`
+  holds port 53 (and frees it under `--free-port-53`), and health-checks the
+  service after starting: a unit that does not come up prints the last log lines
+  and fails the install, so a dead service no longer looks green. It also gained
+  `-h`/`--help`. (CL 66)
 
 ### Changed
 

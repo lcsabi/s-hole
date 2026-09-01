@@ -19,7 +19,8 @@ guide explains the conventions that keep it that way.
 ### Prerequisites
 
 - Go 1.25 or later.
-- Optional: `golangci-lint` for `make lint` / `make check`. Install via:
+- Optional: `golangci-lint` for `make lint` / `make check`, and `shellcheck`
+  for `make lint-sh` (both run by `make check`). Install golangci-lint via:
 
   ```bash
   make tools-install
@@ -29,11 +30,12 @@ guide explains the conventions that keep it that way.
 
 ```bash
 make help          # full target list
-make check         # gofmt + vet + golangci-lint + tests (what CI runs)
+make check         # gofmt + vet + golangci-lint + shellcheck + tests (what CI runs)
 make test          # plain test run
 make test-race     # tests with the race detector (CGO toolchain required)
 make bench         # one iteration of each benchmark
 make lint          # golangci-lint
+make lint-sh       # shellcheck the deploy scripts
 make fmt           # gofmt -s -w .
 make install       # go install into $GOBIN
 make version       # show the version metadata the next build will embed
@@ -42,7 +44,8 @@ make tools-install # install golangci-lint
 
 Before sending a PR, please run `make check` locally. CI runs the same
 thing plus a race-enabled test run (which also runs the goroutine-leak
-check via `go.uber.org/goleak`), a `govulncheck` scan (`make vuln`
+check via `go.uber.org/goleak`), a `shellcheck` run on the deploy
+scripts (`make lint-sh` locally), a `govulncheck` scan (`make vuln`
 locally), and cross-compile for `linux/{amd64,arm64,armv7}` and
 `windows/amd64`.
 
@@ -53,8 +56,9 @@ go build -o s-hole ./cmd/s-hole
 sudo ./s-hole -config config.yaml          # Linux / macOS
 ```
 
-`-version` prints the build identity; `-service install|uninstall|start|stop`
-controls the Windows Service.
+`-version` prints the build identity; `-check-config -config <path>` loads and
+validates a config the way startup does, then exits (non-zero on any error);
+`-service install|uninstall|start|stop` controls the Windows Service.
 
 ### Fuzz tests
 

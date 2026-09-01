@@ -88,6 +88,7 @@ func main() {
 	cfgPath := flag.String("config", "config.yaml", "path to config file")
 	svcAction := flag.String("service", "", "manage the system service: install|uninstall|start|stop")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	checkConfig := flag.Bool("check-config", false, "load and validate the config, then exit")
 	flag.Parse()
 
 	// -version is a pure CLI introspection; print before any other init so
@@ -144,28 +145,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	cfg, err := config.Load(*cfgPath)
-	if err != nil {
-		mainLog.Error("load config", "err", err)
-		os.Exit(1)
+	// -check-config is a dry run: it loads and validates the config exactly the
+	// way startup does (config.LoadAndValidate is the same call), then exits. It
+	// lets the installer reject a bad config before `systemctl restart`, so a
+	// config error surfaces on screen instead of as a failed start (ROADMAP #27).
+	if *checkConfig {
+		if _, _, _, _, err := config.LoadAndValidate(*cfgPath); err != nil {
+			mainLog.Error("config", "err", err)
+			os.Exit(1)
+		}
+		mainLog.Info("config OK", "path", *cfgPath)
+		return
 	}
-	if err := cfg.Validate(); err != nil {
-		mainLog.Error("validate config", "err", err)
-		os.Exit(1)
-	}
-	refreshInterval, err := cfg.ParsedRefreshInterval()
+
+	cfg, refreshInterval, statsInterval, dbFlushInterval, err := config.LoadAndValidate(*cfgPath)
 	if err != nil {
-		mainLog.Error("parse refresh_interval", "err", err)
-		os.Exit(1)
-	}
-	statsInterval, err := cfg.ParsedStatsInterval()
-	if err != nil {
-		mainLog.Error("parse stats_interval", "err", err)
-		os.Exit(1)
-	}
-	dbFlushInterval, err := cfg.ParsedDBFlushInterval()
-	if err != nil {
-		mainLog.Error("parse db_flush_interval", "err", err)
+		mainLog.Error("config", "err", err)
 		os.Exit(1)
 	}
 

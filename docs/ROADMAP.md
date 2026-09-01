@@ -40,7 +40,7 @@ rails.
 | 24 | Query-log export (CSV / JSON) | Medium | not started |
 | 25 | Regex / pattern blocking | High | not started |
 | 26 | Grafana dashboard + Prometheus scrape/alert examples | Low | not started |
-| 27 | Install/uninstall robustness hardening (preflight, health check, shellcheck) | Medium | not started |
+| 27 | Install/uninstall robustness hardening (preflight, health check, shellcheck) | Medium | done (CL 66) |
 
 Items 19-26 came out of a 2026-08-24 feature-ideas session. Items 21-24 are a
 dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
@@ -801,7 +801,20 @@ Design decisions to settle in the CL:
 Rated Low: a distribution and documentation win that makes the existing metrics
 immediately usable. It adds nothing to the binary.
 
-## 27. Install/uninstall robustness hardening
+## 27. Install/uninstall robustness hardening (done, CL 66)
+
+**Shipped in CL 66:** all six gaps below, in one CL. The binary gained a
+`-check-config` flag that runs the exact startup load-and-validate sequence and
+exits (via a shared `config.LoadAndValidate`, so the flag and the running
+service cannot drift). The installer gained a usage block and `-h`/`--help`,
+argument validation that rejects a swapped binary/config pair (a `file`
+structural check then a `-version` exec), a `-check-config` dry-run before the
+start, a port-53 preflight that warns by default and frees the port under
+`--free-port-53`, and a post-install health check that polls `systemctl
+is-active` and, on failure, prints the last journal lines and exits non-zero.
+shellcheck runs in CI and via `make lint-sh` (folded into `make check`). The
+systemd unit body was not touched, and the installer stays non-transactional (a
+re-run after fixing the cause is the recovery path).
 
 The Linux deploy scripts (`deploy/install-linux.sh`, `deploy/uninstall-linux.sh`)
 are sound at the level of steps taken, but they trust their inputs and their own

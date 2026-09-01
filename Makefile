@@ -13,7 +13,7 @@ LDFLAGS     = -ldflags="-s -w \
 # On Windows use: $env:GOOS="linux"; $env:GOARCH="arm64"; go build ...
 # or run these targets from WSL / Git Bash.
 
-.PHONY: all pi pi32 linux clean test test-race bench fmt vet lint vuln check install help version tools-install
+.PHONY: all pi pi32 linux clean test test-race bench fmt vet lint lint-sh vuln check install help version tools-install
 
 ## help: show this help text (default target)
 help:
@@ -64,6 +64,13 @@ vet:
 lint:
 	golangci-lint run ./...
 
+## lint-sh: shellcheck the deploy scripts (CI runs the same check)
+lint-sh:
+	@command -v shellcheck >/dev/null 2>&1 || { \
+		echo "shellcheck not found; install it (apt install shellcheck / brew install shellcheck)"; \
+		exit 1; }
+	shellcheck deploy/*.sh
+
 ## vuln: scan dependencies + code for known CVEs (govulncheck)
 vuln:
 	# go run keeps govulncheck out of the module's require set; CI runs the
@@ -77,8 +84,8 @@ tools-install:
 	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 	@echo "tools installed; ensure \$$(go env GOBIN) (or \$$GOPATH/bin) is on \$$PATH"
 
-## check: fmt + vet + lint + test (what CI does)
-check: fmt vet lint test
+## check: fmt + vet + lint + lint-sh + test (what CI does)
+check: fmt vet lint lint-sh test
 
 ## version: print the version that would be embedded in a build
 version:

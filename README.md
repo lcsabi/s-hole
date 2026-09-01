@@ -294,7 +294,9 @@ scp deploy/install-linux.sh deploy/uninstall-linux.sh pi@raspberrypi.local:~/
 sudo bash install-linux.sh ./s-hole-linux-arm64 ./config.yaml
 ```
 
-The installer creates a `s-hole` system user, places the binary at `/usr/local/bin/s-hole`, installs config to `/etc/s-hole/config.yaml`, and enables the service to start on boot. It ends by printing the installed build's version and commit. Confirm it matches the binary you meant to ship, because a stale `scp` is otherwise silent.
+The installer creates a `s-hole` system user, places the binary at `/usr/local/bin/s-hole`, installs config to `/etc/s-hole/config.yaml`, and enables the service to start on boot. Before it starts the service it validates the arguments (so a swapped binary/config pair fails loudly, not silently), dry-runs the config through the binary, and warns if `systemd-resolved` is holding port 53. After the start it health-checks the unit: if the service does not come up it prints the last log lines and exits non-zero, so a dead service never looks installed. It ends by printing the installed build's version and commit. Confirm it matches the binary you meant to ship, because a stale `scp` is otherwise silent.
+
+Run `sudo bash install-linux.sh -h` for the full options, including `--free-port-53` (disable the `systemd-resolved` stub for you when it holds port 53, instead of only warning).
 
 After installation:
 
@@ -323,7 +325,7 @@ The systemd unit runs with `CAP_NET_BIND_SERVICE` so it can bind port 53 without
 
 A few things to know once s-hole runs as a systemd service:
 
-- **Config is *copied*, not live-linked.** The installer copies your config to `/etc/s-hole/config.yaml` on the **first** install only. It never overwrites an existing one (it prints `config already exists, skipping`), and re-running the installer or `scp`-ing a new file to your home directory does **not** update it. To apply a config change on an installed host, edit `/etc/s-hole/config.yaml` directly (or `sudo cp your-config.yaml /etc/s-hole/config.yaml`), then `sudo systemctl restart s-hole`.
+- **Config is *copied*, not live-linked.** The installer copies your config to `/etc/s-hole/config.yaml` on the **first** install only. It never overwrites an existing one (it prints `config already exists, skipping`), and re-running the installer or `scp`-ing a new file to your home directory does **not** update it. To apply a config change on an installed host, edit `/etc/s-hole/config.yaml` directly (or `sudo cp your-config.yaml /etc/s-hole/config.yaml`), then `sudo systemctl restart s-hole`. To catch a mistake before the restart, validate the file first with `s-hole -check-config -config /etc/s-hole/config.yaml`, which loads and validates it exactly the way startup does and exits non-zero on any error.
 - **`S_HOLE_*` environment overrides do not reach the service.** The systemd unit runs with a clean environment, so shell env vars only take effect when you run the binary directly. On the service, put values in `/etc/s-hole/config.yaml` (or add `Environment=` lines to the unit).
 - **`query_db` and `cache_dir` are relative to `/var/lib/s-hole`.** Relative paths resolve against the service's working directory. Because the unit sets `ProtectSystem=strict` with `ReadWritePaths=/var/lib/s-hole`, the rest of the filesystem is read-only to the service. Keep both paths under `/var/lib/s-hole` (the defaults `queries.db` and `.` already do). Pointing them at `/tmp` or a home directory will silently fail to write.
 - **The query log flushes on an interval.** Newly logged queries appear in `/api/queries` and the dashboard's "All time" panel only after the next SQLite flush (`db_flush_interval`, default `30s`), not instantly. Lower it for a more responsive view.
@@ -465,6 +467,7 @@ machine's LAN IP, not the container address the startup banner prints.
 > printf '[Resolve]\nDNSStubListener=no\n' | sudo tee /etc/systemd/resolved.conf.d/no-stub.conf
 > sudo systemctl restart systemd-resolved
 > ```
+> The installer does the same when you pass `--free-port-53`; `uninstall-linux.sh --restore-resolved` reverses it.
 > `systemd-resolved` still resolves for local programs that use NSS, but on
 > distros where `/etc/resolv.conf` points at `127.0.0.53`, releasing the stub
 > leaves anything that reads `resolv.conf` directly without a resolver. Repoint
@@ -645,11 +648,12 @@ The indirect modules in `go.mod` are almost all pulled in by the pure-Go SQLite 
 The `Makefile` is the canonical entry point for every routine task. Run `make help` for the full list. The most useful targets:
 
 ```bash
-make check       # gofmt + go vet + golangci-lint + go test
+make check       # gofmt + go vet + golangci-lint + shellcheck + go test
 make test        # plain test run
 make test-race   # tests under the race detector (CGO toolchain required)
 make bench       # one iteration of each benchmark
 make lint        # golangci-lint
+make lint-sh     # shellcheck the deploy scripts
 make vuln        # govulncheck: scan deps + code for known CVEs
 make fmt         # gofmt -s -w
 make install     # go install into $GOBIN
@@ -682,7 +686,9 @@ s-hole v0.2.0
   os/arch: linux/amd64
 ```
 
-CI runs lint + `go mod verify` + race-enabled tests + `govulncheck` + cross-compile for `linux/{amd64,arm64,armv7}` and `windows/amd64` on every push and PR; see `.github/workflows/ci.yml`. The race-enabled run also exercises `go.uber.org/goleak`, which fails the goroutine-heavy packages (cache, querylog, dnsserver) if any goroutine outlives its tests. Dependabot keeps Go modules, GitHub Actions, and the Docker base image up to date.
+`s-hole -check-config -config <path>` loads and validates a config the same way startup does, then exits: `0` and a `config OK` line when it is valid, non-zero with the failing field otherwise. Use it to check an edit before restarting the service; the installer runs it automatically before the first start.
+
+CI runs lint + `go mod verify` + race-enabled tests + `shellcheck` (deploy scripts) + `govulncheck` + cross-compile for `linux/{amd64,arm64,armv7}` and `windows/amd64` on every push and PR; see `.github/workflows/ci.yml`. The race-enabled run also exercises `go.uber.org/goleak`, which fails the goroutine-heavy packages (cache, querylog, dnsserver) if any goroutine outlives its tests. Dependabot keeps Go modules, GitHub Actions, and the Docker base image up to date.
 
 Fuzz tests live alongside the unit tests for `blocklist.ValidDomain`, `blocklist.parseHostsFormat`, and `blocklist.cacheFilename`. Run them ad-hoc with `go test -fuzz=FuzzValidDomain -fuzztime=30s ./internal/blocklist/`.
 

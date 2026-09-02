@@ -60,6 +60,11 @@ sudo ./s-hole -config config.yaml          # Linux / macOS
 validates a config the way startup does, then exits (non-zero on any error);
 `-service install|uninstall|start|stop` controls the Windows Service.
 
+On Linux, `deploy/install-linux.sh` installs and health-checks the systemd
+service. Pass `--free-port-53` to disable the `systemd-resolved` stub when it
+holds port 53, instead of only warning; run the script with `-h` for the full
+options.
+
 ### Fuzz tests
 
 Fuzz tests are not part of CI but are easy to run locally:

@@ -28,6 +28,11 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   as UDP. (CL 67)
 
 ### Fixed
+- **A non-positive `refresh_interval` or `stats_interval` is now rejected at
+  startup.** Like `db_flush_interval`, a value such as `0s` or `-5s` used to pass
+  validation (and `-check-config`) and then crash a background timer once the
+  service was up. All three interval fields now fail cleanly with a clear error
+  instead. (CL 68)
 - **A failed admin-server bind is now surfaced at startup.** If `api_listen` is
   misconfigured or its port is taken, s-hole logs a clear WARN, keeps serving
   DNS, and the startup banner reports the admin UI as unavailable instead of

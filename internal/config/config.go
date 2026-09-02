@@ -326,6 +326,13 @@ func (c *Config) ParsedRefreshInterval() (time.Duration, error) {
 	if err != nil {
 		return 0, fmt.Errorf("refresh_interval %q: %w", c.RefreshInterval, err)
 	}
+	// Like db_flush_interval, this value feeds time.NewTicker (in runTicker),
+	// which panics on a non-positive duration. Reject it here so a bad value
+	// fails -check-config and startup cleanly instead of crashing a ticker
+	// goroutine after the service is up (b/055).
+	if d <= 0 {
+		return 0, fmt.Errorf("refresh_interval %q: must be positive", c.RefreshInterval)
+	}
 	return d, nil
 }
 
@@ -335,6 +342,12 @@ func (c *Config) ParsedStatsInterval() (time.Duration, error) {
 	d, err := time.ParseDuration(c.StatsInterval)
 	if err != nil {
 		return 0, fmt.Errorf("stats_interval %q: %w", c.StatsInterval, err)
+	}
+	// Feeds time.NewTicker (in runTicker) like the other two intervals, so a
+	// non-positive value panics a ticker goroutine at startup. Reject it at the
+	// gate so -check-config and startup fail cleanly (b/055).
+	if d <= 0 {
+		return 0, fmt.Errorf("stats_interval %q: must be positive", c.StatsInterval)
 	}
 	return d, nil
 }

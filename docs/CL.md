@@ -81,6 +81,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 65](cls/CL-65.md) | Close the stop-before-store window in the admin server (b/054) |
 | [CL 66](cls/CL-66.md) | Harden the Linux install/uninstall scripts and add -check-config (ROADMAP #27) |
 | [CL 67](cls/CL-67.md) | Tighten the installer's identity and port-53 checks (after CL 66) |
+| [CL 68](cls/CL-68.md) | Guard the remaining non-positive durations and name the URL in fetch errors (b/055) |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

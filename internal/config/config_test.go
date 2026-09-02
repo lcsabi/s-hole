@@ -257,7 +257,9 @@ func TestLoadAndValidate_RejectsEachStage(t *testing.T) {
 		{"load_bad_yaml", "block_mode: : :\n"},
 		{"validate_bad_block_mode", "block_mode: bogus\n"},
 		{"duration_bad_refresh", "refresh_interval: soon\n"},
+		{"duration_nonpositive_refresh", "refresh_interval: 0s\n"},
 		{"duration_bad_stats", "stats_interval: soon\n"},
+		{"duration_nonpositive_stats", "stats_interval: -5s\n"},
 		{"duration_nonpositive_db_flush", "db_flush_interval: 0s\n"},
 	}
 	for _, tc := range cases {
@@ -291,6 +293,27 @@ func TestParsedDBFlushInterval_RejectsNonPositive(t *testing.T) {
 			cfg := &Config{DBFlushInterval: v}
 			if _, err := cfg.ParsedDBFlushInterval(); err == nil {
 				t.Errorf("ParsedDBFlushInterval(%q) = nil error, want non-positive rejected", v)
+			}
+		})
+	}
+}
+
+func TestParsedRefreshStatsInterval_RejectNonPositive(t *testing.T) {
+	// b/055: refresh_interval and stats_interval also feed time.NewTicker in
+	// runTicker, which panics on a non-positive duration. They must be rejected
+	// at the same gate as db_flush_interval so -check-config and startup fail
+	// cleanly instead of crashing a ticker goroutine after the service is up.
+	for _, v := range []string{"0s", "-5s"} {
+		t.Run("refresh="+v, func(t *testing.T) {
+			cfg := &Config{RefreshInterval: v}
+			if _, err := cfg.ParsedRefreshInterval(); err == nil {
+				t.Errorf("ParsedRefreshInterval(%q) = nil error, want non-positive rejected", v)
+			}
+		})
+		t.Run("stats="+v, func(t *testing.T) {
+			cfg := &Config{StatsInterval: v}
+			if _, err := cfg.ParsedStatsInterval(); err == nil {
+				t.Errorf("ParsedStatsInterval(%q) = nil error, want non-positive rejected", v)
 			}
 		})
 	}

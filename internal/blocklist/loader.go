@@ -130,7 +130,7 @@ func fetchList(url, cacheDir string) ([]string, sourceMeta, error) {
 			domains, loadErr := loadFromFile(cachePath)
 			return domains, sourceMeta{stale: true, snapshot: info.ModTime()}, loadErr
 		}
-		return nil, sourceMeta{}, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, sourceMeta{}, fmt.Errorf("%q: HTTP %d", url, resp.StatusCode)
 	}
 
 	// Atomic write: stream to a sibling .tmp file, then os.Rename on success.
@@ -170,7 +170,7 @@ func fetchList(url, cacheDir string) ([]string, sourceMeta, error) {
 			domains, loadErr := loadFromFile(cachePath)
 			return domains, sourceMeta{stale: true, snapshot: info.ModTime()}, loadErr
 		}
-		return nil, sourceMeta{}, fmt.Errorf("response exceeded %d-byte cap", maxBodyBytes)
+		return nil, sourceMeta{}, fmt.Errorf("%q: response exceeded %d-byte cap", url, maxBodyBytes)
 	}
 	if err := os.Rename(tmpPath, cachePath); err != nil {
 		_ = os.Remove(tmpPath)

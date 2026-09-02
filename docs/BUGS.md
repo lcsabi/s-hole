@@ -1705,3 +1705,41 @@ sees the flag and closes the listener instead of blocking in Accept. Go's atomic
 are sequentially consistent, so no both-miss interleaving exists. The public API
 is unchanged. Test: `TestShutdown_BeforeServeStopsTheServeLoop` calls `Shutdown`
 before `Serve` to hit the window deterministically and asserts `Serve` returns.
+
+## b/055 — config: non-positive refresh_interval / stats_interval panic a ticker goroutine at startup and pass -check-config
+
+**Priority:** P2
+**Component:** config
+**Status:** Fixed in CL 68
+**Filed:** 2026-09-03
+
+### Description
+
+`refresh_interval` and `stats_interval` accept a well-formed but non-positive
+duration such as `"0s"` or `"-5s"`. Both values feed `time.NewTicker` in
+`runTicker`, which panics on a non-positive duration. `Validate()` checks only
+the `block_mode` and `log_queries` enums, so a non-positive interval passes
+`config.LoadAndValidate`. The new `-check-config` flag (CL 66) then prints
+`config OK` and exits `0`, and the running service panics a ticker goroutine at
+startup. The panic is unrecovered: `runTickerOnce`'s `recover` runs only inside
+the loop, after `time.NewTicker` has already returned.
+
+Found by the two-axis code review of the CL 59-67 range.
+
+### Root Cause
+
+b/046 added the `d <= 0` guard to `ParsedDBFlushInterval` only. The two sibling
+parsers, `ParsedRefreshInterval` and `ParsedStatsInterval`, were left unguarded,
+so the same `time.NewTicker` panic path stayed reachable for the other two
+duration fields. CL 66's `-check-config` promise (a config the dry-run accepts is
+one the service starts on) made the gap sharper: for these two fields the dry-run
+reported a crash-on-start config as valid.
+
+### Fix
+
+Reject a non-positive value in `ParsedRefreshInterval` and `ParsedStatsInterval`,
+the same way `ParsedDBFlushInterval` already does, so all three duration fields
+fail `-check-config` and startup cleanly instead of crashing a ticker goroutine.
+Tests: `TestParsedRefreshStatsInterval_RejectNonPositive` (per-parser rejection of
+`0s` and `-5s`) and non-positive `refresh_interval`/`stats_interval` cases in
+`TestLoadAndValidate_RejectsEachStage`.

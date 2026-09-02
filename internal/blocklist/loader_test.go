@@ -232,8 +232,14 @@ func TestFetchList_TruncatedAtCapNoCacheErrors(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, _, err := fetchList(srv.URL, dir); err == nil {
+	_, _, err := fetchList(srv.URL, dir)
+	if err == nil {
 		t.Error("expected error on over-cap body with no cache, got nil")
+	}
+	// The error names the failing URL, so a caller that logs only the error
+	// still identifies the source (parity with the non-200 error path).
+	if err != nil && !strings.Contains(err.Error(), srv.URL) {
+		t.Errorf("error %q does not name the URL %q", err, srv.URL)
 	}
 	// No cache file should have been left behind.
 	if _, err := os.Stat(filepath.Join(dir, cacheFilename(srv.URL))); err == nil {

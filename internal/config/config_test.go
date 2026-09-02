@@ -257,6 +257,7 @@ func TestLoadAndValidate_RejectsEachStage(t *testing.T) {
 		{"load_bad_yaml", "block_mode: : :\n"},
 		{"validate_bad_block_mode", "block_mode: bogus\n"},
 		{"duration_bad_refresh", "refresh_interval: soon\n"},
+		{"duration_bad_stats", "stats_interval: soon\n"},
 		{"duration_nonpositive_db_flush", "db_flush_interval: 0s\n"},
 	}
 	for _, tc := range cases {

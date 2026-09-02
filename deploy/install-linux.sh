@@ -100,10 +100,12 @@ if command -v file >/dev/null 2>&1; then
 fi
 
 # Prove the file runs on this host and is s-hole. This executes the (now
-# structurally-checked) binary once, before install. A wrong-arch, corrupt, or
-# non-s-hole file fails here, including a swapped config path that `file` could
-# not flag on a host without the `file` command.
-if ! "$BINARY" -version >/dev/null 2>&1; then
+# structurally-checked) binary once, before install. The output must name
+# s-hole (version.String() starts with "s-hole "), so an ELF that merely exits
+# 0 on a -version flag but is not s-hole is still rejected. A wrong-arch,
+# corrupt, or non-s-hole file fails here, including a swapped config path that
+# `file` could not flag on a host without the `file` command.
+if ! "$BINARY" -version 2>/dev/null | grep -q '^s-hole '; then
   echo "error: '$BINARY' did not run as an s-hole binary on this host" >&2
   echo "       (wrong architecture, corrupt, or not an s-hole build)" >&2
   echo "correct order: sudo bash install-linux.sh [--free-port-53] <s-hole-binary> <config.yaml>" >&2
@@ -178,10 +180,11 @@ fi
 
 # Port-53 preflight: the most common Linux DNS-server install failure is the
 # systemd-resolved stub listener already holding :53, which makes the s-hole
-# start fail to bind. A listener on 127.0.0.53:53 is that stub. Default is a
+# start fail to bind. A listener on 127.0.0.53:53 is that stub. It holds both
+# UDP and TCP :53, so probe both (-u -t) and not UDP alone. Default is a
 # warning with the exact drop-in to create; --free-port-53 creates it now,
 # mirroring the uninstaller's --restore-resolved (ROADMAP #27).
-if command -v ss >/dev/null 2>&1 && ss -H -lun 2>/dev/null | grep -q '127.0.0.53:53'; then
+if command -v ss >/dev/null 2>&1 && ss -H -lunt 2>/dev/null | grep -q '127.0.0.53:53'; then
   if $FREE_PORT_53; then
     echo "==> freeing port 53: disabling the systemd-resolved stub listener"
     mkdir -p "$(dirname "$RESOLVED_DROPIN")"

@@ -22,6 +22,10 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   `-h`/`--help`. (CL 66)
 
 ### Changed
+- **The Linux installer's safety checks are tighter.** It now rejects a binary
+  that runs but does not identify as s-hole; before, any file that ran was
+  accepted. It also detects the `systemd-resolved` stub on TCP port 53 as well
+  as UDP. (CL 67)
 
 ### Fixed
 - **A failed admin-server bind is now surfaced at startup.** If `api_listen` is

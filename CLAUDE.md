@@ -9,7 +9,7 @@ s-hole is a single-binary DNS sinkhole (lightweight Pi-hole alternative) in Go: 
 ## Commands
 
 ```bash
-make check        # fmt + vet + lint + test (what CI runs); run before any commit
+make check        # fmt + vet + lint + lint-sh + test (what CI runs); run before any commit
 make test         # go test -count=1 ./...
 make test-race    # race detector; requires a CGO toolchain (gcc)
 make bench        # each benchmark once (regression smoke, not measurement)

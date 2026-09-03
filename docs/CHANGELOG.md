@@ -8,6 +8,8 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-03
+
 ### Added
 - **`s-hole -check-config -config <path>`** loads and validates a config the way
   startup does, then exits (`0` and a `config OK` line when valid, non-zero with

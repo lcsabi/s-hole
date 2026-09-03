@@ -15,7 +15,7 @@ rails.
 | # | Item | Impact | Status |
 |--:|---|---|---|
 | 1 | Deploy to real hardware (Raspberry Pi) | High | procedure validated in a VM; awaiting hardware |
-| 2 | Tag `v0.1.0` + release workflow | High | done (CL 43, CL 44); v0.1.0 tagged 2026-08-24, v0.2.0 tagged 2026-08-28, v0.2.1 tagged 2026-09-03 |
+| 2 | Tag `v0.1.0` + release workflow | High | done (CL 43, CL 44); v0.1.0 tagged 2026-08-24 |
 | 3 | Wildcard / subdomain blocking | High | done (CL 30) |
 | 4 | Wire up or delete `DBLogger.TopBlocked` | Medium | done (CL 33) |
 | 5 | DNS-over-HTTPS upstream support | Medium | not started |
@@ -41,6 +41,7 @@ rails.
 | 25 | Regex / pattern blocking | High | not started |
 | 26 | Grafana dashboard + Prometheus scrape/alert examples | Low | not started |
 | 27 | Install/uninstall robustness hardening (preflight, health check, shellcheck) | Medium | done (CL 66) |
+| 28 | Validate the upstreams at config time (format check + single-upstream note) | Low | not started |
 
 Items 19-26 came out of a 2026-08-24 feature-ideas session. Items 21-24 are a
 dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
@@ -102,29 +103,6 @@ placeholder); CL 44 fixed it and a `v0.1.0-rc2` dry-run confirmed the fix before
 the final tag. The tag was cut ahead of the #1 hardware soak. The release
 machinery was validated on its own through the rc dry-runs, so any issue the
 soak surfaces later ships as `v0.1.1`.
-
-**2026-08-28:** `v0.2.0` was tagged and pushed (commit `a5d2ef3`). CL 58 first
-graduated the CHANGELOG's `[Unreleased]` section to `[0.2.0]`, so the tag points
-at a commit whose release notes were already in place. The section carried the
-operator-visible work since `v0.1.0`: admin audit logging (CL 45), mutex/block
-profiling (CL 53), the cache drop metric (CL 54), per-source blocklist health
-(CL 55), the `/api/check` diagnostic (CL 56), and Windows Event Log routing
-(CL 57). A `v0.2.0-rc1` dry-run confirmed the four archives, `SHA256SUMS`, the
-rendered notes, and the `ghcr.io/lcsabi/s-hole:0.2.0-rc1` image before the final
-tag, which moved `:latest` to `0.2.0`. Cut ahead of the #1 soak, like `v0.1.0`.
-
-**2026-09-03:** `v0.2.1` was tagged and pushed (commit `6eeb4c9`). CL 69 first
-graduated the CHANGELOG's `[Unreleased]` section to `[0.2.1]`, so the tag points
-at a commit whose release notes were already in place. The section carried the
-operator-visible work since `v0.2.0`: the clean-shutdown data-loss fix and
-single-contact upstream failover (CL 59, 60), config guards for the interval
-fields and fail-safe boolean env overrides (CL 61, 68), hash-derived cache
-filenames and over-size-source handling (CL 62), the admin-server bind-failure
-banner and the stop-before-store window fix (CL 63, 65), the Linux installer
-hardening (CL 66, 67), and the new `-check-config` flag (CL 66). A patch bump,
-since the release is dominated by robustness fixes to the `v0.2.0` line. The
-`releases/latest` API resolves to `v0.2.1` with `isPrerelease=false`, confirming
-`:latest` moved. Cut ahead of the #1 soak, like the earlier tags.
 
 ## 3. Wildcard / subdomain blocking (done, CL 30)
 
@@ -933,6 +911,63 @@ Rated Medium: a deploy-reliability win with no runtime behavior change. It turns
 silent install failures (a dead service, a port-53 conflict, swapped arguments)
 into loud, self-explaining ones, on the path the #1 hardware deploy depends on.
 
+## 28. Validate the upstreams at config time (format check + single-upstream note)
+
+A missing `upstreams:` list defaults cleanly to `1.1.1.1:53` and `8.8.8.8:53`
+(`applyDefaults`), but a malformed entry is accepted in silence. `Validate()`
+checks only `block_mode` and `log_queries`, so a bad upstream (a missing `:53`, a
+typo, any non-`host:port` string) passes `Load`, `Validate`, and `-check-config`,
+and the service starts. The failure then surfaces only at runtime, per query:
+`exchange` errors on the bad address, the entry is marked failed, and if every
+upstream is malformed the client gets SERVFAIL while the handler logs `upstream
+forward failed` on every query. This is the same silent-misconfig class the
+empty-blocklist alarm (CL 29) and the admin bind-failure banner (b/052) exist to
+make loud.
+
+Close it in two parts, both in `config.Validate` (reused by `-check-config` and
+by startup through `LoadAndValidate`, so the flag and the running service cannot
+drift, CL 66):
+
+- **Format check.** Parse each upstream with `net.SplitHostPort` and reject an
+  entry that is not `host:port`. This catches the common fat-finger, a bare
+  `1.1.1.1` with no `:53`. Fatal only when no upstream is usable, so a config that
+  cannot forward at all fails `-check-config` and startup the way a bad
+  `block_mode` does. When some entries are valid, log a WARN naming the bad ones
+  and keep running, so one typo does not take down a working config.
+- **Single-upstream note.** When exactly one upstream is configured, log that
+  there is no forwarding fallback. This is informational and never fatal: a
+  deliberate single local resolver (a LAN Unbound) is a valid setup, so the note
+  must not scold or block startup.
+
+Design decisions to settle in the CL:
+
+- **How strict the format check is.** `net.SplitHostPort` proves the string is
+  `host:port`, not that the host is a real or reachable resolver. A valid-form but
+  unreachable or typo'd address stays a runtime concern (the cooldown tracker
+  already handles a dead upstream). Record that the gate is a shape check, not a
+  reachability check, so a reviewer does not read it as a health probe.
+- **INFO vs WARN for the single-upstream note.** A soft signal that does not cry
+  wolf for the deliberate-single-resolver case, weighed against being easy to miss
+  on a headless box. Never fatal either way.
+- **No active fallback detection (security).** The validation reads only the
+  configured strings and sends nothing: `net.SplitHostPort` is pure parsing, with
+  no DNS resolution and no dial, so it adds no network call and no new attack
+  surface. Active detection of a fallback resolver is rejected here, not deferred.
+  Any probe of an operator- or caller-supplied resolver address, wired to the
+  unauthenticated admin API, would turn that API into an SSRF and port-scanning
+  primitive on the LAN (and a DNS-query reflector), and reporting a detected
+  resolver would leak LAN topology. The client-side secondary DNS (the router's
+  DHCP entry) is not visible to s-hole at all, and it is itself a filtering bypass
+  (clients query either resolver, so blocked domains leak through the secondary).
+  The README already recommends keeping a client-side secondary for availability;
+  that is a documentation recommendation, not something the process can or should
+  detect. Record this so a later review does not re-propose active detection.
+
+Rated Low: a guard rail with no filtering behavior change. It turns a silent
+upstream misconfiguration into a startup error (when nothing can forward) or a
+loud warning (when a single entry is wrong), on the same path `-check-config`
+already guards.
+
 ## Pending decisions
 
 - **Cache eviction beyond drop-on-full.** Now that `shole_cache_dropped_total`
@@ -971,6 +1006,24 @@ into loud, self-explaining ones, on the path the #1 hardware deploy depends on.
   short of. The trigger to revisit is a deployment that holds a large working set
   under real memory pressure. At that point weigh the wire-format store first (it
   is the one that helps both memory and lookup CPU), the byte-squeezing second.
+
+- **Zero-downtime / in-service upgrade (ISSU).** Whether to add a hot binary
+  swap so an upgrade never drops LAN DNS. Parked for now. DNS already tolerates a
+  sub-second restart: stub resolvers retry, most clients hold a secondary
+  resolver, and the blocklist reloads from the on-disk cache, so a `systemctl
+  restart` is a few hundred ms of retried queries, not an outage. The in-flight
+  query drain on stop is already correct (CL 59). True zero-downtime means socket
+  handoff (SO_REUSEPORT, or systemd socket activation), which is platform-specific
+  and adds a second cross-platform seam next to the SCM/systemd split, against the
+  "auditable in an afternoon" identity. The operational answer to "cannot afford
+  downtime" is redundancy: run two instances, both advertised in DHCP as primary
+  and secondary DNS, and upgrade them one at a time. That needs no code and also
+  covers a crash, a reboot, or a bad config, which a hot swap does not. The
+  trigger to revisit is a real deployment where the restart blip measurably hurts.
+  The one clean in-process path then is Linux-only systemd socket activation (read
+  `LISTEN_FDS`, `os.NewFile` the fd, no new dependency), with Windows staying
+  restart-with-retry. The win available now without code is a README
+  high-availability note describing the two-instance setup.
 
 - _None otherwise open._ (Resolved: the shipped sample `config.yaml` was restored
   to the conservative `query_db: "queries.db"` / `api_listen:

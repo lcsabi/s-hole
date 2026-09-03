@@ -15,7 +15,7 @@ rails.
 | # | Item | Impact | Status |
 |--:|---|---|---|
 | 1 | Deploy to real hardware (Raspberry Pi) | High | procedure validated in a VM; awaiting hardware |
-| 2 | Tag `v0.1.0` + release workflow | High | done (CL 43, CL 44); v0.1.0 tagged 2026-08-24, v0.2.0 tagged 2026-08-28 |
+| 2 | Tag `v0.1.0` + release workflow | High | done (CL 43, CL 44); v0.1.0 tagged 2026-08-24, v0.2.0 tagged 2026-08-28, v0.2.1 tagged 2026-09-03 |
 | 3 | Wildcard / subdomain blocking | High | done (CL 30) |
 | 4 | Wire up or delete `DBLogger.TopBlocked` | Medium | done (CL 33) |
 | 5 | DNS-over-HTTPS upstream support | Medium | not started |
@@ -112,6 +112,19 @@ profiling (CL 53), the cache drop metric (CL 54), per-source blocklist health
 (CL 57). A `v0.2.0-rc1` dry-run confirmed the four archives, `SHA256SUMS`, the
 rendered notes, and the `ghcr.io/lcsabi/s-hole:0.2.0-rc1` image before the final
 tag, which moved `:latest` to `0.2.0`. Cut ahead of the #1 soak, like `v0.1.0`.
+
+**2026-09-03:** `v0.2.1` was tagged and pushed (commit `6eeb4c9`). CL 69 first
+graduated the CHANGELOG's `[Unreleased]` section to `[0.2.1]`, so the tag points
+at a commit whose release notes were already in place. The section carried the
+operator-visible work since `v0.2.0`: the clean-shutdown data-loss fix and
+single-contact upstream failover (CL 59, 60), config guards for the interval
+fields and fail-safe boolean env overrides (CL 61, 68), hash-derived cache
+filenames and over-size-source handling (CL 62), the admin-server bind-failure
+banner and the stop-before-store window fix (CL 63, 65), the Linux installer
+hardening (CL 66, 67), and the new `-check-config` flag (CL 66). A patch bump,
+since the release is dominated by robustness fixes to the `v0.2.0` line. The
+`releases/latest` API resolves to `v0.2.1` with `isPrerelease=false`, confirming
+`:latest` moved. Cut ahead of the #1 soak, like the earlier tags.
 
 ## 3. Wildcard / subdomain blocking (done, CL 30)
 

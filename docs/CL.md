@@ -82,6 +82,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 66](cls/CL-66.md) | Harden the Linux install/uninstall scripts and add -check-config (ROADMAP #27) |
 | [CL 67](cls/CL-67.md) | Tighten the installer's identity and port-53 checks (after CL 66) |
 | [CL 68](cls/CL-68.md) | Guard the remaining non-positive durations and name the URL in fetch errors (b/055) |
+| [CL 69](cls/CL-69.md) | Graduate the CHANGELOG to v0.2.1 |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

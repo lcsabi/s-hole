@@ -374,9 +374,10 @@ func TestTopBlockedEndpoint_NoDBReturnsEmpty(t *testing.T) {
 
 // historyResponse mirrors the JSON shape returned by /api/history.
 type historyResponse struct {
-	Window int64             `json:"window"`
-	Bucket int64             `json:"bucket"`
-	Series []querylog.Bucket `json:"series"`
+	Window  int64             `json:"window"`
+	Bucket  int64             `json:"bucket"`
+	Logging string            `json:"logging"`
+	Series  []querylog.Bucket `json:"series"`
 }
 
 func TestHistoryEndpoint_WithRealDB(t *testing.T) {
@@ -412,6 +413,9 @@ func TestHistoryEndpoint_WithRealDB(t *testing.T) {
 	if body.Bucket != 3600 {
 		t.Errorf("bucket = %d, want 3600", body.Bucket)
 	}
+	if body.Logging != "all" {
+		t.Errorf("logging = %q, want \"all\"", body.Logging)
+	}
 	if len(body.Series) != 24 {
 		t.Fatalf("series length = %d, want 24", len(body.Series))
 	}
@@ -419,6 +423,78 @@ func TestHistoryEndpoint_WithRealDB(t *testing.T) {
 	cur := body.Series[len(body.Series)-1]
 	if cur.Total != 3 || cur.Blocked != 2 {
 		t.Errorf("current bucket = {total %d, blocked %d}, want {3, 2}", cur.Total, cur.Blocked)
+	}
+}
+
+func TestHistoryEndpoint_BlockedModeReportsLogging(t *testing.T) {
+	// Under log_queries="blocked" the DB stores only blocked rows, so the series
+	// has total == blocked and the endpoint reports logging="blocked" so the UI
+	// can draw a single labeled line instead of a misleading total.
+	dbPath := filepath.Join(t.TempDir(), "q.db")
+	db, err := querylog.NewDBLogger(dbPath, "blocked", 50*time.Millisecond, 0)
+	if err != nil {
+		t.Fatalf("NewDBLogger: %v", err)
+	}
+	defer db.Close()
+
+	db.Log("1.1.1.1", "ads.com.", true)
+	db.Log("1.1.1.1", "allowed.com.", false) // dropped: not logged under "blocked"
+	waitForRows(t, db, 1)
+
+	store := blocklist.NewStore()
+	s := New(stats.New(), db, store, nil, func() bool { return true })
+	srv := httptest.NewServer(s.handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/history?window=24h&bucket=1h")
+	if err != nil {
+		t.Fatalf("GET /api/history: %v", err)
+	}
+	defer resp.Body.Close()
+	body := decode[historyResponse](t, resp.Body)
+
+	if body.Logging != "blocked" {
+		t.Errorf("logging = %q, want \"blocked\"", body.Logging)
+	}
+	cur := body.Series[len(body.Series)-1]
+	if cur.Total != 1 || cur.Blocked != 1 {
+		t.Errorf("current bucket = {total %d, blocked %d}, want {1, 1} (allowed not logged)", cur.Total, cur.Blocked)
+	}
+}
+
+func TestHistoryEndpoint_NoneModeReportsLogging(t *testing.T) {
+	// query_db is set but log_queries="none", so the DB exists (s.db != nil) yet
+	// holds no rows. The endpoint reports logging="none" so the UI shows an empty
+	// state rather than a flat zero line that looks like zero traffic.
+	dbPath := filepath.Join(t.TempDir(), "q.db")
+	db, err := querylog.NewDBLogger(dbPath, "none", 50*time.Millisecond, 0)
+	if err != nil {
+		t.Fatalf("NewDBLogger: %v", err)
+	}
+	defer db.Close()
+
+	store := blocklist.NewStore()
+	s := New(stats.New(), db, store, nil, func() bool { return true })
+	srv := httptest.NewServer(s.handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/history?window=24h&bucket=1h")
+	if err != nil {
+		t.Fatalf("GET /api/history: %v", err)
+	}
+	defer resp.Body.Close()
+	body := decode[historyResponse](t, resp.Body)
+
+	if body.Logging != "none" {
+		t.Errorf("logging = %q, want \"none\"", body.Logging)
+	}
+	if len(body.Series) != 24 {
+		t.Fatalf("series length = %d, want 24 (dense zero series)", len(body.Series))
+	}
+	for i, b := range body.Series {
+		if b.Total != 0 || b.Blocked != 0 {
+			t.Errorf("bucket %d = {total %d, blocked %d}, want zero", i, b.Total, b.Blocked)
+		}
 	}
 }
 
@@ -435,6 +511,9 @@ func TestHistoryEndpoint_NoDBReturnsEmpty(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 	body := decode[historyResponse](t, resp.Body)
+	if body.Logging != "off" {
+		t.Errorf("logging = %q, want \"off\" (query_db unset)", body.Logging)
+	}
 	if body.Series == nil {
 		t.Error("Series is null, want [] (empty non-nil slice)")
 	}

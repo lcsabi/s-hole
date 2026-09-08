@@ -192,6 +192,14 @@ func (d *DBLogger) Dropped() uint64 {
 	return d.dropped.Load()
 }
 
+// LogQueries returns the effective log_queries filter ("all", "blocked", or
+// "none"). The history endpoint reports it so the dashboard can label the graph
+// honestly: under "blocked" the log holds only blocked rows, so the graph shows
+// a single blocked line, and under "none" it shows an empty state.
+func (d *DBLogger) LogQueries() string {
+	return d.logQueries
+}
+
 // Close signals the writer goroutine to flush remaining entries and waits for
 // it to finish before closing the database. This prevents data loss on shutdown.
 func (d *DBLogger) Close() error {

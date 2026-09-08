@@ -277,6 +277,18 @@ func TestDBLogger_History(t *testing.T) {
 	}
 }
 
+func TestDBLogger_LogQueries(t *testing.T) {
+	// The accessor reports the configured filter so the history endpoint can
+	// label the graph honestly.
+	for _, mode := range []string{"all", "blocked", "none"} {
+		db, _ := newDB(t, mode)
+		if got := db.LogQueries(); got != mode {
+			t.Errorf("LogQueries() = %q, want %q", got, mode)
+		}
+		db.Close()
+	}
+}
+
 func TestDBLogger_HistoryEmptyDBIsZeroFilled(t *testing.T) {
 	db, _ := newDB(t, "all")
 	defer db.Close()

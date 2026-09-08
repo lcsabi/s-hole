@@ -386,20 +386,27 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	window, bucket := parseHistoryParams(r)
 
 	type response struct {
-		Window int64             `json:"window"` // effective window, seconds
-		Bucket int64             `json:"bucket"` // effective bucket, seconds
-		Series []querylog.Bucket `json:"series"`
+		Window int64 `json:"window"` // effective window, seconds
+		Bucket int64 `json:"bucket"` // effective bucket, seconds
+		// Logging is the effective query-log mode the series reflects: "all",
+		// "blocked", "none", or "off" when query_db is unset. The dashboard reads
+		// it to draw the graph honestly (a single blocked line under "blocked", an
+		// empty state under "none"/"off") instead of a misleading total.
+		Logging string            `json:"logging"`
+		Series  []querylog.Bucket `json:"series"`
 	}
 	resp := response{
-		Window: int64(window / time.Second),
-		Bucket: int64(bucket / time.Second),
-		Series: []querylog.Bucket{},
+		Window:  int64(window / time.Second),
+		Bucket:  int64(bucket / time.Second),
+		Logging: "off",
+		Series:  []querylog.Bucket{},
 	}
 
 	if s.db == nil {
 		writeJSON(w, resp)
 		return
 	}
+	resp.Logging = s.db.LogQueries()
 
 	series, err := s.db.History(r.Context(), window, bucket)
 	if err != nil {

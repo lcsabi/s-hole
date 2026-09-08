@@ -1030,6 +1030,19 @@ line would be near-constant and low-signal. The real cache-pressure signal alrea
 exists as `shole_cache_dropped_total` (CL 54), which is the trigger the cache
 eviction pending-decision watches.
 
+**No hot-path cost.** The cache-hit outcome is already computed on the query path
+(the `cache.Cache.Get` branch) and already counted by `stats.Counter`, so this
+only forwards a boolean that exists. Query logging is already asynchronous and
+drops on a full channel rather than blocking DNS (a pinned invariant), so the flag
+rides the same fan-out: one extra field in the `entry` struct, no new allocation,
+lock, or syscall on the serving goroutine. The `ALTER TABLE` column, the batched
+`INSERT`, and the `SUM(cache_hit)` aggregate all live off the hot path (the
+background writer and the on-demand `/api/history` read). Storage grows by about
+one byte per row on a retention-bounded table. The `BenchmarkHandler_ServeDNS`
+`Cached` sub-benchmark (CL 32) can prove no regression before merge. The cost of
+this item is auditability (a schema migration and the `Logger` signature ripple),
+not speed.
+
 Rated Medium: an observability win that completes the per-query-outcome story on
 the graph. It changes no filtering behavior. It is a write-path and schema change,
 not a UI-only tweak, so it is more involved than #20 was.

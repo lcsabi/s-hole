@@ -80,7 +80,7 @@ func Install(configPath string) error {
 
 	if s, err := m.OpenService(svcName); err == nil {
 		s.Close()
-		return fmt.Errorf("service %q already exists; run -service uninstall first", svcName)
+		return fmt.Errorf("service %q already exists. Run -service uninstall first", svcName)
 	}
 
 	s, err := m.CreateService(svcName, exePath, mgr.Config{

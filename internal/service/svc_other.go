@@ -8,7 +8,7 @@ package service
 
 import "errors"
 
-var errNotSupported = errors.New("service management is only supported on Windows; use systemd on Linux")
+var errNotSupported = errors.New("service management is only supported on Windows. Use systemd on Linux")
 
 // IsWindowsService always returns false off Windows.
 func IsWindowsService() bool { return false }

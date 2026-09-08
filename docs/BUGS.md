@@ -1743,3 +1743,51 @@ fail `-check-config` and startup cleanly instead of crashing a ticker goroutine.
 Tests: `TestParsedRefreshStatsInterval_RejectNonPositive` (per-parser rejection of
 `0s` and `-5s`) and non-positive `refresh_interval`/`stats_interval` cases in
 `TestLoadAndValidate_RejectsEachStage`.
+
+---
+
+## b/056 — stats: equal-count top-N entries reshuffle on every dashboard poll
+
+**Priority:** P2
+**Component:** stats
+**Status:** Fixed in CL 71
+**Filed:** 2026-09-08
+
+### Description
+
+The dashboard's "Top Blocked Domains" panel in "Since start" mode reorders
+domains that have equal block counts on almost every 3 s poll. The list of ties
+flickers between refreshes. "Top Clients" has the same latent defect (same code
+path). The "All time" panel is unaffected, because it reads `/api/top-blocked`
+(SQLite), whose row order is consistent for the same data.
+
+Found during live testing of CL 70.
+
+### Root Cause
+
+`Counter.topN` (`internal/stats/stats.go`) builds its slice by ranging the tally
+map, then sorts with `sort.Slice` on the count alone. Two independent sources of
+nondeterminism combine: Go randomizes map-iteration order (so the slice starts in
+a different order each call), and `sort.Slice` is not stable (so it does not
+preserve that starting order for equal keys). With a count-only comparator,
+equal-count entries therefore land in an arbitrary, call-to-call-varying order.
+The `/api/stats` poll runs `Snapshot` every 3 s, so the arbitrary order is
+re-rolled on each refresh.
+
+### Fix
+
+Add a deterministic secondary sort key in `topN`: count descending, then name
+ascending. Equal-count entries now have one fixed order regardless of map
+iteration, so the list is stable across polls. `querylog.DBLogger.TopBlocked`
+gained the matching `ORDER BY cnt DESC, domain ASC` so the "Since start" and "All
+time" tabs order ties identically and the DB path no longer relies on SQLite's
+unspecified tie order.
+
+No performance cost of note: both are the same `O(n log n)` sort that already ran
+(the in-memory slice is bounded at `topNMaxEntries` = 4096; the SQL `GROUP BY`
+aggregate was already sorted), the secondary key is compared only on a primary
+tie, and neither path is on the DNS hot path (both run on the dashboard poll).
+
+Tests: `TestCounter_TopDomainsTieOrderStable` (ties ordered by name and identical
+across repeated snapshots) and `TestDBLogger_TopBlockedTieOrder` (equal-count
+blocked domains returned in domain order).

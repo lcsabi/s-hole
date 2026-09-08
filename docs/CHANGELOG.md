@@ -8,6 +8,12 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 
 ## [Unreleased]
 
+### Fixed
+- **The "Top Blocked Domains" (and "Top Clients") list no longer reshuffles
+  equal-count entries on every refresh.** Domains with the same block count now
+  keep a stable order (by name), so the "Since start" panel stops flickering.
+  (CL 71)
+
 ### Added
 - **A "Queries over time" graph on the dashboard.** A new panel leads the
   dashboard with a two-line chart (total and blocked queries per time bucket),

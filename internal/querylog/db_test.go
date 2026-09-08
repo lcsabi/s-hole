@@ -277,6 +277,37 @@ func TestDBLogger_History(t *testing.T) {
 	}
 }
 
+func TestDBLogger_TopBlockedTieOrder(t *testing.T) {
+	// b/056: equal-count blocked domains come back ordered by domain ascending,
+	// matching the in-memory topN tie-break so the dashboard's "Since start" and
+	// "All time" tabs order ties identically. Seed directly for a deterministic
+	// tie (each domain blocked exactly once).
+	db, _ := newDB(t, "all")
+	defer db.Close()
+	now := time.Now().Format(time.RFC3339)
+	for _, d := range []string{"c.com.", "b.com.", "a.com."} {
+		if _, err := db.db.Exec(
+			"INSERT INTO queries(ts,client_ip,domain,blocked) VALUES(?,?,?,?)",
+			now, "1.1.1.1", d, 1); err != nil {
+			t.Fatalf("seed insert: %v", err)
+		}
+	}
+
+	top, err := db.TopBlocked(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("TopBlocked: %v", err)
+	}
+	want := []string{"a.com.", "b.com.", "c.com."}
+	if len(top) != len(want) {
+		t.Fatalf("TopBlocked len = %d, want %d", len(top), len(want))
+	}
+	for i, w := range want {
+		if top[i].Name != w {
+			t.Errorf("TopBlocked[%d] = %q, want %q", i, top[i].Name, w)
+		}
+	}
+}
+
 func TestDBLogger_LogQueries(t *testing.T) {
 	// The accessor reports the configured filter so the history endpoint can
 	// label the graph honestly.

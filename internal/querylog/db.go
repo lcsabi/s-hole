@@ -308,11 +308,15 @@ func (d *DBLogger) Recent(ctx context.Context, n int) ([]QueryRow, error) {
 // TopBlocked returns the n most-blocked domains across all recorded
 // queries. ctx is honored as a query deadline.
 func (d *DBLogger) TopBlocked(ctx context.Context, n int) ([]Entry, error) {
+	// ORDER BY cnt DESC, domain ASC: the domain tie-break makes equal-count rows
+	// deterministic (SQLite leaves the order of a plain ORDER BY cnt DESC
+	// unspecified) and matches the in-memory topN tie-break, so the dashboard's
+	// "Since start" and "All time" tabs order ties identically (b/056).
 	rows, err := d.db.QueryContext(ctx, `
 		SELECT domain, COUNT(*) AS cnt
 		FROM queries WHERE blocked=1
 		GROUP BY domain
-		ORDER BY cnt DESC
+		ORDER BY cnt DESC, domain ASC
 		LIMIT ?`, n)
 	if err != nil {
 		return nil, err

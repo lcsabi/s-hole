@@ -42,6 +42,7 @@ rails.
 | 26 | Grafana dashboard + Prometheus scrape/alert examples | Low | not started |
 | 27 | Install/uninstall robustness hardening (preflight, health check, shellcheck) | Medium | done (CL 66) |
 | 28 | Validate the upstreams at config time (format check + single-upstream note) | Low | not started |
+| 29 | "Cached" line on the query-volume graph (record cache-hit per query) | Medium | not started |
 
 Items 19-26 came out of a 2026-08-24 feature-ideas session. Items 21-24 are a
 dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
@@ -979,6 +980,59 @@ Rated Low: a guard rail with no filtering behavior change. It turns a silent
 upstream misconfiguration into a startup error (when nothing can forward) or a
 loud warning (when a single entry is wrong), on the same path `-check-config`
 already guards.
+
+## 29. "Cached" line on the query-volume graph
+
+The query-volume graph (#20) draws total and blocked per bucket. The third
+outcome an operator cares about, a cache hit, is not shown, because the query log
+records only whether a query was blocked, not whether it was served from cache.
+Recording a per-query cache-hit flag lets the graph draw a third count line
+(total / blocked / cached) on the same axis, so caching effectiveness over the
+day, and the cache warm-up after a restart, become visible. The hit rate reads
+off the chart as the ratio of the cached line to the total line, with no second
+axis. (Raised in the 2026-09-08 session that built #20.)
+
+This is a cross-cutting change, not a cheap one. It touches the query-log write
+path and schema:
+
+- **Schema.** Add a `cache_hit INTEGER NOT NULL DEFAULT 0` column to the
+  `queries` table (an idempotent `ALTER TABLE ... ADD COLUMN`, matching the
+  `CREATE TABLE IF NOT EXISTS` startup migration style). Existing rows read as
+  not-cached, so the cached line under-reports for buckets written before the
+  upgrade. Document this forward-only behavior the way #21 documents its
+  forward-only masking.
+- **Write path.** The handler already knows the outcome (the `cache.Cache.Get`
+  hit branch). It must carry the cache-hit result into the logger. The
+  `Logger.Log(clientIP, domain, blocked)` signature would grow a field, which
+  ripples through `Multi`, `FileLogger` (including its text `ALLOW`/`BLOCK`
+  format), and `DBLogger`. Prefer passing a small `Record` struct over a fourth
+  positional argument, so the next log field (for example #21's masked client)
+  does not churn the signature again.
+- **Read path.** Extend `DBLogger.History` to also `SUM(cache_hit)` per bucket and
+  add a `Cached` field to `Bucket`; the handler and the canvas then draw a third
+  line. The UI change is small once the data is there.
+
+Design decisions to settle in the CL:
+
+- **What counts as a hit.** A blocked query short-circuits before the cache and a
+  local-PTR answer never reaches it, so both log `cache_hit=0`. Then
+  `total = blocked + cached + forwarded`, a clean decomposition (forwarded is the
+  remainder). Record this so the three lines are not read as overlapping.
+- **Text-log format.** Whether to add a cache-hit marker to the `FileLogger`
+  `ALLOW`/`BLOCK` line. If so, it is a format change; sync anything that quotes it
+  (doc-drift rule).
+- **No new metric.** The cache hit is already a counter (`shole_cache_hits_total`),
+  so this stays API-and-UI only.
+
+**Cache size is deliberately excluded.** It is a gauge that warms to near its cap
+and then sits flat, and the query log has no per-query source for it, so a size
+line would be near-constant and low-signal. The real cache-pressure signal already
+exists as `shole_cache_dropped_total` (CL 54), which is the trigger the cache
+eviction pending-decision watches.
+
+Rated Medium: an observability win that completes the per-query-outcome story on
+the graph. It changes no filtering behavior. It is a write-path and schema change,
+not a UI-only tweak, so it is more involved than #20 was.
 
 ## Pending decisions
 

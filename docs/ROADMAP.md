@@ -33,7 +33,7 @@ rails.
 | 17 | Per-source blocklist health in `/api/stats` + dashboard | Medium | done (CL 55) |
 | 18 | "Why is this blocked?" diagnostic endpoint (`/api/check`) | Low | done (CL 56) |
 | 19 | Temporary "pause blocking" (timed bypass, auto-resume) | High | not started |
-| 20 | Query-volume-over-time graph on the dashboard | Medium | not started |
+| 20 | Query-volume-over-time graph on the dashboard | Medium | done (CL 70) |
 | 21 | Query-log privacy modes (write-time client anonymization) | Medium | not started |
 | 22 | Client name attribution in the log and dashboard | Medium | not started |
 | 23 | Query-log search / filter | Medium | not started |
@@ -571,31 +571,43 @@ Design decisions to settle in the CL:
 Rated High: a user-visible control that many deployments reach for daily. It
 changes no filtering rules, only whether they apply right now.
 
-## 20. Query-volume-over-time graph
+## 20. Query-volume-over-time graph (done, CL 70)
 
-The dashboard shows current totals but not the shape of the day. Comparable tools
-lead with a queries-over-time graph, and the data already sits in the query DB
+The dashboard showed current totals but not the shape of the day. Comparable tools
+lead with a queries-over-time graph, and the data already sat in the query DB
 with timestamps. A short history turns "current numbers" into "what happened
 today".
 
-`GET /api/history?window=24h&bucket=1h` aggregates total and blocked counts per
-time bucket in SQL. The UI draws it with a small inline canvas, no chart library,
-so the dependency graph and the static `go:embed` UI both stay as they are.
+**Shipped in CL 70:** `GET /api/history?window=24h&bucket=1h` aggregates total and
+blocked counts per time bucket in SQL, and a full-width "Queries over time" panel
+leads the dashboard. The UI draws a two-line canvas chart (total and blocked) with
+a hover tooltip and a 24h / 7d toggle, no chart library, so the dependency graph
+and the static `go:embed` UI both stay as they are.
 
-Design decisions to settle in the CL:
+Design decisions settled in the CL:
 
-- **Bucketing in SQL vs Go.** Group by a time expression in the query, or scan
-  rows and bucket in the handler. SQL grouping keeps the payload small and the
-  handler thin.
-- **Window and bucket bounds.** Which windows to offer (24h, 7d) and how to clamp
-  the bucket count, reusing the `?limit=` clamp pattern so a crafted request
-  cannot ask for millions of buckets.
-- **db-disabled path.** With `query_db` off, return an empty series the way
-  `/api/queries` returns an empty list, so the panel renders empty instead of
-  erroring.
-- **Privacy interaction.** The series is aggregate counts only and needs no client
-  field, so #21 does not affect it. Record this so the two are not read as
-  coupled.
+- **Bucket in SQL, densify in Go.** The grouped query returns one row per
+  non-empty bucket; `History` fills the gaps into a dense zero-filled series so
+  the handler stays thin and the UI never special-cases a missing bucket. Because
+  `ts` is RFC3339 text with an offset, the bucket key is computed from the UTC
+  epoch (`strftime('%s', ts)`), while the `WHERE` cutoff stays an RFC3339 string
+  to reuse `idx_queries_ts` and match the prune path.
+- **Windows and clamp.** A 24h / 7d toggle, both at a constant 1h bucket. The
+  endpoint accepts any `?window=`/`?bucket=` and clamps the bucket *count* (cap
+  1000, mirroring `?limit=`), widening the bucket so a crafted `window=7d&bucket=1s`
+  cannot ask for 600k buckets. A small day-suffix parser accepts `7d`
+  (`time.ParseDuration` stops at hours).
+- **db-disabled path.** With `query_db` off the endpoint returns an empty series,
+  the same degrade-not-fail contract as `/api/queries`, and the panel shows an
+  empty state.
+- **Privacy interaction.** The series is aggregate counts only, no client field,
+  so #21 does not affect it and the two are not coupled.
+- **Collapsible panels (folded in).** The three panels that own a dedicated
+  `/api/*` fetch (Queries over time, Recent Queries, Top Blocked) gained a
+  disclosure arrow; a collapsed panel hides its body and skips its poll, and the
+  state persists in `localStorage`. The stat cards, Top Clients, and Sources ride
+  the shared `/api/stats` call, so collapsing them would save no request and they
+  stay always-open.
 
 Rated Medium: an observability win with high visual value. It changes no filtering
 behavior.

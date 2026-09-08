@@ -250,6 +250,7 @@ The admin web UI is served at **`http://127.0.0.1:8080`** by default. This is lo
 | `GET` | `/api/check?domain=NAME` | Why a domain is blocked: the decision plus the full suffix walk (matched block entry, overriding whitelist entry). Diagnostic; changes no state and does not count in stats |
 | `GET` | `/api/queries?limit=N` | Last N queries from SQLite, newest first (default: 50, max: 1000) |
 | `GET` | `/api/top-blocked?limit=N` | All-time most-blocked domains from SQLite (default: 50, max: 1000); empty when `query_db` is unset |
+| `GET` | `/api/history?window=24h&bucket=1h` | Per-bucket total and blocked query counts over the window, from SQLite (default: 24h window, 1h bucket; bucket count capped at 1000); empty when `query_db` is unset |
 | `GET` | `/api/whitelist` | List all runtime-whitelisted domains |
 | `POST` | `/api/whitelist` | Add a domain. Body: `{"domain": "example.com"}` |
 | `DELETE` | `/api/whitelist?domain=…` | Remove a domain from the runtime whitelist |

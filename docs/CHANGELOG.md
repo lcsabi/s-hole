@@ -8,6 +8,18 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 
 ## [Unreleased]
 
+### Added
+- **A "Queries over time" graph on the dashboard.** A new panel leads the
+  dashboard with a two-line chart (total and blocked queries per time bucket),
+  a 24h / 7d window toggle, and a hover readout of each bucket's counts. It is
+  backed by a new `GET /api/history?window=24h&bucket=1h` endpoint that
+  aggregates the query log in SQL. With `query_db` unset the graph shows an
+  empty state, the same as the other log-backed panels. (CL 70)
+- **Collapsible panels.** The three panels that fetch their own data (Queries
+  over time, Recent Queries, Top Blocked) now have a collapse arrow. Collapsing
+  a panel hides it and stops polling its endpoint; the choice is remembered in
+  the browser. (CL 70)
+
 ## [0.2.1] - 2026-09-03
 
 ### Added

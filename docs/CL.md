@@ -83,6 +83,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 67](cls/CL-67.md) | Tighten the installer's identity and port-53 checks (after CL 66) |
 | [CL 68](cls/CL-68.md) | Guard the remaining non-positive durations and name the URL in fetch errors (b/055) |
 | [CL 69](cls/CL-69.md) | Graduate the CHANGELOG to v0.2.1 |
+| [CL 70](cls/CL-70.md) | Query-volume-over-time graph on the dashboard (ROADMAP #20) |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

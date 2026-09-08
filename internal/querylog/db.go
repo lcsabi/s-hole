@@ -321,6 +321,74 @@ func (d *DBLogger) TopBlocked(ctx context.Context, n int) ([]Entry, error) {
 	return out, rows.Err()
 }
 
+// Bucket is one time bucket in a query-volume history series.
+type Bucket struct {
+	Start   int64 `json:"start"` // bucket start, unix seconds (UTC)
+	Total   int64 `json:"total"`
+	Blocked int64 `json:"blocked"`
+}
+
+// History returns a dense per-bucket count series covering roughly the last
+// window, each bucket wide, oldest first. Buckets with no rows are present with
+// zero counts so the graph draws a continuous line. ctx is honored as a query
+// deadline.
+//
+// ts is RFC3339 text with a timezone offset, so the bucket key is computed from
+// the UTC epoch (strftime('%s', ts) parses the offset) rather than from the
+// text. The WHERE cutoff stays an RFC3339 string to reuse idx_queries_ts and to
+// match the prune path. The only imprecision is a one-bucket boundary wobble at
+// the far window edge across a DST change, which is cosmetic on a graph.
+func (d *DBLogger) History(ctx context.Context, window, bucket time.Duration) ([]Bucket, error) {
+	bucketSecs := int64(bucket / time.Second)
+	if bucketSecs <= 0 {
+		bucketSecs = 1
+	}
+	n := int(window / bucket)
+	if n <= 0 {
+		n = 1
+	}
+
+	cutoff := time.Now().Add(-window).Format(time.RFC3339)
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT (CAST(strftime('%s', ts) AS INTEGER) / ?1) * ?1 AS bucket_start,
+		       COUNT(*)     AS total,
+		       SUM(blocked) AS blocked
+		FROM queries
+		WHERE ts >= ?2
+		GROUP BY bucket_start`, bucketSecs, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[int64]Bucket)
+	for rows.Next() {
+		var b Bucket
+		if err := rows.Scan(&b.Start, &b.Total, &b.Blocked); err != nil {
+			return nil, err
+		}
+		counts[b.Start] = b
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Emit a dense, zero-filled series so gaps draw as a line at zero. The last
+	// bucket is the (partial) current one; align it the same way the SQL groups.
+	last := (time.Now().Unix() / bucketSecs) * bucketSecs
+	first := last - int64(n-1)*bucketSecs
+	out := make([]Bucket, 0, n)
+	for start := first; start <= last; start += bucketSecs {
+		if b, ok := counts[start]; ok {
+			b.Start = start
+			out = append(out, b)
+		} else {
+			out = append(out, Bucket{Start: start})
+		}
+	}
+	return out, nil
+}
+
 func scanRows(rows *sql.Rows) ([]QueryRow, error) {
 	var out []QueryRow
 	for rows.Next() {

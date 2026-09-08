@@ -664,7 +664,7 @@
       // read as total traffic.
       const blockedOnly = mode === 'blocked';
       $('legend-total').hidden = blockedOnly;
-      $('history-note').textContent = blockedOnly ? 'blocked only (log_queries: blocked)' : '';
+      $('history-note').textContent = blockedOnly ? 'blocked queries only (log_queries: blocked)' : '';
 
       // No data source for a series: query logging is off (query_db unset, mode
       // "off") or set to "none". Show an empty state with the reason instead of
@@ -675,7 +675,7 @@
         empty.hidden = false;
         empty.textContent = mode === 'none'
           ? 'Query logging is off (log_queries: none).'
-          : 'No query history. Ensure query_db is set in config.yaml';
+          : 'No query history. Make sure that query_db is set in config.yaml';
         return;
       }
       canvas.hidden = false;
@@ -839,7 +839,7 @@
     async function refreshTopDomainsAllTime() {
       try {
         const { domains } = await fetch('/api/top-blocked?limit=10').then(r => r.json());
-        renderTopDomains(domains || [], 'No blocked queries recorded. Ensure query_db is set in config.yaml');
+        renderTopDomains(domains || [], 'No blocked queries recorded. Make sure that query_db is set in config.yaml');
       } catch (e) { console.error('top-blocked fetch failed:', e); }
     }
 
@@ -891,7 +891,7 @@
               <td>${badge}</td>
             </tr>`;
           }).join('')
-          : '<tr><td colspan="4" class="empty">No queries logged. Ensure query_db is set in config.yaml</td></tr>');
+          : '<tr><td colspan="4" class="empty">No queries logged. Make sure that query_db is set in config.yaml</td></tr>');
       } catch (e) { console.error('queries fetch failed:', e); }
     }
 

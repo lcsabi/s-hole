@@ -9,20 +9,19 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 ## [Unreleased]
 
 ### Fixed
-- **The "Top Blocked Domains" (and "Top Clients") list no longer reshuffles
+- **The "Top Blocked Domains" and "Top Clients" lists no longer reorder
   equal-count entries on every refresh.** Domains with the same block count now
-  keep a stable order (by name), so the "Since start" panel stops flickering.
-  (CL 71)
+  keep a fixed order (by name). As a result, the "Since start" list no longer
+  changes between refreshes. (CL 71)
 
 ### Added
 - **A "Queries over time" graph on the dashboard.** A new panel leads the
-  dashboard with a two-line chart (total and blocked queries per time bucket),
-  a 24h / 7d window toggle, and a hover readout of each bucket's counts. It is
-  backed by a new `GET /api/history?window=24h&bucket=1h` endpoint that
-  aggregates the query log in SQL. Because it reads the query log, it follows
-  `log_queries`: it shows both lines under `all`, a single labeled blocked line
-  under `blocked`, and an empty state under `none` or when `query_db` is unset.
-  (CL 70)
+  dashboard. It shows a two-line chart of total and blocked queries per time
+  bucket, with a 24h / 7d window toggle and a per-bucket hover readout. A new
+  `GET /api/history?window=24h&bucket=1h` endpoint aggregates the query log in
+  SQL. What the graph shows depends on `log_queries`: both lines under `all`, one
+  blocked line under `blocked`, and an empty state under `none` or when
+  `query_db` is unset. (CL 70)
 - **Collapsible panels.** The three panels that fetch their own data (Queries
   over time, Recent Queries, Top Blocked) now have a collapse arrow. Collapsing
   a panel hides it and stops polling its endpoint; the choice is remembered in

@@ -31,10 +31,10 @@ block_mode: "zero"
 block_ttl: 300
 
 # Which queries to write to the log: "all", "blocked", or "none".
-# This governs the log-backed dashboard panels (Queries over time, Recent
-# Queries, Top Blocked "All time"). "blocked" limits them to blocked queries,
-# so the graph shows a single blocked line; "none" leaves them empty. The stat
-# cards count every query regardless, from the in-memory counter.
+# This controls the log-backed dashboard panels (Queries over time, Recent
+# Queries, and Top Blocked "All time"). "blocked" limits them to blocked
+# queries, so the graph shows one blocked line. "none" leaves them empty. The
+# stat cards are not affected. They count every query from the in-memory counter.
 log_queries: "all"
 
 # Plain-text query log file (leave empty to write to stdout)

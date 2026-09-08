@@ -220,7 +220,7 @@ func main() {
 	apiServer := api.New(counter, db, store, dnsCache, reloadFn)
 	if cfg.EnablePprof {
 		apiServer.EnablePprof(true)
-		mainLog.Warn("pprof endpoints enabled; bind api_listen to localhost only",
+		mainLog.Warn("pprof endpoints enabled, bind api_listen to localhost only",
 			"api_listen", cfg.APIListen)
 	}
 	// Bind the admin listener synchronously so a bad api_listen or a port
@@ -231,7 +231,7 @@ func main() {
 	// instead of advertising a URL that refuses connections (b/052).
 	apiUp := false
 	if apiLn, err := net.Listen("tcp", cfg.APIListen); err != nil {
-		mainLog.Warn("admin UI failed to bind; continuing without it (DNS still serving)",
+		mainLog.Warn("admin UI failed to bind, DNS still serving",
 			"api_listen", cfg.APIListen, "err", err,
 			"hint", "check for a port conflict or fix api_listen")
 	} else {

@@ -38,7 +38,7 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
 - **Community blocklists.** Downloads and auto-refreshes hosts-file or plain-domain lists from any URL.
 - **DNS response cache.** Serves repeat queries from memory. Typical cache hit rates of 40–70% reduce upstream load and latency.
 - **Resilient upstream forwarding.** Tries upstreams in order over UDP, falls back to TCP on truncation, and skips recently-failed resolvers until they recover.
-- **Local reverse DNS.** Answers PTR queries for the RFC 6303 private ranges (`10/8`, `172.16/12`, `192.168/16`, and IPv6 ULA and link-local) locally, so internal LAN addressing never leaks to the upstream resolver. On by default; opt out with `local_ptr: false`.
+- **Local reverse DNS.** Answers PTR queries for the RFC 6303 private ranges (`10/8`, `172.16/12`, `192.168/16`, and IPv6 ULA and link-local) locally, so internal LAN addressing never leaks to the upstream resolver. On by default. Disable it with `local_ptr: false`.
 - **Dual query log.** A plain-text file for `grep` and `tail`, plus a SQLite database for historical queries.
 - **Admin web UI.** Live stats, top blocked domains, per-source blocklist health, recent query log, whitelist management, and a "why is this blocked?" domain check. Auto-refreshes every 3 seconds.
 - **REST API.** All UI data is available as JSON, ready for scripting and future integrations.
@@ -96,7 +96,7 @@ tar -xzf s-hole_v0.2.1_linux_amd64.tar.gz  # Linux (unzip the .zip on Windows)
 
 Each archive contains the binary, a sample `config.yaml`, `LICENSE`, `README.md`,
 and (on Linux) the `deploy/` install scripts and systemd unit. The same tag also
-publishes a container image; see [Docker](#docker) for the pull command.
+publishes a container image. See [Docker](#docker) for the pull command.
 
 ### Install via the Go toolchain
 
@@ -165,7 +165,7 @@ If a query times out, check s-hole's query log (stdout, or
 process produces one `ALLOW`/`BLOCK` line. A missing line means the
 query never arrived. Look at the network path (firewall, wrong IP,
 client tool) rather than at s-hole. Under the Windows service stdout is
-discarded, so set `log_file` to capture these query lines; the
+discarded, so set `log_file` to capture these query lines. The
 application log (startup, refresh, and audit messages) goes to the
 Windows Event Log automatically.
 
@@ -173,7 +173,7 @@ Windows Event Log automatically.
 
 ## Configuration
 
-All configuration lives in `config.yaml`. Every field has a safe default; an empty file is valid.
+All configuration lives in `config.yaml`. Every field has a safe default. An empty file is valid.
 
 | Field | Default | Description |
 |---|---|---|
@@ -250,6 +250,7 @@ The admin web UI is served at **`http://127.0.0.1:8080`** by default. This is lo
 | `GET` | `/api/check?domain=NAME` | Why a domain is blocked: the decision plus the full suffix walk (matched block entry, overriding whitelist entry). Diagnostic; changes no state and does not count in stats |
 | `GET` | `/api/queries?limit=N` | Last N queries from SQLite, newest first (default: 50, max: 1000) |
 | `GET` | `/api/top-blocked?limit=N` | All-time most-blocked domains from SQLite (default: 50, max: 1000); empty when `query_db` is unset |
+| `GET` | `/api/history?window=24h&bucket=1h` | Per-bucket total and blocked query counts over the window, from SQLite (default: 24h window, 1h bucket; bucket count capped at 1000). Reports the effective `log_queries` mode (`all`/`blocked`/`none`/`off`), so the graph reflects only what is logged; empty when `query_db` is unset |
 | `GET` | `/api/whitelist` | List all runtime-whitelisted domains |
 | `POST` | `/api/whitelist` | Add a domain. Body: `{"domain": "example.com"}` |
 | `DELETE` | `/api/whitelist?domain=…` | Remove a domain from the runtime whitelist |
@@ -304,7 +305,7 @@ After installation:
 sudo systemctl status s-hole     # check running state
 sudo systemctl stop s-hole       # stop the service
 sudo systemctl start s-hole      # start the service
-sudo systemctl restart s-hole    # restart (e.g. after editing config)
+sudo systemctl restart s-hole    # restart (for example after editing config)
 sudo systemctl disable s-hole    # don't start on boot
 sudo systemctl enable s-hole     # re-enable autostart
 journalctl -u s-hole -f          # follow logs live
@@ -317,7 +318,7 @@ sudo systemctl kill -s HUP s-hole       # via systemd
 sudo kill -HUP "$(pidof s-hole)"        # or directly
 ```
 
-SIGHUP is honored on every non-Windows platform; it runs the same single-flight refresh as `POST /api/reload`.
+SIGHUP is honored on every non-Windows platform. It runs the same single-flight refresh as `POST /api/reload`.
 
 The systemd unit runs with `CAP_NET_BIND_SERVICE` so it can bind port 53 without running as root. `ProtectSystem=strict` and `NoNewPrivileges` are set for defence in depth.
 
@@ -377,7 +378,7 @@ reservation, because it's what your router hands out to every client as the DNS
 server, and what the container binds below. Find it:
 
 ```bash
-ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1   # e.g. 192.168.1.10
+ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1   # for example 192.168.1.10
 ```
 
 **Why bind to this address rather than publish on all interfaces?** Most Linux
@@ -418,7 +419,7 @@ dashboard at `http://${HOST_IP}:8080`. For a host-only dashboard, publish it as
 
 > **The startup banner shows the container's IP, not the host's.** s-hole prints
 > a "Router setup" box with a DNS-server and Admin-UI address, but from inside
-> the container it can only see its own bridge address (e.g. `172.17.0.2`). It
+> the container it can only see its own bridge address (for example `172.17.0.2`). It
 > has no way to know the host IP or the port you published. **Under Docker,
 > ignore those lines** and use `${HOST_IP}` (the address you bound above) for
 > both the router setting and the dashboard URL.
@@ -479,7 +480,7 @@ machine's LAN IP, not the container address the startup banner prints.
 Run once as Administrator to register s-hole as an auto-start Windows Service:
 
 ```powershell
-# Install (uses the config path you specify; must be absolute)
+# Install (uses the config path you specify, must be absolute)
 .\s-hole.exe -service install -config C:\s-hole\config.yaml
 
 # Start / stop
@@ -698,7 +699,7 @@ A full end-to-end integration test (`internal/dnsserver/integration_test.go`) wi
 
 ## Security Notes
 
-- s-hole is designed for **LAN deployment only**. Do not expose port 53 to the public internet; there is no rate limiting or source validation.
+- s-hole is designed for **LAN deployment only**. Do not expose port 53 to the public internet. There is no rate limiting or source validation.
 - The SQLite query log and flat log file contain full browsing history for all devices. Treat them as sensitive data. Use `log_queries: none` if you do not need query history.
 - The admin UI has no authentication. Set `api_listen: "127.0.0.1:8080"` to restrict it to localhost, or use a firewall rule to limit access. The HTTP server enforces read/write/idle timeouts and a 64 KiB request body limit to defend against slowloris-style attacks from LAN peers, but these are no substitute for proper access control on a multi-user network.
 - Blocklist URLs are operator-controlled. Use HTTPS URLs from sources you trust.

@@ -208,6 +208,136 @@ func TestDBLogger_RetentionPruneDeletesOldRows(t *testing.T) {
 	}
 }
 
+func TestDBLogger_History(t *testing.T) {
+	// Seed rows with controlled timestamps into known hour buckets, then assert
+	// the dense series buckets them correctly. Seeding directly (not via the
+	// async writer) keeps the timestamps deterministic, the same approach as
+	// the retention test.
+	db, _ := newDB(t, "all")
+	defer db.Close()
+
+	now := time.Now()
+	seed := func(ts time.Time, domain string, blocked int) {
+		t.Helper()
+		if _, err := db.db.Exec(
+			"INSERT INTO queries(ts,client_ip,domain,blocked) VALUES(?,?,?,?)",
+			ts.Format(time.RFC3339), "1.1.1.1", domain, blocked); err != nil {
+			t.Fatalf("seed insert: %v", err)
+		}
+	}
+
+	// Current hour bucket: 3 queries, 2 blocked.
+	seed(now, "a.com", 1)
+	seed(now, "b.com", 1)
+	seed(now, "c.com", 0)
+	// One hour earlier: 2 queries, 1 blocked.
+	seed(now.Add(-1*time.Hour), "d.com", 1)
+	seed(now.Add(-1*time.Hour), "e.com", 0)
+	// Outside the 24h window: must be excluded.
+	seed(now.Add(-25*time.Hour), "old.com", 1)
+
+	series, err := db.History(context.Background(), 24*time.Hour, time.Hour)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	if len(series) != 24 {
+		t.Fatalf("series length = %d, want 24 (dense 24h/1h)", len(series))
+	}
+
+	// Ascending order by Start.
+	for i := 1; i < len(series); i++ {
+		if series[i].Start <= series[i-1].Start {
+			t.Fatalf("series not ascending at %d: %d <= %d", i, series[i].Start, series[i-1].Start)
+		}
+	}
+
+	// The last bucket is the current (partial) hour; the one before it is the
+	// previous hour.
+	cur := series[len(series)-1]
+	if cur.Total != 3 || cur.Blocked != 2 {
+		t.Errorf("current bucket = {total %d, blocked %d}, want {3, 2}", cur.Total, cur.Blocked)
+	}
+	prev := series[len(series)-2]
+	if prev.Total != 2 || prev.Blocked != 1 {
+		t.Errorf("previous bucket = {total %d, blocked %d}, want {2, 1}", prev.Total, prev.Blocked)
+	}
+
+	// An empty bucket in the middle is zero-filled, not skipped.
+	if mid := series[0]; mid.Total != 0 || mid.Blocked != 0 {
+		t.Errorf("oldest (empty) bucket = {total %d, blocked %d}, want {0, 0}", mid.Total, mid.Blocked)
+	}
+
+	// A total across all buckets must exclude the out-of-window row.
+	var total int64
+	for _, b := range series {
+		total += b.Total
+	}
+	if total != 5 {
+		t.Errorf("summed total = %d, want 5 (25h-ago row excluded)", total)
+	}
+}
+
+func TestDBLogger_TopBlockedTieOrder(t *testing.T) {
+	// b/056: equal-count blocked domains come back ordered by domain ascending,
+	// matching the in-memory topN tie-break so the dashboard's "Since start" and
+	// "All time" tabs order ties identically. Seed directly for a deterministic
+	// tie (each domain blocked exactly once).
+	db, _ := newDB(t, "all")
+	defer db.Close()
+	now := time.Now().Format(time.RFC3339)
+	for _, d := range []string{"c.com.", "b.com.", "a.com."} {
+		if _, err := db.db.Exec(
+			"INSERT INTO queries(ts,client_ip,domain,blocked) VALUES(?,?,?,?)",
+			now, "1.1.1.1", d, 1); err != nil {
+			t.Fatalf("seed insert: %v", err)
+		}
+	}
+
+	top, err := db.TopBlocked(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("TopBlocked: %v", err)
+	}
+	want := []string{"a.com.", "b.com.", "c.com."}
+	if len(top) != len(want) {
+		t.Fatalf("TopBlocked len = %d, want %d", len(top), len(want))
+	}
+	for i, w := range want {
+		if top[i].Name != w {
+			t.Errorf("TopBlocked[%d] = %q, want %q", i, top[i].Name, w)
+		}
+	}
+}
+
+func TestDBLogger_LogQueries(t *testing.T) {
+	// The accessor reports the configured filter so the history endpoint can
+	// label the graph honestly.
+	for _, mode := range []string{"all", "blocked", "none"} {
+		db, _ := newDB(t, mode)
+		if got := db.LogQueries(); got != mode {
+			t.Errorf("LogQueries() = %q, want %q", got, mode)
+		}
+		db.Close()
+	}
+}
+
+func TestDBLogger_HistoryEmptyDBIsZeroFilled(t *testing.T) {
+	db, _ := newDB(t, "all")
+	defer db.Close()
+
+	series, err := db.History(context.Background(), 6*time.Hour, time.Hour)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	if len(series) != 6 {
+		t.Fatalf("series length = %d, want 6", len(series))
+	}
+	for i, b := range series {
+		if b.Total != 0 || b.Blocked != 0 {
+			t.Errorf("bucket %d = {total %d, blocked %d}, want zero", i, b.Total, b.Blocked)
+		}
+	}
+}
+
 func TestDBLogger_DroppedOnChannelOverflow(t *testing.T) {
 	// With a tiny channel and a slow flush (1h interval) the buffer
 	// fills up quickly. The logger must drop entries silently rather

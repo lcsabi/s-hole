@@ -30,7 +30,11 @@ block_mode: "zero"
 # immediately, at the cost of more repeat queries).
 block_ttl: 300
 
-# Which queries to write to the log: "all", "blocked", or "none"
+# Which queries to write to the log: "all", "blocked", or "none".
+# This controls the log-backed dashboard panels (Queries over time, Recent
+# Queries, and Top Blocked "All time"). "blocked" limits them to blocked
+# queries, so the graph shows one blocked line. "none" leaves them empty. The
+# stat cards are not affected. They count every query from the in-memory counter.
 log_queries: "all"
 
 # Plain-text query log file (leave empty to write to stdout)
@@ -63,7 +67,7 @@ db_flush_interval: "30s"
 query_db_retention_days: 0
 
 # Expose net/http/pprof handlers under /debug/pprof/ on the admin HTTP
-# server. Off by default. Only turn on when investigating a running
+# server. Off by default. Enable it only to investigate a running
 # incident, and only when api_listen is bound to localhost. pprof
 # reveals goroutine stacks, heap layouts, and symbols that are useful to
 # the operator and dangerous in the wrong hands.
@@ -75,6 +79,6 @@ enable_pprof: false
 # No public resolver can ever hold records for these addresses. Forwarding
 # wastes a round-trip on every request and leaks LAN addressing to the
 # upstream resolver. Recommended: true (the default).
-# Set to false only if you run a private reverse DNS zone on your LAN and
-# want queries for it to reach a forwarding resolver that can answer them.
+# If you run a private reverse DNS zone on your LAN, set this to false.
+# Queries for it then reach a forwarding resolver that can answer them.
 local_ptr: true

@@ -15,6 +15,9 @@
       --accent: #818cf8;
       --red: #f87171;
       --green: #4ade80;
+      /* Total line: a light violet, the visual blend of blocked (red) and
+         allowed (green). */
+      --violet: #c4b5fd;
     }
 
     *,
@@ -309,6 +312,102 @@
       border-left: 2px solid var(--border);
     }
     .check-walk div { line-height: 1.6; }
+
+    /* ── Query-volume chart ──────────────────────────────────── */
+    .hd-controls {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .legend {
+      display: inline-flex;
+      gap: 12px;
+      margin-left: 10px;
+      font-weight: 400;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .legend .sw {
+      width: 9px;
+      height: 9px;
+      border-radius: 2px;
+      display: inline-block;
+    }
+
+    .legend .sw-total { background: var(--violet); }
+    .legend .sw-blocked { background: var(--red); }
+
+    .hist-note {
+      margin-left: 10px;
+      font-weight: 400;
+      font-size: 11px;
+      font-style: italic;
+      color: var(--muted);
+    }
+
+    .chart-wrap {
+      position: relative;
+      height: 220px;
+      padding: 8px 8px 4px;
+    }
+
+    .chart-wrap canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .chart-empty {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      font-style: italic;
+      font-size: 13px;
+    }
+
+    .chart-tip {
+      position: absolute;
+      pointer-events: none;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 9px;
+      font-size: 11px;
+      line-height: 1.5;
+      white-space: nowrap;
+      z-index: 5;
+    }
+
+    /* Collapse toggle in a panel header. The arrow rotates when collapsed. */
+    .collapse-btn {
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      font-size: 11px;
+      padding: 2px 6px;
+      line-height: 1;
+      transition: transform 0.15s, color 0.15s;
+    }
+
+    .collapse-btn:hover {
+      color: var(--text);
+      opacity: 1;
+    }
+
+    .collapse-btn.collapsed { transform: rotate(-90deg); }
+
+    [hidden] { display: none !important; }
   </style>
 </head>
 
@@ -346,16 +445,47 @@
     </div>
   </div>
 
+  <div class="full panel">
+    <div class="panel-hd">
+      <span>Queries over time
+        <span class="legend">
+          <span id="legend-total"><span class="sw sw-total"></span>Total</span>
+          <span><span class="sw sw-blocked"></span>Blocked</span>
+        </span>
+        <span class="hist-note" id="history-note"></span>
+      </span>
+      <span class="hd-controls">
+        <span class="seg" id="history-window">
+          <button type="button" data-window="24h" class="active">24h</button>
+          <button type="button" data-window="7d">7d</button>
+        </span>
+        <button type="button" class="collapse-btn" data-collapse="history-body"
+          aria-controls="history-body" aria-expanded="true" title="Collapse"
+          onclick="togglePanel('history-body')">▾</button>
+      </span>
+    </div>
+    <div class="chart-wrap" id="history-body">
+      <canvas id="history-canvas"></canvas>
+      <div class="chart-empty" id="history-empty">Loading…</div>
+      <div class="chart-tip" id="history-tip" hidden></div>
+    </div>
+  </div>
+
   <div class="two-col">
     <div class="panel">
       <div class="panel-hd">
         <span>Top Blocked Domains <span class="count" id="domains-count"></span></span>
-        <span class="seg" id="domains-mode">
-          <button type="button" data-mode="start" class="active">Since start</button>
-          <button type="button" data-mode="all">All time</button>
+        <span class="hd-controls">
+          <span class="seg" id="domains-mode">
+            <button type="button" data-mode="start" class="active">Since start</button>
+            <button type="button" data-mode="all">All time</button>
+          </span>
+          <button type="button" class="collapse-btn" data-collapse="domains-table"
+            aria-controls="domains-table" aria-expanded="true" title="Collapse"
+            onclick="togglePanel('domains-table')">▾</button>
         </span>
       </div>
-      <table>
+      <table id="domains-table">
         <thead>
           <tr>
             <th>Domain</th>
@@ -422,8 +552,13 @@
   </div>
 
   <div class="full panel" style="margin-bottom:32px">
-    <div class="panel-hd">Recent Queries</div>
-    <table>
+    <div class="panel-hd">
+      <span>Recent Queries</span>
+      <button type="button" class="collapse-btn" data-collapse="queries-table"
+        aria-controls="queries-table" aria-expanded="true" title="Collapse"
+        onclick="togglePanel('queries-table')">▾</button>
+    </div>
+    <table id="queries-table">
       <thead>
         <tr>
           <th>Time</th>
@@ -449,6 +584,218 @@
     const stripDot = s => String(s).replace(/\.$/, '');
 
     function setTbody(id, html) { $(id).innerHTML = html; }
+
+    // ── Collapsible panels ────────────────────────────────────
+    // Only the three panels that own a dedicated /api/* fetch are collapsible,
+    // so collapsing one also skips its poll (the stat cards, Top Clients, and
+    // Sources all ride the single /api/stats call, so hiding them saves nothing).
+    // The collapsed set persists per panel in localStorage, keyed by the body id.
+    const COLLAPSE_KEY = 'shole.collapsed';
+    let collapsed = {};
+    try { collapsed = JSON.parse(localStorage.getItem(COLLAPSE_KEY)) || {}; } catch (e) {}
+    const isCollapsed = id => !!collapsed[id];
+
+    function applyCollapsed(id) {
+      const on = !!collapsed[id];
+      const body = $(id);
+      if (body) body.hidden = on;
+      const btn = document.querySelector(`[data-collapse="${id}"]`);
+      if (btn) {
+        btn.classList.toggle('collapsed', on);
+        btn.setAttribute('aria-expanded', String(!on));
+        btn.title = on ? 'Expand' : 'Collapse';
+      }
+    }
+
+    function refreshPanel(id) {
+      // Refetch just the just-expanded panel so it fills immediately instead of
+      // waiting for the next 3 s tick.
+      if (id === 'history-body') refreshHistory();
+      else refresh();
+    }
+
+    function togglePanel(id) {
+      collapsed[id] = !collapsed[id];
+      try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsed)); } catch (e) {}
+      applyCollapsed(id);
+      if (!collapsed[id]) refreshPanel(id);
+    }
+
+    // ── Query-volume chart ────────────────────────────────────
+    let historyWindow = '24h';
+    let historySeries = [];
+    let historyBucketSecs = 3600;
+    // The effective query-log mode the series reflects: 'all', 'blocked',
+    // 'none', or 'off' (query_db unset). The graph draws itself honestly from it:
+    // both lines for 'all', a single blocked line for 'blocked', an empty state
+    // for 'none'/'off'. This is why the graph can differ from the stat cards,
+    // which count every query from the in-memory counter regardless of logging.
+    let historyLogging = 'off';
+
+    // hexA turns a #rrggbb color (read from the theme CSS variables) into an
+    // rgba() string, matching how the rest of the sheet writes translucent fills.
+    function hexA(hex, a) {
+      const h = hex.replace('#', '');
+      const r = parseInt(h.substring(0, 2), 16);
+      const g = parseInt(h.substring(2, 4), 16);
+      const b = parseInt(h.substring(4, 6), 16);
+      return `rgba(${r},${g},${b},${a})`;
+    }
+
+    async function refreshHistory() {
+      if (isCollapsed('history-body')) return;
+      try {
+        const data = await fetch(`/api/history?window=${historyWindow}&bucket=1h`).then(r => r.json());
+        historySeries = data.series || [];
+        historyBucketSecs = data.bucket || 3600;
+        historyLogging = data.logging || 'off';
+        drawHistory();
+      } catch (e) { console.error('history fetch failed:', e); }
+    }
+
+    // Layout paddings shared by the drawing and the hover hit-test.
+    const CHART_PAD = { l: 44, r: 12, t: 12, b: 24 };
+
+    function drawHistory() {
+      const canvas = $('history-canvas');
+      const empty = $('history-empty');
+      const series = historySeries;
+      const mode = historyLogging;
+
+      // Label the graph honestly for the mode: when only blocked queries are
+      // logged, hide the Total swatch and note it, so the single line is not
+      // read as total traffic.
+      const blockedOnly = mode === 'blocked';
+      $('legend-total').hidden = blockedOnly;
+      $('history-note').textContent = blockedOnly ? 'blocked queries only (log_queries: blocked)' : '';
+
+      // No data source for a series: query logging is off (query_db unset, mode
+      // "off") or set to "none". Show an empty state with the reason instead of
+      // a misleading flat line. ("all"/"blocked" with no traffic yet still draw
+      // a real zero-filled series, a flat line at the baseline.)
+      if (mode === 'off' || mode === 'none' || !series.length) {
+        canvas.hidden = true;
+        empty.hidden = false;
+        empty.textContent = mode === 'none'
+          ? 'Query logging is off (log_queries: none).'
+          : 'No query history. Make sure that query_db is set in config.yaml';
+        return;
+      }
+      canvas.hidden = false;
+      empty.hidden = true;
+
+      const wrap = canvas.parentElement;
+      const dpr = window.devicePixelRatio || 1;
+      const cssW = wrap.clientWidth, cssH = wrap.clientHeight;
+      canvas.width = Math.round(cssW * dpr);
+      canvas.height = Math.round(cssH * dpr);
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, cssW, cssH);
+
+      const css = getComputedStyle(document.documentElement);
+      const color = (name, fallback) => (css.getPropertyValue(name).trim() || fallback);
+      const red = color('--red', '#f87171');
+      const violet = color('--violet', '#c4b5fd');
+      const muted = color('--muted', '#64748b');
+      const border = color('--border', '#252836');
+
+      const { l: padL, r: padR, t: padT, b: padB } = CHART_PAD;
+      const plotW = cssW - padL - padR, plotH = cssH - padT - padB;
+      const n = series.length;
+
+      // Under "blocked" the log holds only blocked rows (total == blocked), so
+      // draw the blocked line alone and scale to it; under "all" the total line
+      // is the envelope, so scale to total.
+      const drawTotal = mode === 'all';
+      const maxKey = drawTotal ? 'total' : 'blocked';
+      let max = 0;
+      for (const b of series) if (b[maxKey] > max) max = b[maxKey];
+      if (max < 1) max = 1; // avoid divide-by-zero; a flat idle line sits at 0
+
+      const x = i => padL + (n === 1 ? plotW / 2 : plotW * i / (n - 1));
+      const y = v => padT + plotH * (1 - v / max);
+
+      // Baseline + max gridline with y labels.
+      ctx.font = '10px system-ui';
+      ctx.textBaseline = 'middle';
+      ctx.strokeStyle = border;
+      ctx.lineWidth = 1;
+      ctx.fillStyle = muted;
+      ctx.textAlign = 'right';
+      for (const gv of [0, max]) {
+        const gy = y(gv);
+        ctx.beginPath();
+        ctx.moveTo(padL, gy);
+        ctx.lineTo(padL + plotW, gy);
+        ctx.stroke();
+        ctx.fillText(fmt(gv), padL - 6, gy);
+      }
+
+      const drawSeries = (key, stroke, fill) => {
+        ctx.beginPath();
+        ctx.moveTo(x(0), y(0));
+        for (let i = 0; i < n; i++) ctx.lineTo(x(i), y(series[i][key]));
+        ctx.lineTo(x(n - 1), y(0));
+        ctx.closePath();
+        ctx.fillStyle = fill;
+        ctx.fill();
+        ctx.beginPath();
+        for (let i = 0; i < n; i++) {
+          const px = x(i), py = y(series[i][key]);
+          i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+        }
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      };
+      if (drawTotal) drawSeries('total', violet, hexA(violet, 0.12));
+      drawSeries('blocked', red, hexA(red, 0.16));
+
+      // A few thinned x-axis time labels.
+      ctx.fillStyle = muted;
+      ctx.textBaseline = 'top';
+      ctx.textAlign = 'center';
+      const labels = Math.min(6, n);
+      for (let k = 0; k < labels; k++) {
+        const i = labels === 1 ? 0 : Math.round(k * (n - 1) / (labels - 1));
+        const d = new Date(series[i].start * 1000);
+        const lbl = historyWindow === '24h'
+          ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+        ctx.fillText(lbl, x(i), padT + plotH + 6);
+      }
+    }
+
+    function setupHistoryHover() {
+      const canvas = $('history-canvas');
+      const tip = $('history-tip');
+      canvas.addEventListener('mousemove', ev => {
+        const series = historySeries;
+        const n = series.length;
+        if (!n) { tip.hidden = true; return; }
+        const rect = canvas.getBoundingClientRect();
+        const plotW = rect.width - CHART_PAD.l - CHART_PAD.r;
+        const mx = ev.clientX - rect.left;
+        let i = n === 1 ? 0 : Math.round((mx - CHART_PAD.l) / (plotW / (n - 1)));
+        i = Math.max(0, Math.min(n - 1, i));
+        const b = series[i];
+        const d = new Date(b.start * 1000);
+        const when = historyWindow === '24h'
+          ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          : d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit' });
+        const totalLine = historyLogging === 'blocked' ? '' : `<br>total ${fmt(b.total)}`;
+        tip.innerHTML = `<strong>${when}</strong>${totalLine}`
+          + `<br><span style="color:var(--red)">blocked ${fmt(b.blocked)}</span>`;
+        tip.hidden = false;
+        const wrapW = canvas.parentElement.clientWidth;
+        let left = mx + 12;
+        if (left + tip.offsetWidth + 8 > wrapW) left = mx - tip.offsetWidth - 12;
+        tip.style.left = Math.max(0, left) + 'px';
+        tip.style.top = (ev.clientY - rect.top + 8) + 'px';
+      });
+      canvas.addEventListener('mouseleave', () => { tip.hidden = true; });
+    }
 
     // Render the per-source blocklist health from /api/stats. A source is
     // STALE when it is served from its on-disk cache after a failed fetch, or
@@ -495,7 +842,7 @@
     async function refreshTopDomainsAllTime() {
       try {
         const { domains } = await fetch('/api/top-blocked?limit=10').then(r => r.json());
-        renderTopDomains(domains || [], 'No blocked queries recorded. Ensure query_db is set in config.yaml');
+        renderTopDomains(domains || [], 'No blocked queries recorded. Make sure that query_db is set in config.yaml');
       } catch (e) { console.error('top-blocked fetch failed:', e); }
     }
 
@@ -510,10 +857,12 @@
         $('stat-cache').textContent = s.cache_hit_pct.toFixed(1) + '%';
         $('stat-blocklist').textContent = fmt(s.blocklist_size);
 
-        if (domainsMode === 'all') {
-          await refreshTopDomainsAllTime();
-        } else {
-          renderTopDomains(s.top_domains || [], 'No blocked queries yet');
+        if (!isCollapsed('domains-table')) {
+          if (domainsMode === 'all') {
+            await refreshTopDomainsAllTime();
+          } else {
+            renderTopDomains(s.top_domains || [], 'No blocked queries yet');
+          }
         }
 
         const clients = s.top_clients || [];
@@ -527,6 +876,9 @@
         renderSources(s.sources || []);
       } catch (e) { console.error('stats fetch failed:', e); }
 
+      refreshHistory();
+
+      if (isCollapsed('queries-table')) return;
       try {
         const { queries } = await fetch('/api/queries?limit=50').then(r => r.json());
         setTbody('queries', (queries || []).length
@@ -542,7 +894,7 @@
               <td>${badge}</td>
             </tr>`;
           }).join('')
-          : '<tr><td colspan="4" class="empty">No queries logged. Ensure query_db is set in config.yaml</td></tr>');
+          : '<tr><td colspan="4" class="empty">No queries logged. Make sure that query_db is set in config.yaml</td></tr>');
       } catch (e) { console.error('queries fetch failed:', e); }
     }
 
@@ -626,6 +978,23 @@
         refresh();
       }
     });
+
+    // Query-volume 24h / 7d window toggle.
+    $('history-window').addEventListener('click', e => {
+      const btn = e.target.closest('button[data-window]');
+      if (!btn || btn.dataset.window === historyWindow) return;
+      historyWindow = btn.dataset.window;
+      for (const b of $('history-window').children) {
+        b.classList.toggle('active', b.dataset.window === historyWindow);
+      }
+      refreshHistory();
+    });
+
+    // Restore collapsed panels, wire the chart hover, and keep the canvas crisp
+    // on resize, before the first poll so the fetch guards see the right state.
+    ['history-body', 'domains-table', 'queries-table'].forEach(applyCollapsed);
+    setupHistoryHover();
+    window.addEventListener('resize', drawHistory);
 
     setInterval(refresh, 3000);
     refresh();

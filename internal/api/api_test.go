@@ -372,6 +372,198 @@ func TestTopBlockedEndpoint_NoDBReturnsEmpty(t *testing.T) {
 	}
 }
 
+// historyResponse mirrors the JSON shape returned by /api/history.
+type historyResponse struct {
+	Window  int64             `json:"window"`
+	Bucket  int64             `json:"bucket"`
+	Logging string            `json:"logging"`
+	Series  []querylog.Bucket `json:"series"`
+}
+
+func TestHistoryEndpoint_WithRealDB(t *testing.T) {
+	// Wire a real DBLogger so the s.db.History branch runs end-to-end and the
+	// current bucket reflects the logged queries.
+	dbPath := filepath.Join(t.TempDir(), "q.db")
+	db, err := querylog.NewDBLogger(dbPath, "all", 50*time.Millisecond, 0)
+	if err != nil {
+		t.Fatalf("NewDBLogger: %v", err)
+	}
+	defer db.Close()
+
+	db.Log("1.1.1.1", "ads.com.", true)
+	db.Log("1.1.1.1", "ads.com.", true)
+	db.Log("1.1.1.1", "allowed.com.", false)
+	waitForRows(t, db, 3)
+
+	store := blocklist.NewStore()
+	s := New(stats.New(), db, store, nil, func() bool { return true })
+	srv := httptest.NewServer(s.handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/history?window=24h&bucket=1h")
+	if err != nil {
+		t.Fatalf("GET /api/history: %v", err)
+	}
+	defer resp.Body.Close()
+	body := decode[historyResponse](t, resp.Body)
+
+	if body.Window != 86400 {
+		t.Errorf("window = %d, want 86400", body.Window)
+	}
+	if body.Bucket != 3600 {
+		t.Errorf("bucket = %d, want 3600", body.Bucket)
+	}
+	if body.Logging != "all" {
+		t.Errorf("logging = %q, want \"all\"", body.Logging)
+	}
+	if len(body.Series) != 24 {
+		t.Fatalf("series length = %d, want 24", len(body.Series))
+	}
+	// All three rows land in the current (last) bucket.
+	cur := body.Series[len(body.Series)-1]
+	if cur.Total != 3 || cur.Blocked != 2 {
+		t.Errorf("current bucket = {total %d, blocked %d}, want {3, 2}", cur.Total, cur.Blocked)
+	}
+}
+
+func TestHistoryEndpoint_BlockedModeReportsLogging(t *testing.T) {
+	// Under log_queries="blocked" the DB stores only blocked rows, so the series
+	// has total == blocked and the endpoint reports logging="blocked" so the UI
+	// can draw a single labeled line instead of a misleading total.
+	dbPath := filepath.Join(t.TempDir(), "q.db")
+	db, err := querylog.NewDBLogger(dbPath, "blocked", 50*time.Millisecond, 0)
+	if err != nil {
+		t.Fatalf("NewDBLogger: %v", err)
+	}
+	defer db.Close()
+
+	db.Log("1.1.1.1", "ads.com.", true)
+	db.Log("1.1.1.1", "allowed.com.", false) // dropped: not logged under "blocked"
+	waitForRows(t, db, 1)
+
+	store := blocklist.NewStore()
+	s := New(stats.New(), db, store, nil, func() bool { return true })
+	srv := httptest.NewServer(s.handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/history?window=24h&bucket=1h")
+	if err != nil {
+		t.Fatalf("GET /api/history: %v", err)
+	}
+	defer resp.Body.Close()
+	body := decode[historyResponse](t, resp.Body)
+
+	if body.Logging != "blocked" {
+		t.Errorf("logging = %q, want \"blocked\"", body.Logging)
+	}
+	cur := body.Series[len(body.Series)-1]
+	if cur.Total != 1 || cur.Blocked != 1 {
+		t.Errorf("current bucket = {total %d, blocked %d}, want {1, 1} (allowed not logged)", cur.Total, cur.Blocked)
+	}
+}
+
+func TestHistoryEndpoint_NoneModeReportsLogging(t *testing.T) {
+	// query_db is set but log_queries="none", so the DB exists (s.db != nil) yet
+	// holds no rows. The endpoint reports logging="none" so the UI shows an empty
+	// state rather than a flat zero line that looks like zero traffic.
+	dbPath := filepath.Join(t.TempDir(), "q.db")
+	db, err := querylog.NewDBLogger(dbPath, "none", 50*time.Millisecond, 0)
+	if err != nil {
+		t.Fatalf("NewDBLogger: %v", err)
+	}
+	defer db.Close()
+
+	store := blocklist.NewStore()
+	s := New(stats.New(), db, store, nil, func() bool { return true })
+	srv := httptest.NewServer(s.handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/history?window=24h&bucket=1h")
+	if err != nil {
+		t.Fatalf("GET /api/history: %v", err)
+	}
+	defer resp.Body.Close()
+	body := decode[historyResponse](t, resp.Body)
+
+	if body.Logging != "none" {
+		t.Errorf("logging = %q, want \"none\"", body.Logging)
+	}
+	if len(body.Series) != 24 {
+		t.Fatalf("series length = %d, want 24 (dense zero series)", len(body.Series))
+	}
+	for i, b := range body.Series {
+		if b.Total != 0 || b.Blocked != 0 {
+			t.Errorf("bucket %d = {total %d, blocked %d}, want zero", i, b.Total, b.Blocked)
+		}
+	}
+}
+
+func TestHistoryEndpoint_NoDBReturnsEmpty(t *testing.T) {
+	// With query logging disabled (db == nil) the endpoint must return an empty
+	// series and 200, so the dashboard graph shows an empty panel, not a failure.
+	_, srv := newTestServer(t, nil) // newTestServer passes db == nil
+	resp, err := http.Get(srv.URL + "/api/history")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	body := decode[historyResponse](t, resp.Body)
+	if body.Logging != "off" {
+		t.Errorf("logging = %q, want \"off\" (query_db unset)", body.Logging)
+	}
+	if body.Series == nil {
+		t.Error("Series is null, want [] (empty non-nil slice)")
+	}
+	if len(body.Series) != 0 {
+		t.Errorf("got %d buckets, want 0", len(body.Series))
+	}
+}
+
+func TestParseHistoryParams(t *testing.T) {
+	// The ?window=/?bucket= parameters are defaulted for absent/malformed values,
+	// clamped to sane bounds, and the bucket is widened so a crafted request
+	// cannot ask for millions of buckets.
+	cases := []struct {
+		name       string
+		query      string
+		wantWindow time.Duration
+		wantBucket time.Duration
+	}{
+		{"defaults", "", defaultHistoryWindow, defaultHistoryBucket},
+		{"garbage", "window=nope&bucket=nope", defaultHistoryWindow, defaultHistoryBucket},
+		{"non-positive", "window=0&bucket=-1h", defaultHistoryWindow, defaultHistoryBucket},
+		{"day suffix", "window=7d&bucket=1h", 7 * 24 * time.Hour, time.Hour},
+		{"window over max clamps", "window=90d&bucket=1h", maxHistoryWindow, time.Hour},
+		{"bucket under min clamps", "window=1h&bucket=1s", time.Hour, minHistoryBucket},
+		{"bucket over window clamps", "window=30m&bucket=2h", 30 * time.Minute, 30 * time.Minute},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/api/history?"+tc.query, nil)
+			w, b := parseHistoryParams(r)
+			if w != tc.wantWindow {
+				t.Errorf("window = %s, want %s", w, tc.wantWindow)
+			}
+			if b != tc.wantBucket {
+				t.Errorf("bucket = %s, want %s", b, tc.wantBucket)
+			}
+		})
+	}
+}
+
+func TestParseHistoryParams_BucketCountCapped(t *testing.T) {
+	// window=7d&bucket=1s would be 604800 buckets; the cap must widen the bucket
+	// so the resulting count never exceeds maxHistoryBuckets.
+	r := httptest.NewRequest(http.MethodGet, "/api/history?window=7d&bucket=1s", nil)
+	window, bucket := parseHistoryParams(r)
+	if n := window / bucket; n > maxHistoryBuckets {
+		t.Errorf("bucket count = %d, want <= %d", n, maxHistoryBuckets)
+	}
+}
+
 func TestQueriesEndpoint_IgnoresBadLimit(t *testing.T) {
 	// A non-numeric ?limit= must fall through to the default.
 	_, srv := newTestServer(t, nil)

@@ -76,13 +76,13 @@ fi
 # wrong file from being run and gives a clearer swapped-argument message.
 if command -v file >/dev/null 2>&1; then
   if file -b "$CONFIG_SRC" | grep -qi 'ELF'; then
-    echo "error: config '$CONFIG_SRC' looks like a binary; did you swap the arguments?" >&2
+    echo "error: config '$CONFIG_SRC' looks like a binary. Did you swap the arguments?" >&2
     echo "correct order: sudo bash install-linux.sh [--free-port-53] <s-hole-binary> <config.yaml>" >&2
     exit 1
   fi
   bin_desc=$(file -b "$BINARY")
   if ! grep -qi 'ELF' <<<"$bin_desc"; then
-    echo "error: binary '$BINARY' is not an ELF executable; did you swap the arguments?" >&2
+    echo "error: binary '$BINARY' is not an ELF executable. Did you swap the arguments?" >&2
     echo "correct order: sudo bash install-linux.sh [--free-port-53] <s-hole-binary> <config.yaml>" >&2
     exit 1
   fi
@@ -173,7 +173,7 @@ echo "==> validating config"
 # check below would then have to diagnose from the journal). Same load-and-
 # validate sequence the service runs at startup (ROADMAP #27).
 if ! "$INSTALL_BIN" -check-config -config "$CONFIG_DIR/config.yaml"; then
-  echo "error: config validation failed; not starting the service" >&2
+  echo "error: config validation failed, service not started" >&2
   echo "       fix $CONFIG_DIR/config.yaml and re-run the installer" >&2
   exit 1
 fi
@@ -274,7 +274,7 @@ echo "┌─ Installed build ─────────────────
 if [[ -n "$installed_build" ]]; then
   printf '%s\n' "$installed_build" | sed 's/^/│  /'
 else
-  echo "│  (could not read version; is this an s-hole binary?)"
+  echo "│  (could not read version. Is this an s-hole binary?)"
 fi
 echo "└─────────────────────────────────────────────────────────"
 
@@ -290,8 +290,8 @@ for ip in $(hostname -I); do
   fi
 done
 if ! $api_on_lan; then
-  echo "│  Admin UI   → http://127.0.0.1:${api_port} (this machine only;"
-  echo "│               set api_listen: \"0.0.0.0:${api_port}\" for LAN access)"
+  echo "│  Admin UI   → http://127.0.0.1:${api_port} (this machine only."
+  echo "│               Set api_listen: \"0.0.0.0:${api_port}\" for LAN access)"
 fi
 echo "└─────────────────────────────────────────────────────────"
 echo "Point your router's DHCP DNS field at the address above."

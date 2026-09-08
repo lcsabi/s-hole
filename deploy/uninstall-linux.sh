@@ -59,7 +59,7 @@ echo "  - delete $CONFIG_DIR (config)"
 if $PURGE; then
   echo "  - delete $DATA_DIR (blocklist caches + query log)   [--purge]"
 else
-  echo "  - keep   $DATA_DIR (blocklist caches + query log; pass --purge to remove)"
+  echo "  - keep   $DATA_DIR (blocklist caches and query log. Pass --purge to remove)"
 fi
 echo "  - remove the s-hole system user and group"
 if [[ -f "$RESOLVED_DROPIN" ]]; then
@@ -155,7 +155,7 @@ if [[ ${#removed[@]} -gt 0 ]]; then
   echo "│  Removed:"
   for item in "${removed[@]}"; do echo "│    - $item"; done
 else
-  echo "│  Nothing to remove; s-hole did not appear to be installed."
+  echo "│  Nothing to remove. s-hole did not appear to be installed."
 fi
 if [[ ${#kept[@]} -gt 0 ]]; then
   echo "│  Kept:"

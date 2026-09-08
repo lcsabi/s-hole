@@ -241,8 +241,17 @@ func (c *Counter) topN(target topNTarget, n int) []Entry {
 	}
 	c.mu.Unlock()
 
+	// Sort by count descending, then by name ascending. The name tie-break is
+	// required, not cosmetic: entries is built from a Go map, whose iteration
+	// order is randomized, so a count-only sort orders equal-count entries
+	// differently on every call and the dashboard's "Since start" list reshuffles
+	// ties on every poll (b/056). sort.Slice is not stable either, so the
+	// secondary key, not input order, is what pins the order.
 	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Count > entries[j].Count
+		if entries[i].Count != entries[j].Count {
+			return entries[i].Count > entries[j].Count
+		}
+		return entries[i].Name < entries[j].Name
 	})
 	if n > 0 && len(entries) > n {
 		entries = entries[:n]

@@ -15,6 +15,7 @@
 //	GET    /api/check            block decision for ?domain=NAME (diagnostic; no stats/log side effects)
 //	GET    /api/queries          recent rows from SQLite (?limit=N, default 50, max 1000)
 //	GET    /api/top-blocked      all-time most-blocked domains from SQLite (?limit=N, default 50, max 1000)
+//	GET    /api/history          per-bucket query volume from SQLite (?window=24h&bucket=1h; bucket count capped at 1000)
 //	GET    /api/whitelist        runtime whitelist (sorted)
 //	POST   /api/whitelist        add a domain (ValidDomain-gated, 64 KiB cap)
 //	DELETE /api/whitelist        remove a domain
@@ -172,6 +173,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /api/check", s.handleCheck)
 	mux.HandleFunc("GET /api/queries", s.handleQueries)
 	mux.HandleFunc("GET /api/top-blocked", s.handleTopBlocked)
+	mux.HandleFunc("GET /api/history", s.handleHistory)
 	mux.HandleFunc("GET /api/whitelist", s.handleWhitelistList)
 	mux.HandleFunc("POST /api/whitelist", s.handleWhitelistAdd)
 	mux.HandleFunc("DELETE /api/whitelist", s.handleWhitelistRemove)
@@ -303,6 +305,119 @@ func (s *Server) handleTopBlocked(w http.ResponseWriter, r *http.Request) {
 		rows = []querylog.Entry{}
 	}
 	writeJSON(w, response{Domains: rows})
+}
+
+const (
+	defaultHistoryWindow = 24 * time.Hour
+	defaultHistoryBucket = time.Hour
+	minHistoryBucket     = time.Minute
+	maxHistoryWindow     = 30 * 24 * time.Hour
+	// maxHistoryBuckets caps the series length (and the SQL group count) so a
+	// crafted request such as window=7d&bucket=1s cannot ask for 600k buckets.
+	// Mirrors maxQueriesLimit.
+	maxHistoryBuckets = 1000
+)
+
+// parseHistoryParams extracts and clamps the ?window= and ?bucket= duration
+// parameters for the history series. Absent, malformed, or non-positive values
+// fall back to the defaults. The window is clamped to [minHistoryBucket,
+// maxHistoryWindow] and the bucket to [minHistoryBucket, window]; the bucket is
+// then widened if needed so the bucket count never exceeds maxHistoryBuckets.
+func parseHistoryParams(r *http.Request) (window, bucket time.Duration) {
+	window = parseDurationParam(r, "window", defaultHistoryWindow)
+	bucket = parseDurationParam(r, "bucket", defaultHistoryBucket)
+
+	if window > maxHistoryWindow {
+		window = maxHistoryWindow
+	}
+	if window < minHistoryBucket {
+		window = minHistoryBucket
+	}
+	if bucket < minHistoryBucket {
+		bucket = minHistoryBucket
+	}
+	if bucket > window {
+		bucket = window
+	}
+	// Widen the bucket if the count would exceed the cap. Round up to a whole
+	// number of seconds so the SQL integer division stays exact.
+	if window/bucket > maxHistoryBuckets {
+		secs := (int64(window/time.Second) + maxHistoryBuckets - 1) / maxHistoryBuckets
+		bucket = time.Duration(secs) * time.Second
+	}
+	return window, bucket
+}
+
+// parseDurationParam reads a duration query parameter, returning def for an
+// absent, malformed, or non-positive value.
+func parseDurationParam(r *http.Request, name string, def time.Duration) time.Duration {
+	v := r.URL.Query().Get(name)
+	if v == "" {
+		return def
+	}
+	d, err := parseFlexDuration(v)
+	if err != nil || d <= 0 {
+		return def
+	}
+	return d
+}
+
+// parseFlexDuration extends time.ParseDuration with a whole-day "d" suffix.
+// time.ParseDuration stops at hours, so window=7d would otherwise fail to parse
+// and fall back to the default. Everything else delegates to the standard
+// parser (h/m/s and friends).
+func parseFlexDuration(s string) (time.Duration, error) {
+	if days, ok := strings.CutSuffix(s, "d"); ok {
+		n, err := strconv.Atoi(days)
+		if err != nil {
+			return 0, err
+		}
+		return time.Duration(n) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(s)
+}
+
+// handleHistory serves a query-volume-over-time series from the SQLite query
+// log: per-bucket total and blocked counts over the requested window. When
+// query logging is disabled (s.db == nil) it returns an empty series rather than
+// an error, so the dashboard graph degrades to an empty panel instead of a
+// failure, exactly like /api/queries and /api/top-blocked.
+func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
+	window, bucket := parseHistoryParams(r)
+
+	type response struct {
+		Window int64 `json:"window"` // effective window, seconds
+		Bucket int64 `json:"bucket"` // effective bucket, seconds
+		// Logging is the effective query-log mode the series reflects: "all",
+		// "blocked", "none", or "off" when query_db is unset. The dashboard reads
+		// it to draw the graph honestly (a single blocked line under "blocked", an
+		// empty state under "none"/"off") instead of a misleading total.
+		Logging string            `json:"logging"`
+		Series  []querylog.Bucket `json:"series"`
+	}
+	resp := response{
+		Window:  int64(window / time.Second),
+		Bucket:  int64(bucket / time.Second),
+		Logging: "off",
+		Series:  []querylog.Bucket{},
+	}
+
+	if s.db == nil {
+		writeJSON(w, resp)
+		return
+	}
+	resp.Logging = s.db.LogQueries()
+
+	series, err := s.db.History(r.Context(), window, bucket)
+	if err != nil {
+		logger.Warn("history query failed", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if series != nil {
+		resp.Series = series
+	}
+	writeJSON(w, resp)
 }
 
 func (s *Server) handleWhitelistList(w http.ResponseWriter, _ *http.Request) {

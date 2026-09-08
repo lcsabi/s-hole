@@ -33,7 +33,7 @@ rails.
 | 17 | Per-source blocklist health in `/api/stats` + dashboard | Medium | done (CL 55) |
 | 18 | "Why is this blocked?" diagnostic endpoint (`/api/check`) | Low | done (CL 56) |
 | 19 | Temporary "pause blocking" (timed bypass, auto-resume) | High | not started |
-| 20 | Query-volume-over-time graph on the dashboard | Medium | not started |
+| 20 | Query-volume-over-time graph on the dashboard | Medium | done (CL 70) |
 | 21 | Query-log privacy modes (write-time client anonymization) | Medium | not started |
 | 22 | Client name attribution in the log and dashboard | Medium | not started |
 | 23 | Query-log search / filter | Medium | not started |
@@ -42,6 +42,7 @@ rails.
 | 26 | Grafana dashboard + Prometheus scrape/alert examples | Low | not started |
 | 27 | Install/uninstall robustness hardening (preflight, health check, shellcheck) | Medium | done (CL 66) |
 | 28 | Validate the upstreams at config time (format check + single-upstream note) | Low | not started |
+| 29 | "Cached" line on the query-volume graph (record cache-hit per query) | Medium | not started |
 
 Items 19-26 came out of a 2026-08-24 feature-ideas session. Items 21-24 are a
 dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
@@ -571,31 +572,43 @@ Design decisions to settle in the CL:
 Rated High: a user-visible control that many deployments reach for daily. It
 changes no filtering rules, only whether they apply right now.
 
-## 20. Query-volume-over-time graph
+## 20. Query-volume-over-time graph (done, CL 70)
 
-The dashboard shows current totals but not the shape of the day. Comparable tools
-lead with a queries-over-time graph, and the data already sits in the query DB
+The dashboard showed current totals but not the shape of the day. Comparable tools
+lead with a queries-over-time graph, and the data already sat in the query DB
 with timestamps. A short history turns "current numbers" into "what happened
 today".
 
-`GET /api/history?window=24h&bucket=1h` aggregates total and blocked counts per
-time bucket in SQL. The UI draws it with a small inline canvas, no chart library,
-so the dependency graph and the static `go:embed` UI both stay as they are.
+**Shipped in CL 70:** `GET /api/history?window=24h&bucket=1h` aggregates total and
+blocked counts per time bucket in SQL, and a full-width "Queries over time" panel
+leads the dashboard. The UI draws a two-line canvas chart (total and blocked) with
+a hover tooltip and a 24h / 7d toggle, no chart library, so the dependency graph
+and the static `go:embed` UI both stay as they are.
 
-Design decisions to settle in the CL:
+Design decisions settled in the CL:
 
-- **Bucketing in SQL vs Go.** Group by a time expression in the query, or scan
-  rows and bucket in the handler. SQL grouping keeps the payload small and the
-  handler thin.
-- **Window and bucket bounds.** Which windows to offer (24h, 7d) and how to clamp
-  the bucket count, reusing the `?limit=` clamp pattern so a crafted request
-  cannot ask for millions of buckets.
-- **db-disabled path.** With `query_db` off, return an empty series the way
-  `/api/queries` returns an empty list, so the panel renders empty instead of
-  erroring.
-- **Privacy interaction.** The series is aggregate counts only and needs no client
-  field, so #21 does not affect it. Record this so the two are not read as
-  coupled.
+- **Bucket in SQL, densify in Go.** The grouped query returns one row per
+  non-empty bucket; `History` fills the gaps into a dense zero-filled series so
+  the handler stays thin and the UI never special-cases a missing bucket. Because
+  `ts` is RFC3339 text with an offset, the bucket key is computed from the UTC
+  epoch (`strftime('%s', ts)`), while the `WHERE` cutoff stays an RFC3339 string
+  to reuse `idx_queries_ts` and match the prune path.
+- **Windows and clamp.** A 24h / 7d toggle, both at a constant 1h bucket. The
+  endpoint accepts any `?window=`/`?bucket=` and clamps the bucket *count* (cap
+  1000, mirroring `?limit=`), widening the bucket so a crafted `window=7d&bucket=1s`
+  cannot ask for 600k buckets. A small day-suffix parser accepts `7d`
+  (`time.ParseDuration` stops at hours).
+- **db-disabled path.** With `query_db` off the endpoint returns an empty series,
+  the same degrade-not-fail contract as `/api/queries`, and the panel shows an
+  empty state.
+- **Privacy interaction.** The series is aggregate counts only, no client field,
+  so #21 does not affect it and the two are not coupled.
+- **Collapsible panels (folded in).** The three panels that own a dedicated
+  `/api/*` fetch (Queries over time, Recent Queries, Top Blocked) gained a
+  disclosure arrow; a collapsed panel hides its body and skips its poll, and the
+  state persists in `localStorage`. The stat cards, Top Clients, and Sources ride
+  the shared `/api/stats` call, so collapsing them would save no request and they
+  stay always-open.
 
 Rated Medium: an observability win with high visual value. It changes no filtering
 behavior.
@@ -967,6 +980,72 @@ Rated Low: a guard rail with no filtering behavior change. It turns a silent
 upstream misconfiguration into a startup error (when nothing can forward) or a
 loud warning (when a single entry is wrong), on the same path `-check-config`
 already guards.
+
+## 29. "Cached" line on the query-volume graph
+
+The query-volume graph (#20) draws total and blocked per bucket. The third
+outcome an operator cares about, a cache hit, is not shown, because the query log
+records only whether a query was blocked, not whether it was served from cache.
+Recording a per-query cache-hit flag lets the graph draw a third count line
+(total / blocked / cached) on the same axis, so caching effectiveness over the
+day, and the cache warm-up after a restart, become visible. The hit rate reads
+off the chart as the ratio of the cached line to the total line, with no second
+axis. (Raised in the 2026-09-08 session that built #20.)
+
+This is a cross-cutting change, not a cheap one. It touches the query-log write
+path and schema:
+
+- **Schema.** Add a `cache_hit INTEGER NOT NULL DEFAULT 0` column to the
+  `queries` table (an idempotent `ALTER TABLE ... ADD COLUMN`, matching the
+  `CREATE TABLE IF NOT EXISTS` startup migration style). Existing rows read as
+  not-cached, so the cached line under-reports for buckets written before the
+  upgrade. Document this forward-only behavior the way #21 documents its
+  forward-only masking.
+- **Write path.** The handler already knows the outcome (the `cache.Cache.Get`
+  hit branch). It must carry the cache-hit result into the logger. The
+  `Logger.Log(clientIP, domain, blocked)` signature would grow a field, which
+  ripples through `Multi`, `FileLogger` (including its text `ALLOW`/`BLOCK`
+  format), and `DBLogger`. Prefer passing a small `Record` struct over a fourth
+  positional argument, so the next log field (for example #21's masked client)
+  does not churn the signature again.
+- **Read path.** Extend `DBLogger.History` to also `SUM(cache_hit)` per bucket and
+  add a `Cached` field to `Bucket`; the handler and the canvas then draw a third
+  line. The UI change is small once the data is there.
+
+Design decisions to settle in the CL:
+
+- **What counts as a hit.** A blocked query short-circuits before the cache and a
+  local-PTR answer never reaches it, so both log `cache_hit=0`. Then
+  `total = blocked + cached + forwarded`, a clean decomposition (forwarded is the
+  remainder). Record this so the three lines are not read as overlapping.
+- **Text-log format.** Whether to add a cache-hit marker to the `FileLogger`
+  `ALLOW`/`BLOCK` line. If so, it is a format change; sync anything that quotes it
+  (doc-drift rule).
+- **No new metric.** The cache hit is already a counter (`shole_cache_hits_total`),
+  so this stays API-and-UI only.
+
+**Cache size is deliberately excluded.** It is a gauge that warms to near its cap
+and then sits flat, and the query log has no per-query source for it, so a size
+line would be near-constant and low-signal. The real cache-pressure signal already
+exists as `shole_cache_dropped_total` (CL 54), which is the trigger the cache
+eviction pending-decision watches.
+
+**No hot-path cost.** The cache-hit outcome is already computed on the query path
+(the `cache.Cache.Get` branch) and already counted by `stats.Counter`, so this
+only forwards a boolean that exists. Query logging is already asynchronous and
+drops on a full channel rather than blocking DNS (a pinned invariant), so the flag
+rides the same fan-out: one extra field in the `entry` struct, no new allocation,
+lock, or syscall on the serving goroutine. The `ALTER TABLE` column, the batched
+`INSERT`, and the `SUM(cache_hit)` aggregate all live off the hot path (the
+background writer and the on-demand `/api/history` read). Storage grows by about
+one byte per row on a retention-bounded table. The `BenchmarkHandler_ServeDNS`
+`Cached` sub-benchmark (CL 32) can prove no regression before merge. The cost of
+this item is auditability (a schema migration and the `Logger` signature ripple),
+not speed.
+
+Rated Medium: an observability win that completes the per-query-outcome story on
+the graph. It changes no filtering behavior. It is a write-path and schema change,
+not a UI-only tweak, so it is more involved than #20 was.
 
 ## Pending decisions
 

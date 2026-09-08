@@ -15,6 +15,9 @@
       --accent: #818cf8;
       --red: #f87171;
       --green: #4ade80;
+      /* Total line: a light violet, the visual blend of blocked (red) and
+         allowed (green). */
+      --violet: #c4b5fd;
     }
 
     *,
@@ -339,7 +342,7 @@
       display: inline-block;
     }
 
-    .legend .sw-total { background: var(--accent); }
+    .legend .sw-total { background: var(--violet); }
     .legend .sw-blocked { background: var(--red); }
 
     .hist-note {
@@ -692,8 +695,8 @@
 
       const css = getComputedStyle(document.documentElement);
       const color = (name, fallback) => (css.getPropertyValue(name).trim() || fallback);
-      const accent = color('--accent', '#818cf8');
       const red = color('--red', '#f87171');
+      const violet = color('--violet', '#c4b5fd');
       const muted = color('--muted', '#64748b');
       const border = color('--border', '#252836');
 
@@ -746,7 +749,7 @@
         ctx.lineWidth = 1.5;
         ctx.stroke();
       };
-      if (drawTotal) drawSeries('total', accent, hexA(accent, 0.12));
+      if (drawTotal) drawSeries('total', violet, hexA(violet, 0.12));
       drawSeries('blocked', red, hexA(red, 0.16));
 
       // A few thinned x-axis time labels.

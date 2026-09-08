@@ -10,7 +10,7 @@ becomes public:
 **[github.com/lcsabi/s-hole/security/advisories/new](https://github.com/lcsabi/s-hole/security/advisories/new)**
 
 That route gives the maintainer a private channel and the reporter an
-audit trail; it's the modern equivalent of `security@` and is more
+audit trail. It is the modern equivalent of `security@` and is more
 durable than a personal email address.
 
 Please include in your report:
@@ -40,9 +40,9 @@ In scope:
 Out of scope:
 
 - Issues that depend on the operator running the binary as `root` or
-  exposing the admin API to the public internet; both are explicitly
+  exposing the admin API to the public internet. Both are explicitly
   warned against in `README.md`.
-- Reports against third-party blocklist content; s-hole treats lists as
+- Reports against third-party blocklist content. s-hole treats lists as
   untrusted input but cannot vouch for what they contain.
 - DNS amplification or spoofing on a deployment that ignores the
   "LAN-only" guidance.

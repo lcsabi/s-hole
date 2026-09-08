@@ -145,6 +145,35 @@ func TestCounter_TopDomainsTieOrderStable(t *testing.T) {
 	}
 }
 
+func TestCounter_TopClientsTieOrderStable(t *testing.T) {
+	// b/056: Top Clients shares the topN code path, so equal-count clients must
+	// also hold a stable, deterministic order (client IP ascending) across polls.
+	c := New()
+	// Distinct clients, each seen once, inserted in descending IP order.
+	for _, ip := range []string{"10.0.0.3", "10.0.0.2", "10.0.0.1"} {
+		c.RecordQuery(ip, "example.com.", false)
+	}
+
+	first := c.Snapshot(10).TopClients
+	want := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}
+	if len(first) != len(want) {
+		t.Fatalf("TopClients len = %d, want %d", len(first), len(want))
+	}
+	for i, w := range want {
+		if first[i].Name != w {
+			t.Errorf("TopClients[%d] = %q, want %q (ties ordered by name ascending)", i, first[i].Name, w)
+		}
+	}
+	for iter := 0; iter < 5; iter++ {
+		got := c.Snapshot(10).TopClients
+		for i := range got {
+			if got[i].Name != first[i].Name {
+				t.Fatalf("snapshot %d reshuffled client ties at [%d]: got %q, want %q", iter, i, got[i].Name, first[i].Name)
+			}
+		}
+	}
+}
+
 func TestCounter_TopNLimit(t *testing.T) {
 	c := New()
 	c.RecordQuery("1.1.1.1", "a.com.", true)

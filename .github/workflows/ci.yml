@@ -72,9 +72,13 @@ jobs:
       # The official action installs govulncheck and runs `govulncheck ./...`,
       # failing the job on any known CVE reachable from our code. Kept as its
       # own job so a new advisory surfaces independently of the build/test job.
+      # This job runs on Go 1.26 while the build/test jobs pin 1.25: the action
+      # installs govulncheck@latest, and x/vuln v1.8.0 requires Go >= 1.26 to
+      # build. "1.26" resolves to the newest 1.26 patch, so the scan also sees
+      # the current standard-library fixes.
       - uses: golang/govulncheck-action@v1
         with:
-          go-version-input: "1.25"
+          go-version-input: "1.26"
 
   cross-compile:
     name: cross-compile / ${{ matrix.target.goos }}-${{ matrix.target.goarch }}

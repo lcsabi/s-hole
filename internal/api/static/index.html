@@ -130,6 +130,15 @@
       font-size: 12px;
     }
 
+    /* A small note under a panel header, e.g. the query_privacy caption on
+       Top Clients. */
+    .panel-cap {
+      padding: 8px 16px;
+      font-size: 12px;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+
     /* Segmented toggle (Since start / All time) in a panel header */
     .seg {
       display: inline-flex;
@@ -501,6 +510,7 @@
     </div>
     <div class="panel">
       <div class="panel-hd"><span>Top Clients <span class="count" id="clients-count"></span></span></div>
+      <div class="panel-cap" id="clients-cap" hidden></div>
       <table>
         <thead>
           <tr>
@@ -865,13 +875,32 @@
           }
         }
 
-        const clients = s.top_clients || [];
-        setTbody('top-clients', clients.length
-          ? clients.map(e =>
-            `<tr><td class="mono">${esc(e.name)}</td><td class="muted num">${fmt(e.count)}</td></tr>`
-          ).join('')
-          : '<tr><td colspan="2" class="empty">No queries yet</td></tr>');
-        $('clients-count').textContent = clients.length ? `(${clients.length})` : '';
+        // The Top Clients panel describes itself from the active query_privacy
+        // mode. "drop" stores no client, so the list is meaningless and the
+        // panel says so instead of showing blank rows. "subnet" keeps the list
+        // but notes the entries are subnet-masked. "raw" is the plain list.
+        const privacy = s.query_privacy || 'raw';
+        const cap = $('clients-cap');
+        if (privacy === 'drop') {
+          cap.textContent = 'Client attribution is off (privacy mode: drop).';
+          cap.hidden = false;
+          setTbody('top-clients', '<tr><td colspan="2" class="empty">Clients not recorded</td></tr>');
+          $('clients-count').textContent = '';
+        } else {
+          if (privacy === 'subnet') {
+            cap.textContent = 'Clients are subnet-masked (privacy mode: subnet).';
+            cap.hidden = false;
+          } else {
+            cap.hidden = true;
+          }
+          const clients = s.top_clients || [];
+          setTbody('top-clients', clients.length
+            ? clients.map(e =>
+              `<tr><td class="mono">${esc(e.name)}</td><td class="muted num">${fmt(e.count)}</td></tr>`
+            ).join('')
+            : '<tr><td colspan="2" class="empty">No queries yet</td></tr>');
+          $('clients-count').textContent = clients.length ? `(${clients.length})` : '';
+        }
 
         renderSources(s.sources || []);
       } catch (e) { console.error('stats fetch failed:', e); }

@@ -919,6 +919,31 @@ func TestStatsEndpoint_ReturnsSummary(t *testing.T) {
 	}
 }
 
+func TestStatsEndpoint_EchoesQueryPrivacy(t *testing.T) {
+	// The stats payload echoes the active query_privacy mode so the UI can
+	// describe the client column. An unset mode reads as "raw".
+	s, srv := newTestServer(t, nil)
+
+	get := func() string {
+		resp, err := http.Get(srv.URL + "/api/stats")
+		if err != nil {
+			t.Fatalf("GET /api/stats: %v", err)
+		}
+		defer resp.Body.Close()
+		return decode[struct {
+			QueryPrivacy string `json:"query_privacy"`
+		}](t, resp.Body).QueryPrivacy
+	}
+
+	if got := get(); got != "raw" {
+		t.Errorf("default query_privacy = %q, want raw", got)
+	}
+	s.SetQueryPrivacy("subnet")
+	if got := get(); got != "subnet" {
+		t.Errorf("query_privacy after SetQueryPrivacy = %q, want subnet", got)
+	}
+}
+
 func TestWhitelistEndpoints_RoundTrip(t *testing.T) {
 	_, srv := newTestServer(t, nil)
 

@@ -106,20 +106,23 @@ func isPrivatePTR(qtype uint16, name string) bool {
 // concurrent use; miekg/dns invokes ServeDNS from a separate goroutine
 // per request.
 type Handler struct {
-	store     *blocklist.Store
-	counter   *stats.Counter
-	upstreams []string
-	logger    Logger
-	blockMode string // "zero" or "nxdomain"
-	blockTTL  uint32
-	cache     *cache.Cache // nil when caching is disabled
-	localPTR  bool         // when true, answer RFC 6303 private PTR queries locally
+	store        *blocklist.Store
+	counter      *stats.Counter
+	upstreams    []string
+	logger       Logger
+	blockMode    string // "zero" or "nxdomain"
+	blockTTL     uint32
+	cache        *cache.Cache // nil when caching is disabled
+	localPTR     bool         // when true, answer RFC 6303 private PTR queries locally
+	queryPrivacy string       // "raw", "drop", or "subnet"; how the client IP is stored
 }
 
 // NewHandler wires together all dependencies needed to answer a query.
 // c may be nil to disable response caching entirely (the handler then
 // always forwards on a cache miss). localPTR enables authoritative NXDOMAIN
 // replies for RFC 6303 private-range PTR queries; see privateReverseZones.
+// queryPrivacy selects how the client IP is stored ("raw", "drop", or
+// "subnet"); see maskClientIP.
 func NewHandler(
 	store *blocklist.Store,
 	counter *stats.Counter,
@@ -129,16 +132,18 @@ func NewHandler(
 	blockTTL uint32,
 	c *cache.Cache,
 	localPTR bool,
+	queryPrivacy string,
 ) *Handler {
 	return &Handler{
-		store:     store,
-		counter:   counter,
-		upstreams: upstreams,
-		logger:    logger,
-		blockMode: blockMode,
-		blockTTL:  blockTTL,
-		cache:     c,
-		localPTR:  localPTR,
+		store:        store,
+		counter:      counter,
+		upstreams:    upstreams,
+		logger:       logger,
+		blockMode:    blockMode,
+		blockTTL:     blockTTL,
+		cache:        c,
+		localPTR:     localPTR,
+		queryPrivacy: queryPrivacy,
 	}
 }
 
@@ -153,7 +158,10 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 
 	q := req.Question[0]
 	domain := q.Name // already has trailing dot
-	clientIP := clientAddr(w)
+	// Mask the client once, at this single write-time choke point, so the
+	// stats counter (Top Clients) and every query-log sink downstream see the
+	// same value. See maskClientIP and the query_privacy config setting.
+	clientIP := maskClientIP(clientAddr(w), h.queryPrivacy)
 
 	// RFC 6303: answer PTR queries for private-range zones (10/8, 172.16/12,
 	// 192.168/16, fc00::/7, fe80::/10) locally with authoritative NXDOMAIN.
@@ -289,5 +297,35 @@ func clientAddr(w dns.ResponseWriter) string {
 			return a.String()
 		}
 		return host
+	}
+}
+
+// maskClientIP applies the query_privacy transform to a client address before
+// it is recorded. It runs on the query path, so it does no work in the default
+// "raw" mode. The modes are:
+//
+//	raw    return the address unchanged (the default and any unknown mode).
+//	drop   return "" so no client identity is stored.
+//	subnet zero the host bits: IPv4 to /24, IPv6 to /64, keeping the subnet as
+//	       a meaningful group on segmented or VLAN networks.
+//
+// A value that net.ParseIP cannot read (for example the "unknown" sentinel from
+// clientAddr) is returned unchanged under subnet, so masking never invents an
+// address.
+func maskClientIP(ip, mode string) string {
+	switch mode {
+	case "drop":
+		return ""
+	case "subnet":
+		parsed := net.ParseIP(ip)
+		if parsed == nil {
+			return ip
+		}
+		if v4 := parsed.To4(); v4 != nil {
+			return v4.Mask(net.CIDRMask(24, 32)).String()
+		}
+		return parsed.Mask(net.CIDRMask(64, 128)).String()
+	default:
+		return ip
 	}
 }

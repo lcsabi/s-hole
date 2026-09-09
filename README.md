@@ -186,6 +186,7 @@ All configuration lives in `config.yaml`. Every field has a safe default. An emp
 | `block_ttl` | `300` | TTL (seconds) advertised on blocked replies; `0` tells clients not to cache them |
 | `log_file` | stdout | Path to the plain-text query log |
 | `log_queries` | `all` | Which queries to write to logs: `all`, `blocked`, or `none` |
+| `query_privacy` | `raw` | How the client IP is stored: `raw` (as-is), `drop` (store no client), or `subnet` (mask to IPv4 /24 or IPv6 /64). Masked once at write time, so the logs and Top Clients agree; forward-only. Use `drop` on a flat LAN, `subnet` on segmented/VLAN networks |
 | `query_db` | _(off)_ | Path to the SQLite query log database; set a path to enable, empty disables it |
 | `db_flush_interval` | `30s` | How often buffered queries are committed to SQLite |
 | `cache_size` | `2000` | Maximum DNS responses held in the in-memory cache (0 to disable) |
@@ -216,6 +217,7 @@ For container deployments where editing `config.yaml` requires a re-bind-mount, 
 | `S_HOLE_API_LISTEN` | `api_listen` |
 | `S_HOLE_LOG_FILE` | `log_file` |
 | `S_HOLE_LOG_QUERIES` | `log_queries` |
+| `S_HOLE_QUERY_PRIVACY` | `query_privacy` |
 | `S_HOLE_QUERY_DB` | `query_db` |
 | `S_HOLE_CACHE_DIR` | `cache_dir` |
 | `S_HOLE_BLOCK_MODE` | `block_mode` |
@@ -246,7 +248,7 @@ The admin web UI is served at **`http://127.0.0.1:8080`** by default. This is lo
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/stats` | Live stats: uptime, query totals, block rate, cache hit rate, blocklist size, per-source blocklist health, top domains/clients |
+| `GET` | `/api/stats` | Live stats: uptime, query totals, block rate, cache hit rate, blocklist size, per-source blocklist health, top domains/clients, and the active `query_privacy` mode |
 | `GET` | `/api/check?domain=NAME` | Why a domain is blocked: the decision plus the full suffix walk (matched block entry, overriding whitelist entry). Diagnostic; changes no state and does not count in stats |
 | `GET` | `/api/queries?limit=N` | Last N queries from SQLite, newest first (default: 50, max: 1000) |
 | `GET` | `/api/top-blocked?limit=N` | All-time most-blocked domains from SQLite (default: 50, max: 1000); empty when `query_db` is unset |
@@ -318,7 +320,7 @@ sudo systemctl kill -s HUP s-hole       # via systemd
 sudo kill -HUP "$(pidof s-hole)"        # or directly
 ```
 
-SIGHUP is honored on every non-Windows platform. It runs the same single-flight refresh as `POST /api/reload`.
+SIGHUP is honored on every non-Windows platform. It runs the same single-flight refresh as `POST /api/reload`. The refresh re-downloads the blocklists from the URLs that s-hole read at startup. It does not re-read `config.yaml`. To apply a change to any config value, restart the service.
 
 The systemd unit runs with `CAP_NET_BIND_SERVICE` so it can bind port 53 without running as root. `ProtectSystem=strict` and `NoNewPrivileges` are set for defence in depth.
 
@@ -326,7 +328,7 @@ The systemd unit runs with `CAP_NET_BIND_SERVICE` so it can bind port 53 without
 
 A few things to know once s-hole runs as a systemd service:
 
-- **Config is *copied*, not live-linked.** The installer copies your config to `/etc/s-hole/config.yaml` on the **first** install only. It never overwrites an existing one (it prints `config already exists, skipping`), and re-running the installer or `scp`-ing a new file to your home directory does **not** update it. To apply a config change on an installed host, edit `/etc/s-hole/config.yaml` directly (or `sudo cp your-config.yaml /etc/s-hole/config.yaml`), then `sudo systemctl restart s-hole`. To catch a mistake before the restart, validate the file first with `s-hole -check-config -config /etc/s-hole/config.yaml`, which loads and validates it exactly the way startup does and exits non-zero on any error.
+- **Config is *copied*, not live-linked.** The installer copies your config to `/etc/s-hole/config.yaml` on the **first** install only. It never overwrites an existing one (it prints `config already exists, skipping`), and re-running the installer or `scp`-ing a new file to your home directory does **not** update it. To apply a config change on an installed host, edit `/etc/s-hole/config.yaml` directly (or `sudo cp your-config.yaml /etc/s-hole/config.yaml`), then `sudo systemctl restart s-hole`. To catch a mistake before the restart, validate the file first with `s-hole -check-config -config /etc/s-hole/config.yaml`, which loads and validates it exactly the way startup does and exits non-zero on any error. A blocklist reload (`POST /api/reload` or SIGHUP) does not apply a config edit. It re-downloads from the URLs read at startup, so a changed blocklist URL also needs a restart to take effect.
 - **`S_HOLE_*` environment overrides do not reach the service.** The systemd unit runs with a clean environment, so shell env vars only take effect when you run the binary directly. On the service, put values in `/etc/s-hole/config.yaml` (or add `Environment=` lines to the unit).
 - **`query_db` and `cache_dir` are relative to `/var/lib/s-hole`.** Relative paths resolve against the service's working directory. Because the unit sets `ProtectSystem=strict` with `ReadWritePaths=/var/lib/s-hole`, the rest of the filesystem is read-only to the service. Keep both paths under `/var/lib/s-hole` (the defaults `queries.db` and `.` already do). Pointing them at `/tmp` or a home directory will silently fail to write.
 - **The query log flushes on an interval.** Newly logged queries appear in `/api/queries` and the dashboard's "All time" panel only after the next SQLite flush (`db_flush_interval`, default `30s`), not instantly. Lower it for a more responsive view.

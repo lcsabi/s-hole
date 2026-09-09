@@ -79,11 +79,93 @@ func TestClientAddr(t *testing.T) {
 	}
 }
 
+func TestMaskClientIP(t *testing.T) {
+	cases := []struct {
+		name string
+		ip   string
+		mode string
+		want string
+	}{
+		{"raw ipv4", "192.168.1.7", "raw", "192.168.1.7"},
+		{"raw ipv6", "2001:db8::1", "raw", "2001:db8::1"},
+		{"unknown mode is raw", "192.168.1.7", "bogus", "192.168.1.7"},
+		{"empty mode is raw", "192.168.1.7", "", "192.168.1.7"},
+		{"drop ipv4", "192.168.1.7", "drop", ""},
+		{"drop unknown sentinel", "unknown", "drop", ""},
+		{"subnet ipv4", "192.168.1.7", "subnet", "192.168.1.0"},
+		{"subnet ipv4 other octet", "10.4.5.6", "subnet", "10.4.5.0"},
+		{"subnet ipv6 to /64", "2001:db8:1:2:aaaa:bbbb:cccc:dddd", "subnet", "2001:db8:1:2::"},
+		{"subnet unknown sentinel passes through", "unknown", "subnet", "unknown"},
+		{"subnet non-ip passes through", "host.example", "subnet", "host.example"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := maskClientIP(tc.ip, tc.mode); got != tc.want {
+				t.Errorf("maskClientIP(%q, %q) = %q, want %q", tc.ip, tc.mode, got, tc.want)
+			}
+		})
+	}
+}
+
+// captureLogger records the last client value handed to Log so a test can
+// assert the query-log sink sees the masked address.
+type captureLogger struct {
+	clientIP string
+	calls    int
+}
+
+func (c *captureLogger) Log(clientIP, _ string, _ bool) {
+	c.clientIP = clientIP
+	c.calls++
+}
+
+// TestServeDNS_MasksClientEverywhere proves query_privacy masks the client at
+// the single choke point, so both the query-log sink and the in-memory stats
+// counter (Top Clients) see the masked value. A logger-only decorator would
+// mask the log but leave the counter holding the raw IP.
+func TestServeDNS_MasksClientEverywhere(t *testing.T) {
+	cases := []struct {
+		mode string
+		want string
+	}{
+		{"raw", "192.168.1.100"},
+		{"drop", ""},
+		{"subnet", "192.168.1.0"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.mode, func(t *testing.T) {
+			store := blocklist.NewStore()
+			store.Replace([]string{"ads.example.com"})
+			counter := stats.New()
+			log := &captureLogger{}
+
+			// A blocked query logs then writes a sinkhole reply, so it never
+			// forwards upstream: the client value is recorded on both paths.
+			h := NewHandler(store, counter, nil, log, "zero", 60, nil, false, tc.mode)
+			h.ServeDNS(fakeClient(), buildReq("ads.example.com"))
+
+			if log.calls != 1 {
+				t.Fatalf("logger called %d times, want 1", log.calls)
+			}
+			if log.clientIP != tc.want {
+				t.Errorf("logged client = %q, want %q", log.clientIP, tc.want)
+			}
+			clients := counter.Snapshot(10).TopClients
+			if len(clients) != 1 {
+				t.Fatalf("stats top clients = %d entries, want 1", len(clients))
+			}
+			if clients[0].Name != tc.want {
+				t.Errorf("stats top client = %q, want %q", clients[0].Name, tc.want)
+			}
+		})
+	}
+}
+
 func TestServeDNS_BlockedZeroMode(t *testing.T) {
 	store := blocklist.NewStore()
 	store.Replace([]string{"ads.example.com"})
 
-	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, false)
+	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, false, "raw")
 	w := fakeClient()
 	h.ServeDNS(w, buildReq("ads.example.com"))
 
@@ -106,7 +188,7 @@ func TestServeDNS_BlockedNxdomainMode(t *testing.T) {
 	store := blocklist.NewStore()
 	store.Replace([]string{"ads.example.com"})
 
-	h := NewHandler(store, stats.New(), nil, nullLogger{}, "nxdomain", 60, nil, false)
+	h := NewHandler(store, stats.New(), nil, nullLogger{}, "nxdomain", 60, nil, false, "raw")
 	w := fakeClient()
 	h.ServeDNS(w, buildReq("ads.example.com"))
 
@@ -132,7 +214,7 @@ func TestServeDNS_WhitelistOverridesBlock(t *testing.T) {
 	c.Set(q, preCached)
 
 	counter := stats.New()
-	h := NewHandler(store, counter, nil, nullLogger{}, "zero", 60, c, false)
+	h := NewHandler(store, counter, nil, nullLogger{}, "zero", 60, c, false, "raw")
 	w := fakeClient()
 	h.ServeDNS(w, buildReq("example.com"))
 
@@ -164,7 +246,7 @@ func TestServeDNS_CacheHitAvoidsUpstream(t *testing.T) {
 	// Upstream is unreachable on purpose: if the cache path works, we
 	// never call forward, so this must succeed.
 	unreachable := []string{"127.0.0.1:1"}
-	h := NewHandler(store, counter, unreachable, nullLogger{}, "zero", 60, c, false)
+	h := NewHandler(store, counter, unreachable, nullLogger{}, "zero", 60, c, false, "raw")
 
 	w := fakeClient()
 	h.ServeDNS(w, buildReq("example.com"))
@@ -187,7 +269,7 @@ func TestServeDNS_CacheHitAvoidsUpstream(t *testing.T) {
 
 func TestServeDNS_EmptyQuestion(t *testing.T) {
 	store := blocklist.NewStore()
-	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, false)
+	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, false, "raw")
 	w := fakeClient()
 
 	req := new(dns.Msg)
@@ -210,7 +292,7 @@ func TestServeDNS_BlockedPreservesEDNS0(t *testing.T) {
 	store := blocklist.NewStore()
 	store.Replace([]string{"ads.example.com"})
 
-	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, false)
+	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, false, "raw")
 	w := fakeClient()
 	req := new(dns.Msg)
 	req.SetQuestion("ads.example.com.", dns.TypeA)
@@ -235,7 +317,7 @@ func TestServeDNS_CacheMissForwardsToUpstream(t *testing.T) {
 	c := cache.New(10)
 	defer c.Close()
 
-	h := NewHandler(store, stats.New(), []string{addr}, nullLogger{}, "zero", 60, c, false)
+	h := NewHandler(store, stats.New(), []string{addr}, nullLogger{}, "zero", 60, c, false, "raw")
 	w := fakeClient()
 	h.ServeDNS(w, buildReq("example.com"))
 
@@ -255,7 +337,7 @@ func TestServeDNS_UpstreamFailureProducesServfail(t *testing.T) {
 	// All upstreams are unreachable. Handler must surface SERVFAIL via
 	// dns.HandleFailed rather than write a malformed reply.
 	store := blocklist.NewStore()
-	h := NewHandler(store, stats.New(), []string{"127.0.0.1:1"}, nullLogger{}, "zero", 60, nil, false)
+	h := NewHandler(store, stats.New(), []string{"127.0.0.1:1"}, nullLogger{}, "zero", 60, nil, false, "raw")
 	w := fakeClient()
 	h.ServeDNS(w, buildReq("example.com"))
 	if w.written == nil {
@@ -274,7 +356,7 @@ func TestServeDNS_WriteSinkholeErrorIsLogged(t *testing.T) {
 	store := blocklist.NewStore()
 	store.Replace([]string{"ads.example.com"})
 
-	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, false)
+	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, false, "raw")
 	w := fakeClient()
 	w.writeError = errFakeWriteFailed
 	h.ServeDNS(w, buildReq("ads.example.com"))
@@ -296,7 +378,7 @@ func TestServeDNS_BlockedMXReturnsNoAnswer(t *testing.T) {
 	store := blocklist.NewStore()
 	store.Replace([]string{"ads.example.com"})
 
-	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, false)
+	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, false, "raw")
 	w := fakeClient()
 	req := new(dns.Msg)
 	req.SetQuestion("ads.example.com.", dns.TypeMX)
@@ -360,7 +442,7 @@ func TestServeDNS_LocalPTRReturnsNXDOMAIN(t *testing.T) {
 	// NXDOMAIN without touching the upstream or the blocklist.
 	store := blocklist.NewStore()
 	counter := stats.New()
-	h := NewHandler(store, counter, []string{"127.0.0.1:1"}, nullLogger{}, "zero", 60, nil, true)
+	h := NewHandler(store, counter, []string{"127.0.0.1:1"}, nullLogger{}, "zero", 60, nil, true, "raw")
 	w := fakeClient()
 	req := new(dns.Msg)
 	req.SetQuestion("1.1.168.192.in-addr.arpa.", dns.TypePTR)
@@ -388,7 +470,7 @@ func TestServeDNS_LocalPTRDisabledForwardsUpstream(t *testing.T) {
 	// With localPTR disabled, private PTR queries are forwarded normally.
 	addr, hits := startMockUpstream(t, net.IPv4(0, 0, 0, 0))
 	store := blocklist.NewStore()
-	h := NewHandler(store, stats.New(), []string{addr}, nullLogger{}, "zero", 60, nil, false)
+	h := NewHandler(store, stats.New(), []string{addr}, nullLogger{}, "zero", 60, nil, false, "raw")
 	w := fakeClient()
 	req := new(dns.Msg)
 	req.SetQuestion("1.1.168.192.in-addr.arpa.", dns.TypePTR)
@@ -404,7 +486,7 @@ func TestServeDNS_LocalPTRPreservesEDNS0(t *testing.T) {
 	// reason as on sinkhole replies (R12): clients that advertised it must
 	// see it echoed or they fall back to legacy DNS.
 	store := blocklist.NewStore()
-	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, true)
+	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, true, "raw")
 	w := fakeClient()
 	req := new(dns.Msg)
 	req.SetQuestion("1.1.168.192.in-addr.arpa.", dns.TypePTR)
@@ -424,7 +506,7 @@ func TestServeDNS_NonPrivatePTRIsForwarded(t *testing.T) {
 	// not be intercepted and must reach the upstream.
 	addr, hits := startMockUpstream(t, net.IPv4(1, 2, 3, 4))
 	store := blocklist.NewStore()
-	h := NewHandler(store, stats.New(), []string{addr}, nullLogger{}, "zero", 60, nil, true)
+	h := NewHandler(store, stats.New(), []string{addr}, nullLogger{}, "zero", 60, nil, true, "raw")
 	w := fakeClient()
 	req := new(dns.Msg)
 	req.SetQuestion("4.3.2.1.in-addr.arpa.", dns.TypePTR)
@@ -469,7 +551,7 @@ func BenchmarkHandler_ServeDNS(b *testing.B) {
 	b.Run("Blocked", func(b *testing.B) {
 		store := blocklist.NewStore()
 		store.Replace([]string{"example.com"})
-		h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, false)
+		h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, false, "raw")
 		w := fakeClient()
 		req := buildReq("example.com")
 
@@ -486,7 +568,7 @@ func BenchmarkHandler_ServeDNS(b *testing.B) {
 		c.Set(q, buildResp(q, net.IPv4(1, 2, 3, 4), 300))
 
 		store := blocklist.NewStore() // empty: query is allowed, served from cache
-		h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, c, false)
+		h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, c, false, "raw")
 		w := fakeClient()
 		req := buildReq("example.com")
 
@@ -512,7 +594,7 @@ func BenchmarkHandler_ServeDNS_Parallel(b *testing.B) {
 	b.Run("Blocked", func(b *testing.B) {
 		store := blocklist.NewStore()
 		store.Replace([]string{"example.com"})
-		h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, false)
+		h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, false, "raw")
 		req := buildReq("example.com")
 
 		b.ResetTimer()
@@ -530,7 +612,7 @@ func BenchmarkHandler_ServeDNS_Parallel(b *testing.B) {
 		c.Set(q, buildResp(q, net.IPv4(1, 2, 3, 4), 300))
 
 		store := blocklist.NewStore() // empty: query is allowed, served from cache
-		h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, c, false)
+		h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, c, false, "raw")
 		req := buildReq("example.com")
 
 		b.ResetTimer()

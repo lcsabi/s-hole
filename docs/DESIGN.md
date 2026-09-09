@@ -271,7 +271,7 @@ On startup, `cmd/s-hole/main.go` calls `printNetworkHint`, which enumerates loca
 
 ### Configuration (`internal/config/`)
 
-All configuration lives in a single YAML file. The struct uses `yaml` tags and applies safe defaults in `applyDefaults()` so the minimal valid config is an empty file. Duration fields are stored as strings and parsed at startup; invalid durations are fatal errors rather than silently ignored.
+All configuration lives in a single YAML file. The struct uses `yaml` tags and applies safe defaults in `applyDefaults()` so the minimal valid config is an empty file. Duration fields are stored as strings and parsed at startup; invalid durations are fatal errors rather than silently ignored. The config is read once at startup; the running service does not re-read the file, so a config change takes effect on the next restart.
 
 Three fields (`cache_size`, `block_ttl`, and `local_ptr`) have defaults seeded onto the struct *before* the YAML decode instead of in `applyDefaults()`. Their zero values are meaningful settings (`cache_size: 0` disables the cache; `block_ttl: 0` disables client caching of sinkhole replies; `local_ptr: false` opts out of RFC 6303 local PTR answering), and a post-decode fixup cannot tell an explicit 0/false in the file apart from an absent key.
 
@@ -313,7 +313,7 @@ CoreDNS is production-grade and has a plugin ecosystem. The `ads` plugin does DN
 
 ### In-process blocklist update via a signal
 
-Linux is the primary deployment target: the Raspberry Pi optimisations, the hardened systemd unit, and the Docker image are all built around it; Windows is supported (`-service install` and SCM integration) but is not the design's centre of gravity. Accordingly, `SIGHUP` is wired up as the conventional "reload config" gesture on every non-Windows build: `kill -HUP $(pidof s-hole)` triggers the same single-flight refresh as `POST /api/reload`. Operators get the muscle-memory behaviour even when the admin API is disabled or firewalled.
+Linux is the primary deployment target: the Raspberry Pi optimisations, the hardened systemd unit, and the Docker image are all built around it; Windows is supported (`-service install` and SCM integration) but is not the design's centre of gravity. Accordingly, `SIGHUP` is wired up as the conventional reload gesture on every non-Windows build: `kill -HUP $(pidof s-hole)` triggers the same single-flight blocklist refresh as `POST /api/reload`. That refresh re-downloads the blocklists from the URLs read at startup; it does not re-read `config.yaml`, so a config change takes effect on the next restart. Operators get the muscle-memory behaviour even when the admin API is disabled or firewalled.
 
 The implementation lives in two tiny build-tagged files (`cmd/s-hole/signals_unix.go` and `cmd/s-hole/signals_windows.go`) so `cmd/s-hole/main.go` itself contains no platform-specific code. On Windows, `reloadSignals()` returns nil and the only signals notified are SIGINT/SIGTERM. The SCM is the canonical lifecycle control there, and POST /api/reload remains available for on-demand refresh.
 

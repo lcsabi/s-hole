@@ -219,6 +219,7 @@ func main() {
 
 	apiServer := api.New(counter, db, store, dnsCache, reloadFn)
 	apiServer.SetQueryPrivacy(cfg.QueryPrivacy)
+	apiServer.SetClientNames(cfg.ClientNames)
 	if cfg.EnablePprof {
 		apiServer.EnablePprof(true)
 		mainLog.Warn("pprof endpoints enabled, bind api_listen to localhost only",

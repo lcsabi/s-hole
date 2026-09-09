@@ -187,6 +187,7 @@ All configuration lives in `config.yaml`. Every field has a safe default. An emp
 | `log_file` | stdout | Path to the plain-text query log |
 | `log_queries` | `all` | Which queries to write to logs: `all`, `blocked`, or `none` |
 | `query_privacy` | `raw` | How the client IP is stored: `raw` (as-is), `drop` (store no client), or `subnet` (mask to IPv4 /24 or IPv6 /64). Masked once at write time, so the logs and Top Clients agree; forward-only. Use `drop` on a flat LAN, `subnet` on segmented/VLAN networks |
+| `client_names` | _(none)_ | Map of an exact IP or a CIDR to a label, shown in the log and Top Clients. The label is read-only. s-hole resolves it from the stored (masked) client, so it never shows more than `query_privacy` allows. Under `subnet` only CIDR keys match. Under `drop` none match. An exact key wins over a CIDR. s-hole skips a bad key with a WARN. No `S_HOLE_*` override. |
 | `query_db` | _(off)_ | Path to the SQLite query log database; set a path to enable, empty disables it |
 | `db_flush_interval` | `30s` | How often buffered queries are committed to SQLite |
 | `cache_size` | `2000` | Maximum DNS responses held in the in-memory cache (0 to disable) |
@@ -248,9 +249,9 @@ The admin web UI is served at **`http://127.0.0.1:8080`** by default. This is lo
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/stats` | Live stats: uptime, query totals, block rate, cache hit rate, blocklist size, per-source blocklist health, top domains/clients, and the active `query_privacy` mode |
+| `GET` | `/api/stats` | Live stats: uptime, query totals, block rate, cache hit rate, blocklist size, per-source blocklist health, top domains/clients (each client carries an optional `client_names` `label`), and the active `query_privacy` mode |
 | `GET` | `/api/check?domain=NAME` | Why a domain is blocked: the decision plus the full suffix walk (matched block entry, overriding whitelist entry). Diagnostic; changes no state and does not count in stats |
-| `GET` | `/api/queries?limit=N` | Last N queries from SQLite, newest first (default: 50, max: 1000) |
+| `GET` | `/api/queries?limit=N` | Last N queries from SQLite, newest first (default: 50, max: 1000). Each row carries an optional `client_names` `label` |
 | `GET` | `/api/top-blocked?limit=N` | All-time most-blocked domains from SQLite (default: 50, max: 1000); empty when `query_db` is unset |
 | `GET` | `/api/history?window=24h&bucket=1h` | Per-bucket total and blocked query counts over the window, from SQLite (default: 24h window, 1h bucket; bucket count capped at 1000). Reports the effective `log_queries` mode (`all`/`blocked`/`none`/`off`), so the graph reflects only what is logged; empty when `query_db` is unset |
 | `GET` | `/api/whitelist` | List all runtime-whitelisted domains |

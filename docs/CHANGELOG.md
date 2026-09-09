@@ -15,6 +15,14 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   changes between refreshes. (CL 71)
 
 ### Added
+- **Client name attribution.** A new `client_names` config map gives each client a
+  label in the log and the Top Clients panel. A key is an exact IP or a CIDR. The
+  value is the label. The panel and the recent-query log show the label with the
+  masked IP beneath it. The label is read-only. s-hole resolves it from the stored
+  (masked) client value, so it tracks `query_privacy` and never shows more than
+  that setting allows. Under `subnet` only CIDR keys match. Under `drop` none
+  match. An exact key wins over a CIDR. s-hole skips a bad key and logs a WARN.
+  (CL 73)
 - **Query-log privacy modes.** A new `query_privacy` setting controls how the
   client IP is stored: `raw` (as-is, the default and current behavior), `drop`
   (store no client), or `subnet` (mask the host bits to IPv4 /24 or IPv6 /64).

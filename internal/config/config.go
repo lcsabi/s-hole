@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -59,6 +60,16 @@ type Config struct {
 	// all see the same value. Masking is forward-only; rows written at "raw"
 	// keep their addresses.
 	QueryPrivacy string `yaml:"query_privacy"`
+	// ClientNames maps a client to a display label shown in the log and the
+	// Top Clients panel. A key is an exact IP ("192.168.1.42") or a CIDR
+	// ("10.0.5.0/24"); the value is the label. The label is resolved read-only
+	// at display time against the stored (already masked) client value, so it
+	// can never reveal more than QueryPrivacy already exposes: under "subnet"
+	// only a CIDR or network-address key resolves, and under "drop" nothing
+	// does. An exact key wins over a CIDR, and the most specific CIDR wins.
+	// A malformed key is skipped with a WARN (see filterClientNames); this map
+	// has no S_HOLE_* override. Empty (the default) disables attribution.
+	ClientNames map[string]string `yaml:"client_names"`
 	// QueryDB is a path to a SQLite file for persistent query logging; empty disables it
 	QueryDB string `yaml:"query_db"`
 	// APIListen is the address:port for the admin HTTP server
@@ -134,7 +145,43 @@ func Load(path string) (*Config, error) {
 	for _, d := range dropped {
 		logger.Warn("ignoring invalid whitelist entry", "entry", d)
 	}
+	// Drop client_names entries whose key is not an IP or CIDR with a WARN.
+	// This is a display cosmetic; a typo must not abort startup. See
+	// filterClientNames and the ClientNames field.
+	var badKeys []string
+	cfg.ClientNames, badKeys = filterClientNames(cfg.ClientNames)
+	for _, k := range badKeys {
+		logger.Warn("ignoring client_names entry with invalid key", "key", k)
+	}
 	return cfg, nil
+}
+
+// filterClientNames drops entries whose key is neither a valid IP nor a valid
+// CIDR, returning the cleaned map and the dropped keys. Load logs a WARN for
+// each dropped key rather than failing, because client_names is a display-time
+// label map: a malformed key must not take DNS down for the whole LAN. This
+// mirrors filterWhitelist. A nil or empty map is returned unchanged (nil),
+// which reads as "attribution off".
+func filterClientNames(m map[string]string) (valid map[string]string, dropped []string) {
+	if len(m) == 0 {
+		return nil, nil
+	}
+	valid = make(map[string]string, len(m))
+	for key, label := range m {
+		if net.ParseIP(key) != nil {
+			valid[key] = label
+			continue
+		}
+		if _, _, err := net.ParseCIDR(key); err == nil {
+			valid[key] = label
+			continue
+		}
+		dropped = append(dropped, key)
+	}
+	if len(valid) == 0 {
+		valid = nil
+	}
+	return valid, dropped
 }
 
 // filterWhitelist splits entries into those that pass blocklist.ValidDomain

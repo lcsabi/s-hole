@@ -238,7 +238,7 @@ State-changing admin requests leave an audit line in the application log. A whit
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/stats` | GET | Live stats snapshot (uptime, totals, cache rate, blocklist size, per-source blocklist health, top domains/clients) |
+| `/api/stats` | GET | Live stats snapshot (uptime, totals, cache rate, blocklist size, per-source blocklist health, top domains/clients, active `query_privacy` mode) |
 | `/api/check` | GET | Block decision for `?domain=NAME`: outcome plus the full suffix walk (matched block entry, overriding whitelist entry). Diagnostic; bumps no counter and writes no query-log row |
 | `/api/queries` | GET | Recent queries from SQLite (`?limit=N`, default 50, capped at 1000) |
 | `/api/top-blocked` | GET | All-time most-blocked domains from SQLite (`?limit=N`, default 50, capped at 1000); empty list when `query_db` is unset |

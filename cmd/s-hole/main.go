@@ -192,7 +192,7 @@ func main() {
 	}
 
 	logger := buildMultiLogger(fileLog, db)
-	handler := dnsserver.NewHandler(store, counter, cfg.Upstreams, logger, cfg.BlockMode, cfg.BlockTTL, dnsCache, cfg.LocalPTR)
+	handler := dnsserver.NewHandler(store, counter, cfg.Upstreams, logger, cfg.BlockMode, cfg.BlockTTL, dnsCache, cfg.LocalPTR, cfg.QueryPrivacy)
 	dnsServer := dnsserver.NewServer(cfg.Listen, handler)
 
 	// reloadMu single-flights blocklist refreshes across both the periodic
@@ -218,6 +218,7 @@ func main() {
 	})
 
 	apiServer := api.New(counter, db, store, dnsCache, reloadFn)
+	apiServer.SetQueryPrivacy(cfg.QueryPrivacy)
 	if cfg.EnablePprof {
 		apiServer.EnablePprof(true)
 		mainLog.Warn("pprof endpoints enabled, bind api_listen to localhost only",

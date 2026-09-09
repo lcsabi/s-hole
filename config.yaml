@@ -37,6 +37,15 @@ block_ttl: 300
 # stat cards are not affected. They count every query from the in-memory counter.
 log_queries: "all"
 
+# How the client IP is stored in the query log and shown in Top Clients:
+# "raw" (as-is), "drop" (store no client), or "subnet" (mask the host bits to
+# IPv4 /24 or IPv6 /64). The client is masked once at write time, so the log
+# file, the SQLite log, and the Top Clients panel all see the same value.
+# Masking is forward-only: rows written at "raw" keep their addresses.
+# On a flat single-subnet home LAN, "subnet" collapses every client to one
+# address, so use "drop" there. "subnet" is for segmented or VLAN networks.
+query_privacy: "raw"
+
 # Plain-text query log file (leave empty to write to stdout)
 log_file: ""
 

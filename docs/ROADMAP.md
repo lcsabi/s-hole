@@ -34,7 +34,7 @@ rails.
 | 18 | "Why is this blocked?" diagnostic endpoint (`/api/check`) | Low | done (CL 56) |
 | 19 | Temporary "pause blocking" (timed bypass, auto-resume) | High | not started |
 | 20 | Query-volume-over-time graph on the dashboard | Medium | done (CL 70) |
-| 21 | Query-log privacy modes (write-time client anonymization) | Medium | not started |
+| 21 | Query-log privacy modes (write-time client anonymization) | Medium | done (CL 72) |
 | 22 | Client name attribution in the log and dashboard | Medium | not started |
 | 23 | Query-log search / filter | Medium | not started |
 | 24 | Query-log export (CSV / JSON) | Medium | not started |
@@ -613,46 +613,45 @@ Design decisions settled in the CL:
 Rated Medium: an observability win with high visual value. It changes no filtering
 behavior.
 
-## 21. Query-log privacy modes (write-time client anonymization)
+## 21. Query-log privacy modes (done, CL 72)
 
-The query log stores the client IP for every request. An operator who wants block
-and domain analysis without retaining per-device history has no way to ask for it
-today. Add privacy levels that mask the client before it is stored.
+The query log stored the client IP for every request, with no way to keep block
+and domain analysis while dropping per-device history.
 
-The masking must happen at **write time**, at a single choke point. A
-`privacyLogger` decorator wraps the `Multi` logger and transforms the client IP
-once, upstream of the fan-out, so the SQLite log, the text `FileLogger`, and every
-reader see the same masked value. Read-time masking would leave raw IPs in
-`queries.db` and in the text log, so the setting would promise a property it does
-not have.
+**Shipped in CL 72:** a `query_privacy` setting with three modes that name the
+transform applied to the client IP:
 
-Levels:
+- `raw` (default): the raw client IP, current behavior.
+- `drop`: store no client. The honest choice on a flat single-subnet home LAN,
+  where the client field is the only per-device PII in the row.
+- `subnet`: mask the host bits to a fixed per-family prefix (IPv4 /24, IPv6 /64),
+  for segmented or VLAN networks where the subnet is a meaningful group. On a flat
+  `/24` LAN this collapses every client to one address, so the config comment
+  points a flat-LAN operator at `drop`.
 
-- `full` (default): the raw client IP, current behavior.
-- `anonymize`: the client is dropped on the flat home LAN (the common case), with
-  **opt-in prefix truncation** (a configurable prefix such as `/24`) for segmented
-  or VLAN networks where the subnet is a meaningful group. On a single-`/24` LAN a
-  truncated client is a constant that looks like data and is not, so dropping is
-  the honest default there.
-- off is the existing `query_db: ""`.
+The client is masked once at a single write-time choke point in `ServeDNS`, before
+the `stats.Counter` and query-log calls, so the text log, the SQLite log, and the
+in-memory Top Clients panel all see the same masked value. `/api/stats` echoes the
+active mode, and the Top Clients panel describes itself from it. This item is the
+foundation for #22, #23, and #24; each reads the stored row and must never reach
+behind the mask.
 
-This item is the foundation for #22, #23, and #24. Each of those is a read-time
-consumer of the stored row and must never reach behind the mask.
+Design decisions settled in the CL:
 
-Design decisions to settle in the CL:
-
-- **Truncate vs drop default.** Drop on the flat LAN; truncate only when the
-  operator sets a prefix. The choice is topology, not searchability (a `/24`
-  truncation on a single-`/24` LAN filters nothing).
-- **Retroactivity.** Masking is forward-only: rows written at `full` keep their raw
-  IPs, so a mixed-level DB shows both. Whether to offer an explicit one-shot scrub
-  of existing rows, or document forward-only and add scrub later. A silent bulk
-  `UPDATE` of operator data should not be automatic.
-- **No de-anonymization path.** No API convenience may reverse the mask (for
-  example hashing a query parameter to match a hashed store). That would build a
-  de-anonymization oracle on the unauthenticated LAN endpoint and defeat the mode.
-- **Config surface.** A `query_privacy:` setting and its `S_HOLE_*` override,
-  validated in `config.Validate`.
+- **Mask everywhere, in the handler, not a `privacyLogger` decorator.** The stats
+  counter receives the client IP directly, not through the `Logger` interface, so a
+  logger-only decorator would leave the live Top Clients panel showing raw IPs.
+  Masking once in the handler, upstream of both the counter and the loggers, is a
+  stricter single choke point and keeps the promise everywhere.
+- **Three explicit modes over `full`/`anonymize`-with-hidden-prefix.** The values
+  name the transform, so none makes an invertible privacy claim, and the flat-LAN
+  caveat is documentation on `subnet` rather than a silent behavior flip.
+- **Fixed per-family prefixes, no knob yet.** A configurable prefix can be added
+  later without a breaking change.
+- **No de-anonymization path.** No `hash` mode: a home LAN's small IP space makes a
+  salted hash a trivially reversible oracle on the unauthenticated LAN API.
+- **Forward-only.** Rows written at `raw` keep their addresses; no silent bulk
+  `UPDATE`. A one-shot scrub can be a later CL.
 
 Rated Medium: a user-visible trust and robustness win. It changes no filtering
 behavior.

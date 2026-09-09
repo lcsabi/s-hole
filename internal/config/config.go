@@ -52,6 +52,13 @@ type Config struct {
 	BlockTTL uint32 `yaml:"block_ttl"`
 	// LogQueries controls which queries are written to the log: "all", "blocked", or "none"
 	LogQueries string `yaml:"log_queries"`
+	// QueryPrivacy controls how the client IP is stored in the query log:
+	// "raw" (as-is), "drop" (store nothing), or "subnet" (mask the host bits
+	// to a per-family prefix: IPv4 /24, IPv6 /64). The client is masked once
+	// at write time, so the persisted logs and the in-memory Top Clients panel
+	// all see the same value. Masking is forward-only; rows written at "raw"
+	// keep their addresses.
+	QueryPrivacy string `yaml:"query_privacy"`
 	// QueryDB is a path to a SQLite file for persistent query logging; empty disables it
 	QueryDB string `yaml:"query_db"`
 	// APIListen is the address:port for the admin HTTP server
@@ -166,6 +173,7 @@ func filterWhitelist(entries []string) (valid, dropped []string) {
 //	S_HOLE_API_LISTEN          → api_listen
 //	S_HOLE_LOG_FILE            → log_file
 //	S_HOLE_LOG_QUERIES         → log_queries
+//	S_HOLE_QUERY_PRIVACY       → query_privacy
 //	S_HOLE_QUERY_DB            → query_db
 //	S_HOLE_CACHE_DIR           → cache_dir
 //	S_HOLE_BLOCK_MODE          → block_mode
@@ -189,6 +197,9 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if v, ok := os.LookupEnv("S_HOLE_LOG_QUERIES"); ok {
 		c.LogQueries = v
+	}
+	if v, ok := os.LookupEnv("S_HOLE_QUERY_PRIVACY"); ok {
+		c.QueryPrivacy = v
 	}
 	if v, ok := os.LookupEnv("S_HOLE_QUERY_DB"); ok {
 		c.QueryDB = v
@@ -276,6 +287,9 @@ func (c *Config) applyDefaults() {
 	if c.LogQueries == "" {
 		c.LogQueries = "all"
 	}
+	if c.QueryPrivacy == "" {
+		c.QueryPrivacy = "raw"
+	}
 	if c.APIListen == "" {
 		// Localhost-only default: the admin UI is unauthenticated and
 		// exposing it to the LAN should be an opt-in. Operators who want
@@ -298,6 +312,11 @@ func (c *Config) Validate() error {
 	case "all", "blocked", "none":
 	default:
 		return fmt.Errorf("log_queries %q: must be \"all\", \"blocked\", or \"none\"", c.LogQueries)
+	}
+	switch c.QueryPrivacy {
+	case "raw", "drop", "subnet":
+	default:
+		return fmt.Errorf("query_privacy %q: must be \"raw\", \"drop\", or \"subnet\"", c.QueryPrivacy)
 	}
 	return nil
 }

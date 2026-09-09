@@ -15,6 +15,15 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   changes between refreshes. (CL 71)
 
 ### Added
+- **Query-log privacy modes.** A new `query_privacy` setting controls how the
+  client IP is stored: `raw` (as-is, the default and current behavior), `drop`
+  (store no client), or `subnet` (mask the host bits to IPv4 /24 or IPv6 /64).
+  The client is masked once at write time, so the text log, the SQLite log, and
+  the dashboard Top Clients panel all show the same value. Use `drop` on a flat
+  home LAN and `subnet` on segmented or VLAN networks. Masking is forward-only:
+  rows written at `raw` keep their addresses. The Top Clients panel describes the
+  active mode, and `/api/stats` echoes it. Override with `S_HOLE_QUERY_PRIVACY`.
+  (CL 72)
 - **A "Queries over time" graph on the dashboard.** A new panel leads the
   dashboard. It shows a two-line chart of total and blocked queries per time
   bucket, with a 24h / 7d window toggle and a per-bucket hover readout. A new

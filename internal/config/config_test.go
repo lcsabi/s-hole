@@ -36,6 +36,9 @@ func TestLoad_EmptyAppliesDefaults(t *testing.T) {
 	if cfg.LogQueries != "all" {
 		t.Errorf("LogQueries default = %q, want all", cfg.LogQueries)
 	}
+	if cfg.QueryPrivacy != "raw" {
+		t.Errorf("QueryPrivacy default = %q, want raw", cfg.QueryPrivacy)
+	}
 	if cfg.CacheSize != 2000 {
 		t.Errorf("CacheSize default = %d, want 2000", cfg.CacheSize)
 	}
@@ -105,19 +108,20 @@ func TestLoad_InvalidYAML(t *testing.T) {
 
 func TestValidate_AcceptsValidValues(t *testing.T) {
 	tests := []struct {
-		blockMode  string
-		logQueries string
+		blockMode    string
+		logQueries   string
+		queryPrivacy string
 	}{
-		{"zero", "all"},
-		{"zero", "blocked"},
-		{"zero", "none"},
-		{"nxdomain", "all"},
+		{"zero", "all", "raw"},
+		{"zero", "blocked", "drop"},
+		{"zero", "none", "subnet"},
+		{"nxdomain", "all", "raw"},
 	}
 	for _, tc := range tests {
-		t.Run(tc.blockMode+"_"+tc.logQueries, func(t *testing.T) {
-			cfg := &Config{BlockMode: tc.blockMode, LogQueries: tc.logQueries}
+		t.Run(tc.blockMode+"_"+tc.logQueries+"_"+tc.queryPrivacy, func(t *testing.T) {
+			cfg := &Config{BlockMode: tc.blockMode, LogQueries: tc.logQueries, QueryPrivacy: tc.queryPrivacy}
 			if err := cfg.Validate(); err != nil {
-				t.Errorf("Validate(%q, %q) = %v, want nil", tc.blockMode, tc.logQueries, err)
+				t.Errorf("Validate(%q, %q, %q) = %v, want nil", tc.blockMode, tc.logQueries, tc.queryPrivacy, err)
 			}
 		})
 	}
@@ -126,16 +130,23 @@ func TestValidate_AcceptsValidValues(t *testing.T) {
 func TestValidate_RejectsBogusBlockMode(t *testing.T) {
 	// Regression for b/017: typo'd block_mode must be a startup error,
 	// not a silent fallback.
-	cfg := &Config{BlockMode: "NXDOMAIN", LogQueries: "all"}
+	cfg := &Config{BlockMode: "NXDOMAIN", LogQueries: "all", QueryPrivacy: "raw"}
 	if err := cfg.Validate(); err == nil {
 		t.Error("Validate accepted bogus block_mode")
 	}
 }
 
 func TestValidate_RejectsBogusLogQueries(t *testing.T) {
-	cfg := &Config{BlockMode: "zero", LogQueries: "verbose"}
+	cfg := &Config{BlockMode: "zero", LogQueries: "verbose", QueryPrivacy: "raw"}
 	if err := cfg.Validate(); err == nil {
 		t.Error("Validate accepted bogus log_queries")
+	}
+}
+
+func TestValidate_RejectsBogusQueryPrivacy(t *testing.T) {
+	cfg := &Config{BlockMode: "zero", LogQueries: "all", QueryPrivacy: "anonymize"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("Validate accepted bogus query_privacy")
 	}
 }
 
@@ -256,6 +267,7 @@ func TestLoadAndValidate_RejectsEachStage(t *testing.T) {
 	}{
 		{"load_bad_yaml", "block_mode: : :\n"},
 		{"validate_bad_block_mode", "block_mode: bogus\n"},
+		{"validate_bad_query_privacy", "query_privacy: anonymize\n"},
 		{"duration_bad_refresh", "refresh_interval: soon\n"},
 		{"duration_nonpositive_refresh", "refresh_interval: 0s\n"},
 		{"duration_bad_stats", "stats_interval: soon\n"},
@@ -353,6 +365,7 @@ func TestApplyEnvOverrides(t *testing.T) {
 func TestApplyEnvOverrides_AllStringFields(t *testing.T) {
 	t.Setenv("S_HOLE_LOG_FILE", "/var/log/x.log")
 	t.Setenv("S_HOLE_LOG_QUERIES", "blocked")
+	t.Setenv("S_HOLE_QUERY_PRIVACY", "subnet")
 	t.Setenv("S_HOLE_QUERY_DB", "/data/q.db")
 	t.Setenv("S_HOLE_CACHE_DIR", "/data/cache")
 	t.Setenv("S_HOLE_BLOCK_MODE", "nxdomain")
@@ -367,6 +380,7 @@ func TestApplyEnvOverrides_AllStringFields(t *testing.T) {
 	want := map[string]string{
 		"LogFile":         cfg.LogFile,
 		"LogQueries":      cfg.LogQueries,
+		"QueryPrivacy":    cfg.QueryPrivacy,
 		"QueryDB":         cfg.QueryDB,
 		"CacheDir":        cfg.CacheDir,
 		"BlockMode":       cfg.BlockMode,
@@ -377,6 +391,7 @@ func TestApplyEnvOverrides_AllStringFields(t *testing.T) {
 	expected := map[string]string{
 		"LogFile":         "/var/log/x.log",
 		"LogQueries":      "blocked",
+		"QueryPrivacy":    "subnet",
 		"QueryDB":         "/data/q.db",
 		"CacheDir":        "/data/cache",
 		"BlockMode":       "nxdomain",

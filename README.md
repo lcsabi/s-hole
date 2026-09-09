@@ -186,6 +186,7 @@ All configuration lives in `config.yaml`. Every field has a safe default. An emp
 | `block_ttl` | `300` | TTL (seconds) advertised on blocked replies; `0` tells clients not to cache them |
 | `log_file` | stdout | Path to the plain-text query log |
 | `log_queries` | `all` | Which queries to write to logs: `all`, `blocked`, or `none` |
+| `query_privacy` | `raw` | How the client IP is stored: `raw` (as-is), `drop` (store no client), or `subnet` (mask to IPv4 /24 or IPv6 /64). Masked once at write time, so the logs and Top Clients agree; forward-only. Use `drop` on a flat LAN, `subnet` on segmented/VLAN networks |
 | `query_db` | _(off)_ | Path to the SQLite query log database; set a path to enable, empty disables it |
 | `db_flush_interval` | `30s` | How often buffered queries are committed to SQLite |
 | `cache_size` | `2000` | Maximum DNS responses held in the in-memory cache (0 to disable) |
@@ -216,6 +217,7 @@ For container deployments where editing `config.yaml` requires a re-bind-mount, 
 | `S_HOLE_API_LISTEN` | `api_listen` |
 | `S_HOLE_LOG_FILE` | `log_file` |
 | `S_HOLE_LOG_QUERIES` | `log_queries` |
+| `S_HOLE_QUERY_PRIVACY` | `query_privacy` |
 | `S_HOLE_QUERY_DB` | `query_db` |
 | `S_HOLE_CACHE_DIR` | `cache_dir` |
 | `S_HOLE_BLOCK_MODE` | `block_mode` |
@@ -246,7 +248,7 @@ The admin web UI is served at **`http://127.0.0.1:8080`** by default. This is lo
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/stats` | Live stats: uptime, query totals, block rate, cache hit rate, blocklist size, per-source blocklist health, top domains/clients |
+| `GET` | `/api/stats` | Live stats: uptime, query totals, block rate, cache hit rate, blocklist size, per-source blocklist health, top domains/clients, and the active `query_privacy` mode |
 | `GET` | `/api/check?domain=NAME` | Why a domain is blocked: the decision plus the full suffix walk (matched block entry, overriding whitelist entry). Diagnostic; changes no state and does not count in stats |
 | `GET` | `/api/queries?limit=N` | Last N queries from SQLite, newest first (default: 50, max: 1000) |
 | `GET` | `/api/top-blocked?limit=N` | All-time most-blocked domains from SQLite (default: 50, max: 1000); empty when `query_db` is unset |

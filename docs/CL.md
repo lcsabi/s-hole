@@ -85,6 +85,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 69](cls/CL-69.md) | Graduate the CHANGELOG to v0.2.1 |
 | [CL 70](cls/CL-70.md) | Query-volume-over-time graph on the dashboard (ROADMAP #20) |
 | [CL 71](cls/CL-71.md) | Stabilize top-N tie ordering so the dashboard list stops flickering (b/056) |
+| [CL 72](cls/CL-72.md) | Query-log privacy modes: write-time client anonymization (ROADMAP #21) |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

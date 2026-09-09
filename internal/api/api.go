@@ -86,6 +86,11 @@ type Server struct {
 	// pointer, no-oped, and left Serve blocked with no one to drain it.
 	shutdownRequested atomic.Bool
 	enablePprof       bool
+	// queryPrivacy echoes the active query_privacy mode ("raw", "drop", or
+	// "subnet") on /api/stats. It is display metadata only; the client IP is
+	// masked in the DNS handler, so the API never sees an unmasked address to
+	// leak here.
+	queryPrivacy string
 }
 
 // New constructs a Server. db and dnsCache may be nil to disable the
@@ -101,6 +106,13 @@ func New(counter *stats.Counter, db *querylog.DBLogger, store *blocklist.Store, 
 // ListenAndServe; toggling after the server is built has no effect.
 func (s *Server) EnablePprof(on bool) {
 	s.enablePprof = on
+}
+
+// SetQueryPrivacy records the active query_privacy mode for the /api/stats
+// echo. It is metadata only and does not affect masking, which happens in the
+// DNS handler. An empty mode reads as "raw" on the stats payload.
+func (s *Server) SetQueryPrivacy(mode string) {
+	s.queryPrivacy = mode
 }
 
 // Timeouts protect the unauthenticated admin server from slowloris-style
@@ -205,16 +217,22 @@ func (s *Server) handler() http.Handler {
 // fields stay at the top level (existing clients that decode into
 // stats.Summary are unaffected); Sources adds the per-source array. The type
 // lives here, not in the stats package, so stats does not take a dependency on
-// blocklist.
+// blocklist. QueryPrivacy echoes the active query_privacy mode so the UI can
+// describe the client column honestly (see the Top Clients panel).
 type statsResponse struct {
 	stats.Summary
-	Sources []blocklist.SourceStatus `json:"sources"`
+	Sources      []blocklist.SourceStatus `json:"sources"`
+	QueryPrivacy string                   `json:"query_privacy"`
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
 	snap := s.counter.Snapshot(10)
 	snap.BlocklistSize = s.store.Len()
-	writeJSON(w, statsResponse{Summary: snap, Sources: s.store.Sources()})
+	privacy := s.queryPrivacy
+	if privacy == "" {
+		privacy = "raw"
+	}
+	writeJSON(w, statsResponse{Summary: snap, Sources: s.store.Sources(), QueryPrivacy: privacy})
 }
 
 // handleCheck answers "why is this domain blocked?" by running the name through

@@ -43,6 +43,7 @@ rails.
 | 27 | Install/uninstall robustness hardening (preflight, health check, shellcheck) | Medium | done (CL 66) |
 | 28 | Validate the upstreams at config time (format check + single-upstream note) | Low | not started |
 | 29 | "Cached" line on the query-volume graph (record cache-hit per query) | Medium | not started |
+| 30 | Go runtime gauges (goroutines, heap) in `/metrics` | Medium | not started |
 
 Items 19-26 came out of a 2026-08-24 feature-ideas session. Items 21-24 are a
 dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
@@ -796,7 +797,7 @@ Ship:
 
 - `deploy/grafana-dashboard.json`: a portable dashboard with panels for the
   `shole_*` metrics (blocklist size, query rate, block ratio, cache hit rate,
-  query-log drops, and any gauge added by #19 or #21).
+  query-log drops, and any gauge added by #19, #21, or #30).
 - A `prometheus.yml` scrape snippet for the s-hole target.
 - A small set of example alert rules (blocklist empty, high query-log drop rate,
   upstream failure rate).
@@ -1057,6 +1058,65 @@ not speed.
 Rated Medium: an observability win that completes the per-query-outcome story on
 the graph. It changes no filtering behavior. It is a write-path and schema change,
 not a UI-only tweak, so it is more involved than #20 was.
+
+## 30. Go runtime gauges in `/metrics`
+
+s-hole exposes counters on `/metrics` but no view of its own runtime. Add a few
+Go runtime gauges to the existing endpoint so an operator can see the process
+leaking before it falls over:
+
+- `shole_goroutines` from `runtime.NumGoroutine()`. This is the best leak signal
+  for this codebase. miekg/dns spawns one goroutine per query, so a count that
+  climbs and never settles means a handler path is not returning (the goleak
+  tests guard the same property in CI).
+- `shole_memory_heap_inuse_bytes` and `shole_memory_alloc_bytes` from
+  `runtime.ReadMemStats`, for heap growth over time.
+- Optional: a GC pause gauge, if the heap gauges alone do not tell the story.
+
+This is the measured, in-identity version of a "resource watchdog." A watchdog
+that periodically logs its own usage was weighed and rejected. It duplicates the
+layer that already does this better (systemd `MemoryMax` and `systemctl status`,
+cgroup and container limits, Prometheus with node_exporter), and it adds a
+background goroutine and a stream of "everything is fine" log lines to a binary
+whose point is to stay quiet and auditable. A resolver that watches itself also
+cannot report the failure that matters most, because a wedged or OOM-killed
+process is in no state to log. A watchdog that *acts* (self-restart or self-kill)
+is worse still: that job belongs to systemd `Restart=` and the Windows SCM
+recovery settings, not to code on the DNS path. Gauges on `/metrics` put the
+signal where the external monitor already scrapes and hand the alerting to the
+layer that can act on it.
+
+No new dependency: `runtime` and `runtime/metrics` are standard library, matching
+the hand-rolled-Prometheus choice that already keeps `client_golang` out of the
+graph.
+
+No hot-path cost: the gauges are read in `handleMetrics` at scrape time, never on
+the query path, the same lazy pattern the counters use. One caveat to settle in
+the CL: `runtime.ReadMemStats` triggers a stop-the-world pause on older Go
+versions, so read it once per scrape (never per gauge), or take the sampled reads
+from `runtime/metrics` instead. A small test can assert the handler makes a single
+stats read per request so a later edit does not turn a scrape into several
+stop-the-world pauses.
+
+Design decisions to settle in the CL:
+
+- **Metric names.** `client_golang`'s default Go collector uses `go_goroutines`,
+  `go_memstats_heap_inuse_bytes`, and `go_gc_duration_seconds`. Mirroring those
+  names lets a stock Grafana Go-runtime panel work unchanged; the `shole_` prefix
+  keeps every series under one namespace. Pick one convention and document it.
+- **`ReadMemStats` vs `runtime/metrics`.** The newer sampled API avoids the
+  stop-the-world cost and is the better default if the added reading is worth the
+  slightly less familiar call.
+- **No access gate.** Unlike pprof, which is opt-in by design, these gauges leak
+  nothing sensitive, so they ride the existing `/metrics` endpoint with no new
+  flag.
+
+Feeds #26: the Grafana dashboard and alert rules would draw these gauges (a
+goroutine-growth alert is a natural leak canary). Distinct from #29, which is a
+query-log and UI change with no new metric.
+
+Rated Medium: an observability win that adds a real runtime signal to the binary
+for a few lines and no dependency. It changes no filtering behavior.
 
 ## Pending decisions
 

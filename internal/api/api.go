@@ -91,6 +91,10 @@ type Server struct {
 	// masked in the DNS handler, so the API never sees an unmasked address to
 	// leak here.
 	queryPrivacy string
+	// labeler resolves a stored client value to a config client_names label at
+	// display time. It keys off the already-masked value the store holds, so it
+	// never exceeds the active queryPrivacy granularity. nil = attribution off.
+	labeler *clientLabeler
 }
 
 // New constructs a Server. db and dnsCache may be nil to disable the
@@ -113,6 +117,15 @@ func (s *Server) EnablePprof(on bool) {
 // DNS handler. An empty mode reads as "raw" on the stats payload.
 func (s *Server) SetQueryPrivacy(mode string) {
 	s.queryPrivacy = mode
+}
+
+// SetClientNames installs the config client_names map as a display-time label
+// resolver for the Top Clients panel and the recent-queries list. The labels
+// are resolved against the already-masked client value, so they never expose
+// more than the active query_privacy mode. Call before Serve; an empty map
+// leaves attribution off. Like SetQueryPrivacy, this does not affect masking.
+func (s *Server) SetClientNames(m map[string]string) {
+	s.labeler = newClientLabeler(m)
 }
 
 // Timeouts protect the unauthenticated admin server from slowloris-style
@@ -219,10 +232,24 @@ func (s *Server) handler() http.Handler {
 // lives here, not in the stats package, so stats does not take a dependency on
 // blocklist. QueryPrivacy echoes the active query_privacy mode so the UI can
 // describe the client column honestly (see the Top Clients panel).
+//
+// TopClients is redeclared here so it can carry the client_names label; the
+// outer field shadows the one embedded from Summary for JSON, so the payload
+// key stays "top_clients" and the stats package needs no change. The label is
+// resolved from the masked Name, so it never exposes more than QueryPrivacy.
 type statsResponse struct {
 	stats.Summary
+	TopClients   []clientEntry            `json:"top_clients"`
 	Sources      []blocklist.SourceStatus `json:"sources"`
 	QueryPrivacy string                   `json:"query_privacy"`
+}
+
+// clientEntry is a Top Clients row: the masked client value (Name), its query
+// count, and an optional config-resolved display label.
+type clientEntry struct {
+	Name  string `json:"name"`
+	Count int64  `json:"count"`
+	Label string `json:"label,omitempty"`
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
@@ -232,7 +259,16 @@ func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
 	if privacy == "" {
 		privacy = "raw"
 	}
-	writeJSON(w, statsResponse{Summary: snap, Sources: s.store.Sources(), QueryPrivacy: privacy})
+	clients := make([]clientEntry, len(snap.TopClients))
+	for i, e := range snap.TopClients {
+		clients[i] = clientEntry{Name: e.Name, Count: e.Count, Label: s.labeler.label(e.Name)}
+	}
+	writeJSON(w, statsResponse{
+		Summary:      snap,
+		TopClients:   clients,
+		Sources:      s.store.Sources(),
+		QueryPrivacy: privacy,
+	})
 }
 
 // handleCheck answers "why is this domain blocked?" by running the name through
@@ -271,15 +307,23 @@ func parseLimit(r *http.Request) int {
 	return min(n, maxQueriesLimit)
 }
 
+// queryRow is a recent-queries row: the stored columns plus an optional
+// config-resolved client label. The label is resolved from the masked
+// ClientIP, so the recent-queries list never exposes more than QueryPrivacy.
+type queryRow struct {
+	querylog.QueryRow
+	Label string `json:"label,omitempty"`
+}
+
 func (s *Server) handleQueries(w http.ResponseWriter, r *http.Request) {
 	limit := parseLimit(r)
 
 	type response struct {
-		Queries []querylog.QueryRow `json:"queries"`
+		Queries []queryRow `json:"queries"`
 	}
 
 	if s.db == nil {
-		writeJSON(w, response{Queries: []querylog.QueryRow{}})
+		writeJSON(w, response{Queries: []queryRow{}})
 		return
 	}
 
@@ -289,10 +333,11 @@ func (s *Server) handleQueries(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	if rows == nil {
-		rows = []querylog.QueryRow{}
+	out := make([]queryRow, len(rows))
+	for i, row := range rows {
+		out[i] = queryRow{QueryRow: row, Label: s.labeler.label(row.ClientIP)}
 	}
-	writeJSON(w, response{Queries: rows})
+	writeJSON(w, response{Queries: out})
 }
 
 // handleTopBlocked serves the all-time most-blocked domains from the SQLite

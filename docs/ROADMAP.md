@@ -35,7 +35,7 @@ rails.
 | 19 | Temporary "pause blocking" (timed bypass, auto-resume) | High | not started |
 | 20 | Query-volume-over-time graph on the dashboard | Medium | done (CL 70) |
 | 21 | Query-log privacy modes (write-time client anonymization) | Medium | done (CL 72) |
-| 22 | Client name attribution in the log and dashboard | Medium | not started |
+| 22 | Client name attribution in the log and dashboard | Medium | done (CL 73) |
 | 23 | Query-log search / filter | Medium | not started |
 | 24 | Query-log export (CSV / JSON) | Medium | not started |
 | 25 | Regex / pattern blocking | High | not started |
@@ -656,7 +656,7 @@ Design decisions settled in the CL:
 Rated Medium: a user-visible trust and robustness win. It changes no filtering
 behavior.
 
-## 22. Client name attribution
+## 22. Client name attribution (done, CL 73)
 
 The log and the Top Clients panel show raw IPs. A friendly device name
 ("kids-ipad") is easier to read and act on. Add a static name map that resolves at
@@ -668,10 +668,22 @@ row, so it keys off the **masked** client value once #21 lands, never a pre-mask
 raw IP. Resolving from a raw IP before masking would re-identify the exact device
 and defeat #21; the label is itself PII.
 
-Label granularity then tracks the privacy level: a host label at `full`, a subnet
-label only when #21 truncates on a segment, nothing when the client is dropped.
+Label granularity then tracks the privacy level (CL 72's modes are `raw`,
+`subnet`, and `drop`): a host label under `raw`, a subnet or CIDR label under
+`subnet`, and nothing under `drop`.
 
-Design decisions to settle in the CL:
+**Shipped in CL 73:** a `client_names` config map (exact IP or CIDR to label). The
+API handlers (`handleStats` for Top Clients, `handleQueries` for the recent-query
+log) attach an adjacent `label` field, resolved by a `clientLabeler` that keys off
+the stored (masked) client value. An exact key wins over a CIDR, and the most
+specific CIDR wins. A malformed key is skipped with a WARN, so a typo never aborts
+startup (this mirrors `filterWhitelist`). The dashboard shows the label with the
+masked IP as a small subtext line beneath it. The label cannot exceed the active
+`query_privacy` granularity, so under `subnet` only a CIDR key resolves and under
+`drop` none do. There is no UI hint about that interaction, because the client
+never receives the map; the interaction is documented on the config key instead.
+
+Design decisions settled in the CL:
 
 - **Match precedence.** Exact IP over CIDR when both match, so a named host wins
   over its segment label.

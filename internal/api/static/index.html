@@ -208,6 +208,13 @@
       color: var(--muted);
     }
 
+    /* client_names: the stored (masked) value shown small under the label. */
+    .client-ip {
+      color: var(--muted);
+      font-size: 11px;
+      margin-top: 1px;
+    }
+
     .num {
       font-variant-numeric: tabular-nums;
     }
@@ -514,7 +521,7 @@
       <table>
         <thead>
           <tr>
-            <th>Client IP</th>
+            <th>Client</th>
             <th>Queries</th>
           </tr>
         </thead>
@@ -592,6 +599,14 @@
     // Strip the FQDN trailing dot for display: queries are logged as the
     // wire-format name ("sub.doubleclick.net."), but the dot is noise in the UI.
     const stripDot = s => String(s).replace(/\.$/, '');
+
+    // Render a client cell for the log and Top Clients: the config client_names
+    // label (if one resolved) on top, with the stored (masked) value beneath;
+    // just the masked value when no label resolved. The label is server-side
+    // config, but esc() both anyway so a stray "<" in either never breaks out.
+    const clientCell = (value, label) => label
+      ? `<div>${esc(label)}</div><div class="client-ip">${esc(value)}</div>`
+      : esc(value);
 
     function setTbody(id, html) { $(id).innerHTML = html; }
 
@@ -896,7 +911,7 @@
           const clients = s.top_clients || [];
           setTbody('top-clients', clients.length
             ? clients.map(e =>
-              `<tr><td class="mono">${esc(e.name)}</td><td class="muted num">${fmt(e.count)}</td></tr>`
+              `<tr><td class="mono">${clientCell(e.name, e.label)}</td><td class="muted num">${fmt(e.count)}</td></tr>`
             ).join('')
             : '<tr><td colspan="2" class="empty">No queries yet</td></tr>');
           $('clients-count').textContent = clients.length ? `(${clients.length})` : '';
@@ -918,7 +933,7 @@
             const t = new Date(q.ts).toLocaleTimeString();
             return `<tr>
               <td class="muted num">${t}</td>
-              <td class="mono">${esc(q.client_ip)}</td>
+              <td class="mono">${clientCell(q.client_ip, q.label)}</td>
               <td class="mono">${esc(stripDot(q.domain))}</td>
               <td>${badge}</td>
             </tr>`;

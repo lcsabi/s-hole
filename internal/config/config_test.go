@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"testing"
 	"time"
 )
@@ -186,6 +187,56 @@ func TestLoad_DropsInvalidWhitelistEntries(t *testing.T) {
 	want := []string{"example.com"}
 	if !reflect.DeepEqual(cfg.Whitelist, want) {
 		t.Errorf("cfg.Whitelist = %v, want %v", cfg.Whitelist, want)
+	}
+}
+
+func TestFilterClientNames(t *testing.T) {
+	// A key is an exact IP or a CIDR; anything else is dropped with a WARN in
+	// Load. The label map is a display cosmetic, so a bad key must not abort
+	// startup. Values (labels) are never validated.
+	in := map[string]string{
+		"192.168.1.42": "kids-ipad",
+		"10.0.5.0/24":  "iot-vlan",
+		"fd00::/8":     "ula",
+		"not-an-ip":    "bad",
+		"":             "empty-key",
+	}
+	valid, dropped := filterClientNames(in)
+
+	wantValid := map[string]string{
+		"192.168.1.42": "kids-ipad",
+		"10.0.5.0/24":  "iot-vlan",
+		"fd00::/8":     "ula",
+	}
+	if !reflect.DeepEqual(valid, wantValid) {
+		t.Errorf("valid = %v, want %v", valid, wantValid)
+	}
+	sort.Strings(dropped)
+	wantDropped := []string{"", "not-an-ip"}
+	if !reflect.DeepEqual(dropped, wantDropped) {
+		t.Errorf("dropped = %v, want %v", dropped, wantDropped)
+	}
+}
+
+func TestFilterClientNames_Empty(t *testing.T) {
+	// A nil map and an all-invalid map both collapse to nil ("attribution off").
+	if valid, dropped := filterClientNames(nil); valid != nil || dropped != nil {
+		t.Errorf("filterClientNames(nil) = (%v, %v), want (nil, nil)", valid, dropped)
+	}
+	if valid, _ := filterClientNames(map[string]string{"nope": "x"}); valid != nil {
+		t.Errorf("all-invalid valid = %v, want nil", valid)
+	}
+}
+
+func TestLoad_DropsInvalidClientNames(t *testing.T) {
+	path := writeTemp(t, "client_names:\n  \"192.168.1.42\": kids-ipad\n  bogus: nope\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load = %v, want nil", err)
+	}
+	want := map[string]string{"192.168.1.42": "kids-ipad"}
+	if !reflect.DeepEqual(cfg.ClientNames, want) {
+		t.Errorf("cfg.ClientNames = %v, want %v", cfg.ClientNames, want)
 	}
 }
 

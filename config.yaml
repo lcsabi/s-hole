@@ -46,6 +46,20 @@ log_queries: "all"
 # address, so use "drop" there. "subnet" is for segmented or VLAN networks.
 query_privacy: "raw"
 
+# client_names gives each client a label in the log and the Top Clients panel.
+# A key is an exact IP or a CIDR. The value is the label.
+# The label is read-only. s-hole resolves it from the stored client value, which
+# query_privacy has already masked. So a label never shows more than query_privacy.
+#   query_privacy: raw    -> an exact-IP or CIDR key matches (host labels work)
+#   query_privacy: subnet -> only a CIDR or network-address key matches, because
+#                            the host bits are masked. Use CIDR keys here.
+#   query_privacy: drop   -> no client is stored, so no key matches.
+# An exact key wins over a CIDR. The most specific CIDR wins.
+# s-hole skips a bad key and logs a WARN. This map has no S_HOLE_* override.
+client_names:
+  # "192.168.1.42": kids-ipad
+  # "10.0.5.0/24": iot-vlan
+
 # Plain-text query log file (leave empty to write to stdout)
 log_file: ""
 

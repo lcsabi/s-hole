@@ -68,6 +68,14 @@ Out of scope:
   `ProtectHome=true`, `CapabilityBoundingSet=CAP_NET_BIND_SERVICE`.
 - **No CGO.** The binary is statically linked, so a libc or
   `libsystemd` vulnerability cannot reach the s-hole process.
+- **Client name labels are read-only and privacy-bounded.** The optional
+  `client_names` map adds device labels to the admin API, so it is device-
+  identity PII on the unauthenticated read surface. The label is resolved from
+  the stored (already masked) client value, so it can never reveal more than
+  `query_privacy` already exposes (under `subnet` only a CIDR key resolves,
+  under `drop` none). The map is parsed once at load, so it adds no network
+  call or new wire-parsed input, and labels are HTML-escaped in the UI. Keep
+  `api_listen` on localhost or a trusted LAN when you use it.
 
 For the full design discussion of these mitigations, see
 `docs/DESIGN.md` ("Security Considerations").

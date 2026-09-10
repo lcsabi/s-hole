@@ -649,7 +649,6 @@
     // ── Query-volume chart ────────────────────────────────────
     let historyWindow = '24h';
     let historySeries = [];
-    let historyBucketSecs = 3600;
     // The effective query-log mode the series reflects: 'all', 'blocked',
     // 'none', or 'off' (query_db unset). The graph draws itself honestly from it:
     // both lines for 'all', a single blocked line for 'blocked', an empty state
@@ -672,7 +671,6 @@
       try {
         const data = await fetch(`/api/history?window=${historyWindow}&bucket=1h`).then(r => r.json());
         historySeries = data.series || [];
-        historyBucketSecs = data.bucket || 3600;
         historyLogging = data.logging || 'off';
         drawHistory();
       } catch (e) { console.error('history fetch failed:', e); }

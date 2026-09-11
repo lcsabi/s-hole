@@ -36,7 +36,7 @@ rails.
 | 20 | Query-volume-over-time graph on the dashboard | Medium | done (CL 70) |
 | 21 | Query-log privacy modes (write-time client anonymization) | Medium | done (CL 72) |
 | 22 | Client name attribution in the log and dashboard | Medium | done (CL 73) |
-| 23 | Query-log search / filter | Medium | not started |
+| 23 | Query-log search / filter | Medium | done (CL 74) |
 | 24 | Query-log export (CSV / JSON) | Medium | not started |
 | 25 | Regex / pattern blocking | High | not started |
 | 26 | Grafana dashboard + Prometheus scrape/alert examples | Low | not started |
@@ -699,28 +699,42 @@ Design decisions settled in the CL:
 Rated Medium: a usability win for reading the log. It changes no filtering
 behavior.
 
-## 23. Query-log search / filter
+## 23. Query-log search / filter (done, CL 74)
 
 The recent-queries panel shows the stream but cannot answer a question about it.
 Add filters so false-positive triage is a query, not a scroll.
 
-`GET /api/queries` gains `?domain=`, `?blocked=`, and `?client=` parameters,
-reusing the `?limit=` clamp machinery. The filter runs in SQL over the stored
-columns, so it can only ever match what #21 left in the row. When the effective
-privacy level makes the client filter meaningless (the client is dropped, or a
-single-`/24` LAN collapses every client to one subnet), the UI hides or disables
-the client control rather than offering a box that silently returns every row.
+**Shipped in CL 74:** `GET /api/queries` gained `?domain=` (substring), `?client=`
+(exact), and `?blocked=true|false` parameters, reusing the `?limit=` clamp
+machinery. A new `querylog.QueryFilter` and `DBLogger.Search` build the WHERE
+dynamically with every value bound, and `Recent` now delegates to `Search` so there
+is one query builder. The filter runs in SQL over the stored columns, so it matches
+only what #21 (CL 72) left in the row. The dashboard adds a domain box, an
+All/Blocked/Allowed toggle, and a client picker to the Recent Queries header. The
+filter state persists in `localStorage`; an always-visible active-filter row with a
+Clear button and a distinct "no match" empty state keep a restored filter from
+reading as a broken log. The page header also shows the active `query_privacy` mode
+at all times.
 
-Design decisions to settle in the CL:
+Design decisions settled in the CL:
 
-- **Match semantics.** Exact vs substring for `?domain=`, and whether `?client=`
-  accepts a CIDR. Substring domain match is the useful default for "show me
-  everything under this tracker".
-- **Index cost.** Whether the filtered columns need an index, weighed against the
-  async writer's single-connection pool (b/038). Home-scale row counts likely do
-  not, but note the measurement.
+- **Substring domain, exact client, no CIDR.** Domain is a case-insensitive
+  substring (LIKE with the metacharacters escaped), the useful default for "show me
+  everything under this tracker". The client filter is an exact match on the stored
+  (masked) value. CIDR was rejected: SQLite has no inet functions, so it would force
+  fetch-then-filter in Go and break the "`LIMIT` bounds the scan" property. The
+  client picker is seeded from the Top Clients list, so only an existing value can
+  be chosen.
+- **No new index.** `blocked`/`domain` are already indexed, a leading-wildcard LIKE
+  cannot use a b-tree index anyway, and a new `client_ip` index would slow every
+  INSERT on the single-connection pool (b/038) to speed a read that, on a
+  retention-bounded home table bounded further by `LIMIT`, does not need it. This is
+  a shape decision, not a measured one; the trigger to revisit is a real deployment
+  with slow filtered reads.
 - **Privacy-aware UI.** The client control shows only when the stored client is
-  meaningful, driven by the active `query_privacy` level.
+  meaningful, driven by the active `query_privacy` level: hidden under `drop`. The
+  "flat `/24` collapses to one subnet" case is not UI-detectable (no LAN-topology
+  knowledge) and stays a documentation caveat, as CL 72/73 did.
 
 Rated Medium: a usability and observability win. It changes no filtering behavior.
 

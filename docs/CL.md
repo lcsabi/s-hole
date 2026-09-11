@@ -87,6 +87,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 71](cls/CL-71.md) | Stabilize top-N tie ordering so the dashboard list stops flickering (b/056) |
 | [CL 72](cls/CL-72.md) | Query-log privacy modes: write-time client anonymization (ROADMAP #21) |
 | [CL 73](cls/CL-73.md) | Client name attribution in the log and dashboard (ROADMAP #22) |
+| [CL 74](cls/CL-74.md) | Query-log search / filter (ROADMAP #23) |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

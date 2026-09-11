@@ -13,7 +13,7 @@
 //
 //	GET    /api/stats            JSON Snapshot
 //	GET    /api/check            block decision for ?domain=NAME (diagnostic; no stats/log side effects)
-//	GET    /api/queries          recent rows from SQLite (?limit=N, default 50, max 1000)
+//	GET    /api/queries          recent rows from SQLite (?limit=N, default 50, max 1000; filter ?domain= substring, ?client= exact, ?blocked=true/false)
 //	GET    /api/top-blocked      all-time most-blocked domains from SQLite (?limit=N, default 50, max 1000)
 //	GET    /api/history          per-bucket query volume from SQLite (?window=24h&bucket=1h; bucket count capped at 1000)
 //	GET    /api/whitelist        runtime whitelist (sorted)
@@ -315,8 +315,30 @@ type queryRow struct {
 	Label string `json:"label,omitempty"`
 }
 
+// parseQueryFilter reads the optional recent-query filters from the request.
+// domain is a substring, client an exact match on the stored (masked) value, and
+// blocked accepts "true" or "false" (any other value leaves the block status
+// unfiltered). Every field is optional; an empty filter matches every row.
+func parseQueryFilter(r *http.Request) querylog.QueryFilter {
+	q := r.URL.Query()
+	f := querylog.QueryFilter{
+		Domain: strings.TrimSpace(q.Get("domain")),
+		Client: strings.TrimSpace(q.Get("client")),
+	}
+	switch q.Get("blocked") {
+	case "true":
+		b := true
+		f.Blocked = &b
+	case "false":
+		b := false
+		f.Blocked = &b
+	}
+	return f
+}
+
 func (s *Server) handleQueries(w http.ResponseWriter, r *http.Request) {
 	limit := parseLimit(r)
+	filter := parseQueryFilter(r)
 
 	type response struct {
 		Queries []queryRow `json:"queries"`
@@ -327,7 +349,7 @@ func (s *Server) handleQueries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := s.db.Recent(r.Context(), limit)
+	rows, err := s.db.Search(r.Context(), filter, limit)
 	if err != nil {
 		logger.Warn("recent query failed", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)

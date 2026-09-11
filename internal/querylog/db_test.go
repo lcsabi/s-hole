@@ -139,6 +139,74 @@ func TestDBLogger_FilterBlocked(t *testing.T) {
 	}
 }
 
+func TestDBLogger_Search(t *testing.T) {
+	// Seed rows directly for deterministic domains, clients, and block flags, then
+	// assert each filter dimension. Seeding bypasses the async writer, the same
+	// approach as the History and retention tests.
+	db, _ := newDB(t, "all")
+	defer db.Close()
+
+	seed := func(client, domain string, blocked int) {
+		t.Helper()
+		if _, err := db.db.Exec(
+			"INSERT INTO queries(ts,client_ip,domain,blocked) VALUES(?,?,?,?)",
+			time.Now().Format(time.RFC3339), client, domain, blocked); err != nil {
+			t.Fatalf("seed insert: %v", err)
+		}
+	}
+
+	seed("1.1.1.1", "ads.example.com.", 1)
+	seed("1.1.1.1", "sub.ads.example.com.", 1)
+	seed("2.2.2.2", "google.com.", 0)
+	seed("2.2.2.2", "tracker.net.", 1)
+	seed("3.3.3.3", "a_b.com.", 0) // the underscore is a LIKE wildcard; it must match literally
+	seed("3.3.3.3", "axb.com.", 0)
+
+	ctx := context.Background()
+	tru, fls := true, false
+	tests := []struct {
+		name   string
+		filter QueryFilter
+		want   int
+	}{
+		{"no filter matches all", QueryFilter{}, 6},
+		{"domain substring", QueryFilter{Domain: "ads"}, 2},
+		{"domain case-insensitive", QueryFilter{Domain: "ADS"}, 2},
+		{"domain no match", QueryFilter{Domain: "nope"}, 0},
+		{"underscore is literal", QueryFilter{Domain: "a_b"}, 1},
+		{"client exact", QueryFilter{Client: "2.2.2.2"}, 2},
+		{"client no match", QueryFilter{Client: "9.9.9.9"}, 0},
+		{"blocked true", QueryFilter{Blocked: &tru}, 3},
+		{"blocked false", QueryFilter{Blocked: &fls}, 3},
+		{"domain and blocked", QueryFilter{Domain: "example", Blocked: &tru}, 2},
+		{"client and blocked false", QueryFilter{Client: "2.2.2.2", Blocked: &fls}, 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := db.Search(ctx, tc.filter, 100)
+			if err != nil {
+				t.Fatalf("Search: %v", err)
+			}
+			if len(rows) != tc.want {
+				t.Errorf("Search(%+v) returned %d rows, want %d", tc.filter, len(rows), tc.want)
+			}
+		})
+	}
+
+	// Recent is Search with an empty filter, so the two must agree.
+	recent, err := db.Recent(ctx, 100)
+	if err != nil {
+		t.Fatalf("Recent: %v", err)
+	}
+	all, err := db.Search(ctx, QueryFilter{}, 100)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(recent) != len(all) {
+		t.Errorf("Recent returned %d rows, Search{} returned %d; want equal", len(recent), len(all))
+	}
+}
+
 func TestDBLogger_CloseFlushesPending(t *testing.T) {
 	// Regression for b/005: entries enqueued just before Close must be
 	// persisted; Close waits on the WaitGroup.

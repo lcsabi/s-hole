@@ -603,6 +603,94 @@ func TestParseLimit(t *testing.T) {
 	}
 }
 
+func TestParseQueryFilter(t *testing.T) {
+	// The recent-query filters are optional; domain and client are trimmed, and
+	// blocked accepts only "true"/"false" (any other value leaves it unset).
+	tru, fls := true, false
+	cases := []struct {
+		query      string
+		wantDomain string
+		wantClient string
+		wantBlk    *bool
+	}{
+		{"", "", "", nil},
+		{"domain=ads", "ads", "", nil},
+		{"domain=%20ads%20", "ads", "", nil},
+		{"client=1.2.3.4", "", "1.2.3.4", nil},
+		{"blocked=true", "", "", &tru},
+		{"blocked=false", "", "", &fls},
+		{"blocked=garbage", "", "", nil},
+		{"domain=ex&client=1.2.3.4&blocked=true", "ex", "1.2.3.4", &tru},
+	}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/api/queries?"+tc.query, nil)
+			f := parseQueryFilter(r)
+			if f.Domain != tc.wantDomain {
+				t.Errorf("Domain = %q, want %q", f.Domain, tc.wantDomain)
+			}
+			if f.Client != tc.wantClient {
+				t.Errorf("Client = %q, want %q", f.Client, tc.wantClient)
+			}
+			switch {
+			case tc.wantBlk == nil && f.Blocked != nil:
+				t.Errorf("Blocked = %v, want nil", *f.Blocked)
+			case tc.wantBlk != nil && f.Blocked == nil:
+				t.Errorf("Blocked = nil, want %v", *tc.wantBlk)
+			case tc.wantBlk != nil && f.Blocked != nil && *f.Blocked != *tc.wantBlk:
+				t.Errorf("Blocked = %v, want %v", *f.Blocked, *tc.wantBlk)
+			}
+		})
+	}
+}
+
+func TestQueriesEndpoint_Filtered(t *testing.T) {
+	// Drive the filters end-to-end through a real DBLogger.
+	dbPath := filepath.Join(t.TempDir(), "q.db")
+	db, err := querylog.NewDBLogger(dbPath, "all", 50*time.Millisecond, 0)
+	if err != nil {
+		t.Fatalf("NewDBLogger: %v", err)
+	}
+	defer db.Close()
+
+	db.Log("1.1.1.1", "ads.example.com.", true)
+	db.Log("2.2.2.2", "google.com.", false)
+	db.Log("2.2.2.2", "tracker.net.", true)
+	waitForRows(t, db, 3)
+
+	store := blocklist.NewStore()
+	s := New(stats.New(), db, store, nil, func() bool { return true })
+	srv := httptest.NewServer(s.handler())
+	t.Cleanup(srv.Close)
+
+	get := func(q string) int {
+		t.Helper()
+		resp, err := http.Get(srv.URL + "/api/queries?" + q)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer resp.Body.Close()
+		return len(decode[queriesResponse](t, resp.Body).Queries)
+	}
+
+	cases := []struct {
+		query string
+		want  int
+	}{
+		{"limit=10", 3},
+		{"domain=example", 1},
+		{"blocked=true", 2},
+		{"blocked=false", 1},
+		{"client=2.2.2.2", 2},
+		{"client=2.2.2.2&blocked=true", 1},
+	}
+	for _, tc := range cases {
+		if n := get(tc.query); n != tc.want {
+			t.Errorf("GET ?%s returned %d rows, want %d", tc.query, n, tc.want)
+		}
+	}
+}
+
 func TestWhitelistRemove_RejectsEmptyDomain(t *testing.T) {
 	_, srv := newTestServer(t, nil)
 	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/whitelist?domain=", nil)

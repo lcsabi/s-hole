@@ -140,4 +140,19 @@ func TestHandleQueries_AttachesClientLabels(t *testing.T) {
 			t.Errorf("row %s label = %q, want %q", q.ClientIP, q.Label, want)
 		}
 	}
+
+	// The label still attaches when a filter narrows the result set (the join
+	// runs on the filtered rows, not only the unfiltered Recent path).
+	fresp, err := http.Get(srv.URL + "/api/queries?domain=first")
+	if err != nil {
+		t.Fatalf("GET filtered: %v", err)
+	}
+	defer fresp.Body.Close()
+	filtered := decode[queryLabelResponse](t, fresp.Body)
+	if len(filtered.Queries) != 1 {
+		t.Fatalf("filtered got %d rows, want 1", len(filtered.Queries))
+	}
+	if got := filtered.Queries[0]; got.ClientIP != "192.168.1.42" || got.Label != "kids-ipad" {
+		t.Errorf("filtered row = %+v, want kids-ipad for 192.168.1.42", got)
+	}
 }

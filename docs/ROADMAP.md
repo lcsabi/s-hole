@@ -1175,6 +1175,71 @@ for a few lines and no dependency. It changes no filtering behavior.
   restart-with-retry. The win available now without code is a README
   high-availability note describing the two-instance setup.
 
+- **Scaling the block set (lock-free reads first; trie/DAWG rejected for this data
+  shape).** At the current target (a home LAN, up to a few hundred thousand
+  domains) the block-set lookup is nowhere near the bottleneck. `IsBlocked`
+  measures 54 ns on a hit and 144 ns on a deep allowed name (100k-entry store,
+  zero allocation), which is millions of lookups per second per core, and the cost
+  is flat in list size because the suffix walk does O(labels) probes regardless of
+  N (CL 30). The upstream round-trip on a cache miss dominates wall-clock by about
+  four orders of magnitude. So no change is needed now. If a large deployment ever
+  made the block set a real concern, the moves, most valuable first:
+
+  1. **Lock-free reads.** `IsBlocked` takes an `RWMutex.RLock` today, and the
+     parallel benchmark shows a small read-lock cost that grows with core count
+     (62 ns vs 54 ns across 12 goroutines). `Store.Replace` already builds a whole
+     new map and swaps it, so changing `blocked` and `whitelist` to
+     `atomic.Pointer[map[string]struct{}]` lets reads take no lock at all (a map is
+     safe for concurrent reads once it is published). This removes the only
+     per-query cost that scales with load, keeps the data structure, and stays
+     auditable. It is the highest-value change, and it is not a trie. It also
+     removes the per-query `defer RUnlock` cost as a side benefit.
+  2. **Memory at millions of domains.** The set is O(N), about 70 to 100 bytes per
+     entry (see the Blocklist Store section in DESIGN). Only if N reaches the
+     millions: a sorted `[]string` with a binary search per suffix is about half
+     the memory and more cache-friendly, at O(labels · log N) compares (still
+     sub-microsecond); or a Bloom prefilter in front of the exact set if it will
+     not fit in RAM. Neither is needed below a few hundred thousand domains.
+  3. **Small but positive tweaks, for a project that aims to stay as efficient as
+     possible (each tradeoff is acceptable, so record them even when the win is
+     tiny):**
+     - **One probe per level instead of two.** Each level probes the whitelist map
+       and then the blocked map, hashing the same suffix string twice. Merging both
+       into one `map[string]uint8` (bit 0 blocked, bit 1 whitelisted) halves the
+       probes and the hashing on the dominant full-walk path. Tradeoff: it couples
+       the two update paths, since the blocked set is rebuilt on refresh and the
+       whitelist changes at runtime, so a runtime whitelist add must copy-update the
+       merged map. Small and acceptable, but a real coupling to note.
+     - **Skip the whitelist probe when the whitelist is empty.** Most deployments
+       run no runtime whitelist, so a single `len == 0` guard hoisted out of the
+       loop removes one probe per level on the common path, with no downside.
+     - **No `defer` on the read path.** Explicit unlock over `defer RUnlock` saves a
+       few ns per query. Moot if lock-free reads (item 1) land, which remove the
+       lock entirely; recorded so the option stands either way.
+     - **Presize stays; do not double-buffer.** `Replace` already presizes the new
+       map to the domain count, which avoids incremental rehash-growth. Reusing the
+       old map across refreshes to cut GC was weighed and rejected: the churn is nil
+       at a 24h refresh, and it conflicts with lock-free reads, which must not clear
+       a map a reader may still hold.
+
+  Considered and set aside as neutral or negative: a Bloom prefilter (adds a hash
+  to save a probe that is already fast), and a custom or weaker hash than Go's
+  hardware-AES map hash (risk of collisions without a clear win).
+
+  A **trie or DAWG was weighed and set aside** for this data shape. A reversed-label
+  trie does longest-suffix matching in O(labels) too, so there is no asymptotic
+  win; it trades L flat hash probes for L dependent pointer-chases with worse cache
+  locality. Compression saves little, because reversed domains share only the TLD
+  and every second-level name is distinct, so a plain trie holds more nodes than
+  there are domains. A DAWG that merges shared suffixes compresses better but is
+  effectively immutable, which fights the 24h refresh and the atomic swap, and it
+  is far more code than the two flat hash sets. Hashing each label only once,
+  rather than re-hashing the full suffix at each step of the walk, would also need
+  a trie or a custom hash map keyed by a rolling hash, so it lands here with the
+  trie rather than among the cheap tweaks above. The trigger to revisit any of this
+  is a real deployment with high QPS or a block set in the millions where memory or
+  lock contention is measured, not assumed.
+
 - _None otherwise open._ (Resolved: the shipped sample `config.yaml` was restored
   to the conservative `query_db: "queries.db"` / `api_listen:
   "127.0.0.1:8080"` after `0.0.0.0`/SQLite-off values were accidentally

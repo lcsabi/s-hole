@@ -16,10 +16,13 @@ blocklists:
   # subdomains, and the in-memory set removes duplicates, so you can stack these
   # with the lists above. To enable one, delete the leading "# ".
   #
-  # Multi PRO is HaGeZi's recommended ads/tracker/malware list. Pick the full
-  # list, or the mini list on a small box such as a Raspberry Pi:
-  #   - "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro-onlydomains.txt"       # ~224k domains
-  #   - "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro.mini-onlydomains.txt"  # ~50k domains
+  # Multi PRO is HaGeZi's recommended ads/tracker/malware list. PRO++ adds more
+  # aggressive blocking (it also blocks referral domains). Pick one tier, and use
+  # a mini list on a small box such as a Raspberry Pi:
+  #   - "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro-onlydomains.txt"            # PRO, ~224k domains
+  #   - "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro.mini-onlydomains.txt"       # PRO mini, ~50k domains
+  #   - "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro.plus-onlydomains.txt"       # PRO++, ~248k domains
+  #   - "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro.plus.mini-onlydomains.txt"  # PRO++ mini, ~60k domains
   #
   # Add-on lists you can stack on top:
   #   - "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/tif.mini-onlydomains.txt"  # threat intel: malware, phishing, C2 (mini, ~176k)

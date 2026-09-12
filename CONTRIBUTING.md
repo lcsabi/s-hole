@@ -18,7 +18,7 @@ guide explains the conventions that keep it that way.
 
 ### Prerequisites
 
-- Go 1.25 or later.
+- Go 1.26 or later.
 - Optional: `golangci-lint` for `make lint` / `make check`, and `shellcheck`
   for `make lint-sh` (both run by `make check`). Install golangci-lint via:
 

@@ -15,6 +15,14 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   changes between refreshes. (CL 71)
 
 ### Added
+- **"Cached" line on the query-volume graph.** The "Queries over time" graph now
+  draws a third line for cache hits, next to total and blocked, so caching
+  effectiveness over the day and the cache warm-up after a restart are visible;
+  the cache hit rate reads off the chart as the ratio of the cached line to the
+  total line. The query log records a per-query `cache_hit` flag (`GET /api/history`
+  reports a `cached` count per bucket), and the flat log file marks a cache hit with
+  a trailing ` CACHED` token on the ALLOW line. Recording is forward-only: rows
+  written before the upgrade read as not-cached. (CL 76)
 - **Query-log search and filter.** The recent-query log now filters by domain
   (substring), by block status (all, blocked, or allowed), and by client. The
   filter runs in SQL through `GET /api/queries?domain=&client=&blocked=`, so it

@@ -2,6 +2,7 @@ package querylog
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -54,9 +55,9 @@ func TestDBLogger_PruneIsNoOpWhenEmpty(t *testing.T) {
 func TestDBLogger_RoundTrip(t *testing.T) {
 	db, _ := newDB(t, "all")
 
-	db.Log("1.2.3.4", "ads.example.com.", true)
-	db.Log("1.2.3.4", "google.com.", false)
-	db.Log("5.6.7.8", "ads.example.com.", true)
+	db.Log(Record{ClientIP: "1.2.3.4", Domain: "ads.example.com.", Blocked: true})
+	db.Log(Record{ClientIP: "1.2.3.4", Domain: "google.com."})
+	db.Log(Record{ClientIP: "5.6.7.8", Domain: "ads.example.com.", Blocked: true})
 
 	// Close drains pending entries and waits for the goroutine.
 	if err := db.Close(); err != nil {
@@ -72,9 +73,9 @@ func TestDBLogger_RecentReturnsNewestFirst(t *testing.T) {
 	db, _ := newDB(t, "all")
 	defer db.Close()
 
-	db.Log("1.1.1.1", "first.com.", false)
-	db.Log("2.2.2.2", "second.com.", true)
-	db.Log("3.3.3.3", "third.com.", false)
+	db.Log(Record{ClientIP: "1.1.1.1", Domain: "first.com."})
+	db.Log(Record{ClientIP: "2.2.2.2", Domain: "second.com.", Blocked: true})
+	db.Log(Record{ClientIP: "3.3.3.3", Domain: "third.com."})
 
 	// Wait for the flush tick.
 	time.Sleep(150 * time.Millisecond)
@@ -99,10 +100,10 @@ func TestDBLogger_TopBlocked(t *testing.T) {
 	defer db.Close()
 
 	for i := 0; i < 3; i++ {
-		db.Log("1.1.1.1", "ads.com.", true)
+		db.Log(Record{ClientIP: "1.1.1.1", Domain: "ads.com.", Blocked: true})
 	}
-	db.Log("1.1.1.1", "tracker.com.", true)
-	db.Log("1.1.1.1", "ok.com.", false)
+	db.Log(Record{ClientIP: "1.1.1.1", Domain: "tracker.com.", Blocked: true})
+	db.Log(Record{ClientIP: "1.1.1.1", Domain: "ok.com."})
 
 	time.Sleep(150 * time.Millisecond)
 
@@ -122,8 +123,8 @@ func TestDBLogger_FilterBlocked(t *testing.T) {
 	db, _ := newDB(t, "blocked")
 	defer db.Close()
 
-	db.Log("1.1.1.1", "ads.com.", true)
-	db.Log("1.1.1.1", "ok.com.", false) // dropped
+	db.Log(Record{ClientIP: "1.1.1.1", Domain: "ads.com.", Blocked: true})
+	db.Log(Record{ClientIP: "1.1.1.1", Domain: "ok.com."}) // dropped
 
 	time.Sleep(150 * time.Millisecond)
 
@@ -216,7 +217,7 @@ func TestDBLogger_CloseFlushesPending(t *testing.T) {
 		t.Fatalf("NewDBLogger: %v", err)
 	}
 	for i := 0; i < 10; i++ {
-		db.Log("1.1.1.1", "ads.com.", true)
+		db.Log(Record{ClientIP: "1.1.1.1", Domain: "ads.com.", Blocked: true})
 	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -285,24 +286,25 @@ func TestDBLogger_History(t *testing.T) {
 	defer db.Close()
 
 	now := time.Now()
-	seed := func(ts time.Time, domain string, blocked int) {
+	seed := func(ts time.Time, domain string, blocked, cacheHit int) {
 		t.Helper()
 		if _, err := db.db.Exec(
-			"INSERT INTO queries(ts,client_ip,domain,blocked) VALUES(?,?,?,?)",
-			ts.Format(time.RFC3339), "1.1.1.1", domain, blocked); err != nil {
+			"INSERT INTO queries(ts,client_ip,domain,blocked,cache_hit) VALUES(?,?,?,?,?)",
+			ts.Format(time.RFC3339), "1.1.1.1", domain, blocked, cacheHit); err != nil {
 			t.Fatalf("seed insert: %v", err)
 		}
 	}
 
-	// Current hour bucket: 3 queries, 2 blocked.
-	seed(now, "a.com", 1)
-	seed(now, "b.com", 1)
-	seed(now, "c.com", 0)
-	// One hour earlier: 2 queries, 1 blocked.
-	seed(now.Add(-1*time.Hour), "d.com", 1)
-	seed(now.Add(-1*time.Hour), "e.com", 0)
+	// Current hour bucket: 3 queries, 2 blocked, 1 cache hit (a blocked query
+	// never reaches the cache, so only an allowed row carries cache_hit=1).
+	seed(now, "a.com", 1, 0)
+	seed(now, "b.com", 1, 0)
+	seed(now, "c.com", 0, 1)
+	// One hour earlier: 2 queries, 1 blocked, 1 cache hit.
+	seed(now.Add(-1*time.Hour), "d.com", 1, 0)
+	seed(now.Add(-1*time.Hour), "e.com", 0, 1)
 	// Outside the 24h window: must be excluded.
-	seed(now.Add(-25*time.Hour), "old.com", 1)
+	seed(now.Add(-25*time.Hour), "old.com", 1, 0)
 
 	series, err := db.History(context.Background(), 24*time.Hour, time.Hour)
 	if err != nil {
@@ -322,17 +324,17 @@ func TestDBLogger_History(t *testing.T) {
 	// The last bucket is the current (partial) hour; the one before it is the
 	// previous hour.
 	cur := series[len(series)-1]
-	if cur.Total != 3 || cur.Blocked != 2 {
-		t.Errorf("current bucket = {total %d, blocked %d}, want {3, 2}", cur.Total, cur.Blocked)
+	if cur.Total != 3 || cur.Blocked != 2 || cur.Cached != 1 {
+		t.Errorf("current bucket = {total %d, blocked %d, cached %d}, want {3, 2, 1}", cur.Total, cur.Blocked, cur.Cached)
 	}
 	prev := series[len(series)-2]
-	if prev.Total != 2 || prev.Blocked != 1 {
-		t.Errorf("previous bucket = {total %d, blocked %d}, want {2, 1}", prev.Total, prev.Blocked)
+	if prev.Total != 2 || prev.Blocked != 1 || prev.Cached != 1 {
+		t.Errorf("previous bucket = {total %d, blocked %d, cached %d}, want {2, 1, 1}", prev.Total, prev.Blocked, prev.Cached)
 	}
 
 	// An empty bucket in the middle is zero-filled, not skipped.
-	if mid := series[0]; mid.Total != 0 || mid.Blocked != 0 {
-		t.Errorf("oldest (empty) bucket = {total %d, blocked %d}, want {0, 0}", mid.Total, mid.Blocked)
+	if mid := series[0]; mid.Total != 0 || mid.Blocked != 0 || mid.Cached != 0 {
+		t.Errorf("oldest (empty) bucket = {total %d, blocked %d, cached %d}, want {0, 0, 0}", mid.Total, mid.Blocked, mid.Cached)
 	}
 
 	// A total across all buckets must exclude the out-of-window row.
@@ -342,6 +344,79 @@ func TestDBLogger_History(t *testing.T) {
 	}
 	if total != 5 {
 		t.Errorf("summed total = %d, want 5 (25h-ago row excluded)", total)
+	}
+}
+
+func TestDBLogger_CacheHitRoundTrip(t *testing.T) {
+	// A cache-hit record is stored and summed by History. Exercises the full
+	// write path (Log -> channel -> flush INSERT) for the cache_hit column,
+	// not a direct seed.
+	db, _ := newDB(t, "all")
+	defer db.Close()
+
+	db.Log(Record{ClientIP: "1.1.1.1", Domain: "cached.com.", CacheHit: true})
+	db.Log(Record{ClientIP: "1.1.1.1", Domain: "forwarded.com."})
+	db.Log(Record{ClientIP: "1.1.1.1", Domain: "ads.com.", Blocked: true})
+
+	time.Sleep(150 * time.Millisecond) // let the flush tick persist the batch
+
+	series, err := db.History(context.Background(), time.Hour, time.Hour)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	cur := series[len(series)-1]
+	if cur.Total != 3 || cur.Blocked != 1 || cur.Cached != 1 {
+		t.Errorf("bucket = {total %d, blocked %d, cached %d}, want {3, 1, 1}", cur.Total, cur.Blocked, cur.Cached)
+	}
+}
+
+func TestMigrate_AddsCacheHitColumn(t *testing.T) {
+	// An older database predates the cache_hit column. NewDBLogger must add it
+	// idempotently (the first ALTER TABLE migration), and existing rows must
+	// read cache_hit=0 (the column DEFAULT), the documented forward-only behavior.
+	path := filepath.Join(t.TempDir(), "old.db")
+
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open old db: %v", err)
+	}
+	if _, err := old.Exec(`CREATE TABLE queries (
+		id        INTEGER PRIMARY KEY AUTOINCREMENT,
+		ts        TEXT    NOT NULL,
+		client_ip TEXT    NOT NULL,
+		domain    TEXT    NOT NULL,
+		blocked   INTEGER NOT NULL
+	)`); err != nil {
+		t.Fatalf("create old schema: %v", err)
+	}
+	if _, err := old.Exec(
+		"INSERT INTO queries(ts,client_ip,domain,blocked) VALUES(?,?,?,?)",
+		time.Now().Format(time.RFC3339), "1.1.1.1", "pre-upgrade.com.", 0); err != nil {
+		t.Fatalf("seed old row: %v", err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatalf("close old db: %v", err)
+	}
+
+	// Opening through NewDBLogger runs the migration.
+	db, err := NewDBLogger(path, "all", time.Hour, 0)
+	if err != nil {
+		t.Fatalf("NewDBLogger on old db: %v", err)
+	}
+	defer db.Close()
+
+	// The pre-upgrade row reads cache_hit=0.
+	var cacheHit int
+	if err := db.db.QueryRow("SELECT cache_hit FROM queries WHERE domain = 'pre-upgrade.com.'").Scan(&cacheHit); err != nil {
+		t.Fatalf("read migrated row: %v", err)
+	}
+	if cacheHit != 0 {
+		t.Errorf("pre-upgrade row cache_hit = %d, want 0", cacheHit)
+	}
+
+	// Re-running the migration is a no-op (idempotent), not an error.
+	if err := migrate(db.db); err != nil {
+		t.Errorf("second migrate: %v", err)
 	}
 }
 
@@ -424,7 +499,7 @@ func TestDBLogger_DroppedOnChannelOverflow(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		for i := 0; i < pushed; i++ {
-			db.Log("1.1.1.1", "ads.com.", true)
+			db.Log(Record{ClientIP: "1.1.1.1", Domain: "ads.com.", Blocked: true})
 		}
 		close(done)
 	}()
@@ -450,7 +525,7 @@ func TestDBLogger_DroppedZeroUnderNormalLoad(t *testing.T) {
 	db, _ := newDB(t, "all")
 	defer db.Close()
 	for i := 0; i < 10; i++ {
-		db.Log("1.1.1.1", "ads.com.", true)
+		db.Log(Record{ClientIP: "1.1.1.1", Domain: "ads.com.", Blocked: true})
 	}
 	time.Sleep(150 * time.Millisecond)
 	if got := db.Dropped(); got != 0 {
@@ -504,7 +579,7 @@ func BenchmarkDBLogger_Log_Parallel(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			d.Log("192.168.1.10", "ads.example.com.", true)
+			d.Log(Record{ClientIP: "192.168.1.10", Domain: "ads.example.com.", Blocked: true})
 		}
 	})
 }

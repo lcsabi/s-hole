@@ -110,8 +110,8 @@ func TestHandleQueries_AttachesClientLabels(t *testing.T) {
 	}
 	defer db.Close()
 
-	db.Log("192.168.1.42", "first.com.", false)
-	db.Log("192.168.1.99", "second.com.", true)
+	db.Log(querylog.Record{ClientIP: "192.168.1.42", Domain: "first.com."})
+	db.Log(querylog.Record{ClientIP: "192.168.1.99", Domain: "second.com.", Blocked: true})
 	waitForRows(t, db, 2)
 
 	store := blocklist.NewStore()

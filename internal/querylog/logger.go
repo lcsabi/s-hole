@@ -29,7 +29,9 @@ var logger = slog.With("pkg", "querylog")
 
 // FileLogger writes one line per query to a flat file, or to stdout when
 // the configured path is empty. The format is fixed for easy parsing by
-// shell tools (grep, tail): "<RFC3339> <ALLOW|BLOCK> <client> <domain>".
+// shell tools (grep, tail): "<RFC3339> <ALLOW|BLOCK> <client> <domain>",
+// with a trailing " CACHED" token on a cache hit (ALLOW lines only; a
+// blocked query never reaches the cache).
 type FileLogger struct {
 	f          *os.File
 	logQueries string
@@ -56,18 +58,22 @@ func NewFileLogger(path, logQueries string) *FileLogger {
 // Write errors are deliberately ignored: query logging is best-effort
 // and must never fail or slow the DNS path (the same contract as
 // DBLogger's drop-on-full channel).
-func (l *FileLogger) Log(clientIP, domain string, blocked bool) {
+func (l *FileLogger) Log(rec Record) {
 	if l.logQueries == "none" {
 		return
 	}
-	if l.logQueries == "blocked" && !blocked {
+	if l.logQueries == "blocked" && !rec.Blocked {
 		return
 	}
 	action := "ALLOW"
-	if blocked {
+	if rec.Blocked {
 		action = "BLOCK"
 	}
-	fmt.Fprintf(l.f, "%s %s %s %s\n", time.Now().Format(time.RFC3339), action, clientIP, domain)
+	marker := ""
+	if rec.CacheHit {
+		marker = " CACHED"
+	}
+	fmt.Fprintf(l.f, "%s %s %s %s%s\n", time.Now().Format(time.RFC3339), action, rec.ClientIP, rec.Domain, marker)
 }
 
 // Close flushes and closes the underlying file. A no-op when the logger
@@ -79,9 +85,19 @@ func (l *FileLogger) Close() error {
 	return nil
 }
 
+// Record is one query log entry passed to Log. It is a struct rather than
+// positional arguments so a new per-query field does not churn every Logger
+// implementation's signature (ROADMAP #31 adds an Outcome field here next).
+type Record struct {
+	ClientIP string
+	Domain   string
+	Blocked  bool
+	CacheHit bool // served from the response cache; ALLOW queries only
+}
+
 // Logger is the interface that all query log backends must implement.
 type Logger interface {
-	Log(clientIP, domain string, blocked bool)
+	Log(rec Record)
 }
 
 // Compile-time interface checks.
@@ -104,8 +120,8 @@ func NewMulti(loggers ...Logger) *Multi {
 
 // Log calls Log on every wrapped logger. Sequential, not parallel; the
 // underlying loggers are non-blocking so this is cheap.
-func (m *Multi) Log(clientIP, domain string, blocked bool) {
+func (m *Multi) Log(rec Record) {
 	for _, l := range m.loggers {
-		l.Log(clientIP, domain, blocked)
+		l.Log(rec)
 	}
 }

@@ -18,18 +18,60 @@ CREATE TABLE IF NOT EXISTS queries (
 	ts        TEXT    NOT NULL,
 	client_ip TEXT    NOT NULL,
 	domain    TEXT    NOT NULL,
-	blocked   INTEGER NOT NULL
+	blocked   INTEGER NOT NULL,
+	cache_hit INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_queries_ts      ON queries(ts);
 CREATE INDEX IF NOT EXISTS idx_queries_blocked ON queries(blocked);
 CREATE INDEX IF NOT EXISTS idx_queries_domain  ON queries(domain);
 `
 
+// migrate brings an existing queries table up to the current schema. The
+// CREATE TABLE above only ever creates the table with today's columns, so a
+// database from an older build is missing the columns added since. SQLite has
+// no "ADD COLUMN IF NOT EXISTS", so each additive column is gated on a
+// table_info probe (ensureColumn). A newly created database already has every
+// column, so migrate is a no-op on it. Existing rows take the column DEFAULT,
+// so cache_hit reads 0 (not cached) for rows written before the upgrade.
+func migrate(db *sql.DB) error {
+	return ensureColumn(db, "queries", "cache_hit", "ALTER TABLE queries ADD COLUMN cache_hit INTEGER NOT NULL DEFAULT 0")
+}
+
+// ensureColumn runs ddl to add column to table only when the column is not
+// already present. It reads PRAGMA table_info, which lists every column of the
+// table, and skips the ALTER when the column exists so the call is idempotent.
+func ensureColumn(db *sql.DB, table, column, ddl string) error {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		// PRAGMA table_info columns: cid, name, type, notnull, dflt_value, pk.
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return rows.Err() // already present
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(ddl)
+	return err
+}
+
 type entry struct {
 	ts       time.Time
 	clientIP string
 	domain   string
 	blocked  bool
+	cacheHit bool
 }
 
 // Tuning constants for the async writer. flushBatchSize is the largest
@@ -115,6 +157,10 @@ func NewDBLogger(path, logQueries string, flushInterval time.Duration, retention
 		_ = db.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
 
 	l := &DBLogger{
 		db:            db,
@@ -168,15 +214,15 @@ func (d *DBLogger) prune() {
 // logQueries filter and silently drops if the internal channel is full;
 // logging completeness is subordinate to DNS handler latency. Never
 // blocks the caller.
-func (d *DBLogger) Log(clientIP, domain string, blocked bool) {
+func (d *DBLogger) Log(rec Record) {
 	if d.logQueries == "none" {
 		return
 	}
-	if d.logQueries == "blocked" && !blocked {
+	if d.logQueries == "blocked" && !rec.Blocked {
 		return
 	}
 	select {
-	case d.ch <- entry{ts: time.Now(), clientIP: clientIP, domain: domain, blocked: blocked}:
+	case d.ch <- entry{ts: time.Now(), clientIP: rec.ClientIP, domain: rec.Domain, blocked: rec.Blocked, cacheHit: rec.CacheHit}:
 	default:
 		// Drop under extreme load rather than blocking a DNS goroutine.
 		// The counter is surfaced via /metrics so operators see when this
@@ -257,7 +303,7 @@ func (d *DBLogger) flush(batch []entry) {
 		logger.Error("db begin failed, dropping batch", "entries", len(batch), "err", err)
 		return
 	}
-	stmt, err := tx.Prepare("INSERT INTO queries(ts,client_ip,domain,blocked) VALUES(?,?,?,?)")
+	stmt, err := tx.Prepare("INSERT INTO queries(ts,client_ip,domain,blocked,cache_hit) VALUES(?,?,?,?,?)")
 	if err != nil {
 		logger.Error("db prepare failed, dropping batch", "entries", len(batch), "err", err)
 		_ = tx.Rollback() // the Prepare error above is the actionable one
@@ -266,11 +312,7 @@ func (d *DBLogger) flush(batch []entry) {
 	defer stmt.Close()
 
 	for _, e := range batch {
-		blocked := 0
-		if e.blocked {
-			blocked = 1
-		}
-		if _, err := stmt.Exec(e.ts.Format(time.RFC3339), e.clientIP, e.domain, blocked); err != nil {
+		if _, err := stmt.Exec(e.ts.Format(time.RFC3339), e.clientIP, e.domain, b2i(e.blocked), b2i(e.cacheHit)); err != nil {
 			logger.Warn("db insert", "err", err)
 		}
 	}
@@ -381,11 +423,15 @@ func (d *DBLogger) TopBlocked(ctx context.Context, n int) ([]Entry, error) {
 	return out, rows.Err()
 }
 
-// Bucket is one time bucket in a query-volume history series.
+// Bucket is one time bucket in a query-volume history series. Cached is the
+// subset of Total served from the response cache. Blocked and Cached do not
+// overlap (a blocked query never reaches the cache), so the forwarded count is
+// the remainder: Total - Blocked - Cached.
 type Bucket struct {
 	Start   int64 `json:"start"` // bucket start, unix seconds (UTC)
 	Total   int64 `json:"total"`
 	Blocked int64 `json:"blocked"`
+	Cached  int64 `json:"cached"`
 }
 
 // History returns a dense per-bucket count series covering roughly the last
@@ -411,8 +457,9 @@ func (d *DBLogger) History(ctx context.Context, window, bucket time.Duration) ([
 	cutoff := time.Now().Add(-window).Format(time.RFC3339)
 	rows, err := d.db.QueryContext(ctx, `
 		SELECT (CAST(strftime('%s', ts) AS INTEGER) / ?1) * ?1 AS bucket_start,
-		       COUNT(*)     AS total,
-		       SUM(blocked) AS blocked
+		       COUNT(*)       AS total,
+		       SUM(blocked)   AS blocked,
+		       SUM(cache_hit) AS cached
 		FROM queries
 		WHERE ts >= ?2
 		GROUP BY bucket_start`, bucketSecs, cutoff)
@@ -424,7 +471,7 @@ func (d *DBLogger) History(ctx context.Context, window, bucket time.Duration) ([
 	counts := make(map[int64]Bucket)
 	for rows.Next() {
 		var b Bucket
-		if err := rows.Scan(&b.Start, &b.Total, &b.Blocked); err != nil {
+		if err := rows.Scan(&b.Start, &b.Total, &b.Blocked, &b.Cached); err != nil {
 			return nil, err
 		}
 		counts[b.Start] = b
@@ -459,7 +506,7 @@ func escapeLike(s string) string {
 	return s
 }
 
-// b2i maps a bool to the 0/1 the blocked column stores.
+// b2i maps a bool to the 0/1 the blocked and cache_hit columns store.
 func b2i(b bool) int {
 	if b {
 		return 1

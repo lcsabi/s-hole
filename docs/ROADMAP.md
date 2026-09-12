@@ -42,7 +42,7 @@ rails.
 | 26 | Grafana dashboard + Prometheus scrape/alert examples | Low | not started |
 | 27 | Install/uninstall robustness hardening (preflight, health check, shellcheck) | Medium | done (CL 66) |
 | 28 | Validate the upstreams at config time (format check + single-upstream note) | Low | not started |
-| 29 | "Cached" line on the query-volume graph (record cache-hit per query) | Medium | not started |
+| 29 | "Cached" line on the query-volume graph (record cache-hit per query) | Medium | done (CL 76) |
 | 30 | Go runtime gauges (goroutines, heap) in `/metrics` | Medium | not started |
 | 31 | Failed-query visibility (per-query outcome: graph, filter, `/metrics`) | Medium | not started |
 
@@ -52,10 +52,13 @@ dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
 implementation order, not the item-number order.
 
 Items 26, 29, 30, and 31 are the observability group. Recommended order: #29,
-then #31, then #26 last. #29 introduces the per-query `Record` struct and the
-`ALTER TABLE` migration in its simplest form (one already-counted boolean, no new
-metric), so it is the lowest-risk vehicle for that refactor; #31 then reuses both
-to add the outcome column, the graph and filter, and the failure metrics. #26
+then #31, then #26 last. #29 landed (CL 76): it introduced the per-query `Record`
+struct (in `querylog`) and the first idempotent `ALTER TABLE ... ADD COLUMN`
+migration (via the `ensureColumn` helper) in their simplest form (one
+already-counted boolean, no new metric), so it was the lowest-risk vehicle for
+that refactor. #31 then reuses both to add the outcome column, the graph and
+filter, and the failure metrics: it adds one `Outcome` field to the same `Record`
+and one more `ensureColumn` call. #26
 (Grafana and Prometheus examples) draws the metric surface, so it comes after the
 metrics exist, or the dashboard is revised on every new metric. #30 (runtime
 gauges) is independent of the log work and can land any time, but before #26.
@@ -1020,7 +1023,7 @@ upstream misconfiguration into a startup error (when nothing can forward) or a
 loud warning (when a single entry is wrong), on the same path `-check-config`
 already guards.
 
-## 29. "Cached" line on the query-volume graph
+## 29. "Cached" line on the query-volume graph (done, CL 76)
 
 The query-volume graph (#20) draws total and blocked per bucket. The third
 outcome an operator cares about, a cache hit, is not shown, because the query log

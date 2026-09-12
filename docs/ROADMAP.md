@@ -51,6 +51,18 @@ dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
 #24 all read, so #21 must land first. The order below is the recommended
 implementation order, not the item-number order.
 
+Items 26, 29, 30, and 31 are the observability group. Recommended order: #29,
+then #31, then #26 last. #29 introduces the per-query `Record` struct and the
+`ALTER TABLE` migration in its simplest form (one already-counted boolean, no new
+metric), so it is the lowest-risk vehicle for that refactor; #31 then reuses both
+to add the outcome column, the graph and filter, and the failure metrics. #26
+(Grafana and Prometheus examples) draws the metric surface, so it comes after the
+metrics exist, or the dashboard is revised on every new metric. #30 (runtime
+gauges) is independent of the log work and can land any time, but before #26.
+Related: #24 (export) reads the log schema, so land it after #29 and #31 to
+export the new columns from the start; #28 pairs with #31 (the same
+silent-upstream-misconfig class, from the config side).
+
 ## 1. Deploy to real hardware
 
 Not a code change, but the validation step everything else feeds on.

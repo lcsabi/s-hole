@@ -336,6 +336,57 @@
       gap: 8px;
     }
 
+    /* Recent Queries filter controls. .filter-input reuses the input[type=text]
+       base style and only narrows it for the panel header. */
+    .filter-input {
+      width: 150px;
+      padding: 4px 9px;
+      font-size: 12px;
+    }
+
+    .filter-select {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 4px 9px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-family: inherit;
+      max-width: 220px;
+    }
+
+    .filter-select:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    /* The active-filter row under the Recent Queries header. Tinted with the
+       accent color (not red, which means "blocked" here) so an active filter
+       reads as an intentional state, not an error. */
+    .filter-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      background: rgba(129, 140, 248, 0.1);
+    }
+
+    /* The "Filtering: …" summary. Accent color and semibold so the active
+       filter stands out from the neutral panel caps. */
+    #qf-summary {
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .btn-link {
+      background: transparent;
+      border: none;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 600;
+      padding: 0;
+    }
+
     .legend {
       display: inline-flex;
       gap: 12px;
@@ -435,6 +486,8 @@
       uptime <strong id="uptime">–</strong>
       &nbsp;·&nbsp;
       refreshed <span id="last-refresh">–</span>
+      &nbsp;·&nbsp;
+      query privacy <strong id="privacy-mode">–</strong>
     </div>
   </header>
 
@@ -571,9 +624,24 @@
   <div class="full panel" style="margin-bottom:32px">
     <div class="panel-hd">
       <span>Recent Queries</span>
-      <button type="button" class="collapse-btn" data-collapse="queries-table"
-        aria-controls="queries-table" aria-expanded="true" title="Collapse"
-        onclick="togglePanel('queries-table')">▾</button>
+      <span class="hd-controls">
+        <input id="qf-domain" type="text" class="filter-input" placeholder="filter domain…">
+        <span class="seg" id="qf-status">
+          <button type="button" data-status="all" class="active">All</button>
+          <button type="button" data-status="true">Blocked</button>
+          <button type="button" data-status="false">Allowed</button>
+        </span>
+        <select id="qf-client" class="filter-select" title="Filter by client" hidden>
+          <option value="">All clients</option>
+        </select>
+        <button type="button" class="collapse-btn" data-collapse="queries-table"
+          aria-controls="queries-table" aria-expanded="true" title="Collapse"
+          onclick="togglePanel('queries-table')">▾</button>
+      </span>
+    </div>
+    <div class="panel-cap filter-bar" id="qf-bar" hidden>
+      <span id="qf-summary"></span>
+      <button type="button" class="btn-link" id="qf-clear">Clear filters</button>
     </div>
     <table id="queries-table">
       <thead>
@@ -636,6 +704,7 @@
       // Refetch just the just-expanded panel so it fills immediately instead of
       // waiting for the next 3 s tick.
       if (id === 'history-body') refreshHistory();
+      else if (id === 'queries-table') refreshQueries();
       else refresh();
     }
 
@@ -644,6 +713,136 @@
       try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsed)); } catch (e) {}
       applyCollapsed(id);
       if (!collapsed[id]) refreshPanel(id);
+    }
+
+    // ── Recent Queries filter ─────────────────────────────────
+    // The filter runs server-side in SQL over the stored columns, so it can only
+    // match what the query_privacy mode wrote. State persists in localStorage; a
+    // stale filter is safe because the active-filter row below is always visible
+    // and the empty state names the filter. The client filter is gated on the
+    // privacy mode: 'drop' stores no client, so the picker is hidden.
+    const QUERY_FILTER_KEY = 'shole.queryFilter';
+    let queryFilter = { domain: '', status: 'all', client: '' };
+    try {
+      const saved = JSON.parse(localStorage.getItem(QUERY_FILTER_KEY));
+      if (saved && typeof saved === 'object') {
+        if (typeof saved.domain === 'string') queryFilter.domain = saved.domain.trim();
+        if (['all', 'true', 'false'].includes(saved.status)) queryFilter.status = saved.status;
+        if (typeof saved.client === 'string') queryFilter.client = saved.client;
+      }
+    } catch (e) {}
+
+    function saveQueryFilter() {
+      try { localStorage.setItem(QUERY_FILTER_KEY, JSON.stringify(queryFilter)); } catch (e) {}
+    }
+
+    const queryFilterActive = () =>
+      !!queryFilter.domain || !!queryFilter.client || queryFilter.status !== 'all';
+
+    function queriesURL() {
+      const p = new URLSearchParams({ limit: '50' });
+      if (queryFilter.domain) p.set('domain', queryFilter.domain);
+      if (queryFilter.client) p.set('client', queryFilter.client);
+      if (queryFilter.status !== 'all') p.set('blocked', queryFilter.status);
+      return '/api/queries?' + p.toString();
+    }
+
+    // Show the active-filter row and describe the current filter in words. Kept
+    // visible whenever a filter is set, so a restored filter is never a mystery.
+    function renderFilterBar() {
+      const active = queryFilterActive();
+      $('qf-bar').hidden = !active;
+      if (!active) return;
+      const parts = [];
+      if (queryFilter.domain) parts.push(`domain contains "${queryFilter.domain}"`);
+      if (queryFilter.status === 'true') parts.push('blocked only');
+      else if (queryFilter.status === 'false') parts.push('allowed only');
+      if (queryFilter.client) parts.push(`client ${queryFilter.client}`);
+      $('qf-summary').textContent = 'Filtering: ' + parts.join(', ');
+    }
+
+    // Push the current filter state into the controls (used on load and on clear).
+    function syncFilterControls() {
+      $('qf-domain').value = queryFilter.domain;
+      for (const b of $('qf-status').children) {
+        b.classList.toggle('active', b.dataset.status === queryFilter.status);
+      }
+      ensureClientOption(queryFilter.client);
+      $('qf-client').value = queryFilter.client;
+    }
+
+    // Keep a selected client selectable before the first stats response arrives,
+    // and for a client that is not in the current Top Clients list.
+    function ensureClientOption(value) {
+      if (!value) return;
+      const sel = $('qf-client');
+      if (![...sel.options].some(o => o.value === value)) {
+        const o = document.createElement('option');
+        o.value = value;
+        o.textContent = value;
+        sel.appendChild(o);
+      }
+    }
+
+    // Populate the client picker from Top Clients and gate it on the privacy mode.
+    // Under 'drop' no client is stored, so hide the picker and clear any restored
+    // client filter (it cannot match). Otherwise list the known clients; a still
+    // selected value that is not in the list is kept as an option so a filter for a
+    // less-chatty device survives.
+    function updateClientPicker(privacy, clients) {
+      const sel = $('qf-client');
+      if (privacy === 'drop') {
+        sel.hidden = true;
+        if (queryFilter.client) {
+          queryFilter.client = '';
+          saveQueryFilter();
+          renderFilterBar();
+          refreshQueries();
+        }
+        return;
+      }
+      sel.hidden = false;
+      const values = clients.map(c => c.name).filter(Boolean);
+      const sig = values.join('|') + '::' + queryFilter.client;
+      if (sel.dataset.sig === sig) return;
+      sel.dataset.sig = sig;
+      const opts = ['<option value="">All clients</option>'];
+      for (const c of clients) {
+        if (!c.name) continue;
+        const text = c.label ? `${c.label} (${c.name})` : c.name;
+        opts.push(`<option value="${esc(c.name)}">${esc(text)}</option>`);
+      }
+      if (queryFilter.client && !values.includes(queryFilter.client)) {
+        opts.push(`<option value="${esc(queryFilter.client)}">${esc(queryFilter.client)}</option>`);
+      }
+      sel.innerHTML = opts.join('');
+      sel.value = queryFilter.client;
+    }
+
+    // Fetch and render the recent-queries table for the current filter. Split out
+    // of refresh() so a filter change can refetch at once, not on the next tick.
+    async function refreshQueries() {
+      if (isCollapsed('queries-table')) return;
+      try {
+        const { queries } = await fetch(queriesURL()).then(r => r.json());
+        const rows = queries || [];
+        setTbody('queries', rows.length
+          ? rows.map(q => {
+            const badge = q.blocked
+              ? '<span class="badge badge-block">BLOCK</span>'
+              : '<span class="badge badge-allow">ALLOW</span>';
+            const t = new Date(q.ts).toLocaleTimeString();
+            return `<tr>
+              <td class="muted num">${t}</td>
+              <td class="mono">${clientCell(q.client_ip, q.label)}</td>
+              <td class="mono">${esc(stripDot(q.domain))}</td>
+              <td>${badge}</td>
+            </tr>`;
+          }).join('')
+          : `<tr><td colspan="4" class="empty">${queryFilterActive()
+              ? 'No queries match the filter'
+              : 'No queries logged. Make sure that query_db is set in config.yaml'}</td></tr>`);
+      } catch (e) { console.error('queries fetch failed:', e); }
     }
 
     // ── Query-volume chart ────────────────────────────────────
@@ -893,6 +1092,8 @@
         // panel says so instead of showing blank rows. "subnet" keeps the list
         // but notes the entries are subnet-masked. "raw" is the plain list.
         const privacy = s.query_privacy || 'raw';
+        $('privacy-mode').textContent = privacy;
+        const clients = s.top_clients || [];
         const cap = $('clients-cap');
         if (privacy === 'drop') {
           cap.textContent = 'Client attribution is off (privacy mode: drop).';
@@ -906,7 +1107,6 @@
           } else {
             cap.hidden = true;
           }
-          const clients = s.top_clients || [];
           setTbody('top-clients', clients.length
             ? clients.map(e =>
               `<tr><td class="mono">${clientCell(e.name, e.label)}</td><td class="muted num">${fmt(e.count)}</td></tr>`
@@ -914,30 +1114,13 @@
             : '<tr><td colspan="2" class="empty">No queries yet</td></tr>');
           $('clients-count').textContent = clients.length ? `(${clients.length})` : '';
         }
+        updateClientPicker(privacy, clients);
 
         renderSources(s.sources || []);
       } catch (e) { console.error('stats fetch failed:', e); }
 
       refreshHistory();
-
-      if (isCollapsed('queries-table')) return;
-      try {
-        const { queries } = await fetch('/api/queries?limit=50').then(r => r.json());
-        setTbody('queries', (queries || []).length
-          ? (queries || []).map(q => {
-            const badge = q.blocked
-              ? '<span class="badge badge-block">BLOCK</span>'
-              : '<span class="badge badge-allow">ALLOW</span>';
-            const t = new Date(q.ts).toLocaleTimeString();
-            return `<tr>
-              <td class="muted num">${t}</td>
-              <td class="mono">${clientCell(q.client_ip, q.label)}</td>
-              <td class="mono">${esc(stripDot(q.domain))}</td>
-              <td>${badge}</td>
-            </tr>`;
-          }).join('')
-          : '<tr><td colspan="4" class="empty">No queries logged. Make sure that query_db is set in config.yaml</td></tr>');
-      } catch (e) { console.error('queries fetch failed:', e); }
+      await refreshQueries();
     }
 
     async function reloadBlocklists() {
@@ -1032,9 +1215,50 @@
       refreshHistory();
     });
 
-    // Restore collapsed panels, wire the chart hover, and keep the canvas crisp
-    // on resize, before the first poll so the fetch guards see the right state.
+    // Recent Queries filter: domain input (debounced), status toggle, client
+    // picker, and clear. Each change saves the state and refetches at once.
+    let domainDebounce;
+    $('qf-domain').addEventListener('input', e => {
+      queryFilter.domain = e.target.value.trim();
+      saveQueryFilter();
+      renderFilterBar();
+      clearTimeout(domainDebounce);
+      domainDebounce = setTimeout(refreshQueries, 300);
+    });
+
+    $('qf-status').addEventListener('click', e => {
+      const btn = e.target.closest('button[data-status]');
+      if (!btn || btn.dataset.status === queryFilter.status) return;
+      queryFilter.status = btn.dataset.status;
+      for (const b of $('qf-status').children) {
+        b.classList.toggle('active', b.dataset.status === queryFilter.status);
+      }
+      saveQueryFilter();
+      renderFilterBar();
+      refreshQueries();
+    });
+
+    $('qf-client').addEventListener('change', e => {
+      queryFilter.client = e.target.value;
+      saveQueryFilter();
+      renderFilterBar();
+      refreshQueries();
+    });
+
+    $('qf-clear').addEventListener('click', () => {
+      queryFilter = { domain: '', status: 'all', client: '' };
+      try { localStorage.removeItem(QUERY_FILTER_KEY); } catch (e) {}
+      syncFilterControls();
+      renderFilterBar();
+      refreshQueries();
+    });
+
+    // Restore collapsed panels and the saved filter, wire the chart hover, and
+    // keep the canvas crisp on resize, before the first poll so the fetch guards
+    // and the filter URL see the right state.
     ['history-body', 'domains-table', 'queries-table'].forEach(applyCollapsed);
+    syncFilterControls();
+    renderFilterBar();
     setupHistoryHover();
     window.addEventListener('resize', drawHistory);
 

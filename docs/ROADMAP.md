@@ -36,7 +36,7 @@ rails.
 | 20 | Query-volume-over-time graph on the dashboard | Medium | done (CL 70) |
 | 21 | Query-log privacy modes (write-time client anonymization) | Medium | done (CL 72) |
 | 22 | Client name attribution in the log and dashboard | Medium | done (CL 73) |
-| 23 | Query-log search / filter | Medium | not started |
+| 23 | Query-log search / filter | Medium | done (CL 74) |
 | 24 | Query-log export (CSV / JSON) | Medium | not started |
 | 25 | Regex / pattern blocking | High | not started |
 | 26 | Grafana dashboard + Prometheus scrape/alert examples | Low | not started |
@@ -44,6 +44,7 @@ rails.
 | 28 | Validate the upstreams at config time (format check + single-upstream note) | Low | not started |
 | 29 | "Cached" line on the query-volume graph (record cache-hit per query) | Medium | not started |
 | 30 | Go runtime gauges (goroutines, heap) in `/metrics` | Medium | not started |
+| 31 | Failed-query visibility (per-query outcome: graph, filter, `/metrics`) | Medium | not started |
 
 Items 19-26 came out of a 2026-08-24 feature-ideas session. Items 21-24 are a
 dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
@@ -699,28 +700,42 @@ Design decisions settled in the CL:
 Rated Medium: a usability win for reading the log. It changes no filtering
 behavior.
 
-## 23. Query-log search / filter
+## 23. Query-log search / filter (done, CL 74)
 
 The recent-queries panel shows the stream but cannot answer a question about it.
 Add filters so false-positive triage is a query, not a scroll.
 
-`GET /api/queries` gains `?domain=`, `?blocked=`, and `?client=` parameters,
-reusing the `?limit=` clamp machinery. The filter runs in SQL over the stored
-columns, so it can only ever match what #21 left in the row. When the effective
-privacy level makes the client filter meaningless (the client is dropped, or a
-single-`/24` LAN collapses every client to one subnet), the UI hides or disables
-the client control rather than offering a box that silently returns every row.
+**Shipped in CL 74:** `GET /api/queries` gained `?domain=` (substring), `?client=`
+(exact), and `?blocked=true|false` parameters, reusing the `?limit=` clamp
+machinery. A new `querylog.QueryFilter` and `DBLogger.Search` build the WHERE
+dynamically with every value bound, and `Recent` now delegates to `Search` so there
+is one query builder. The filter runs in SQL over the stored columns, so it matches
+only what #21 (CL 72) left in the row. The dashboard adds a domain box, an
+All/Blocked/Allowed toggle, and a client picker to the Recent Queries header. The
+filter state persists in `localStorage`; an always-visible active-filter row with a
+Clear button and a distinct "no match" empty state keep a restored filter from
+reading as a broken log. The page header also shows the active `query_privacy` mode
+at all times.
 
-Design decisions to settle in the CL:
+Design decisions settled in the CL:
 
-- **Match semantics.** Exact vs substring for `?domain=`, and whether `?client=`
-  accepts a CIDR. Substring domain match is the useful default for "show me
-  everything under this tracker".
-- **Index cost.** Whether the filtered columns need an index, weighed against the
-  async writer's single-connection pool (b/038). Home-scale row counts likely do
-  not, but note the measurement.
+- **Substring domain, exact client, no CIDR.** Domain is a case-insensitive
+  substring (LIKE with the metacharacters escaped), the useful default for "show me
+  everything under this tracker". The client filter is an exact match on the stored
+  (masked) value. CIDR was rejected: SQLite has no inet functions, so it would force
+  fetch-then-filter in Go and break the "`LIMIT` bounds the scan" property. The
+  client picker is seeded from the Top Clients list, so only an existing value can
+  be chosen.
+- **No new index.** `blocked`/`domain` are already indexed, a leading-wildcard LIKE
+  cannot use a b-tree index anyway, and a new `client_ip` index would slow every
+  INSERT on the single-connection pool (b/038) to speed a read that, on a
+  retention-bounded home table bounded further by `LIMIT`, does not need it. This is
+  a shape decision, not a measured one; the trigger to revisit is a real deployment
+  with slow filtered reads.
 - **Privacy-aware UI.** The client control shows only when the stored client is
-  meaningful, driven by the active `query_privacy` level.
+  meaningful, driven by the active `query_privacy` level: hidden under `drop`. The
+  "flat `/24` collapses to one subnet" case is not UI-detectable (no LAN-topology
+  knowledge) and stays a documentation caveat, as CL 72/73 did.
 
 Rated Medium: a usability and observability win. It changes no filtering behavior.
 
@@ -1117,6 +1132,110 @@ query-log and UI change with no new metric.
 
 Rated Medium: an observability win that adds a real runtime signal to the binary
 for a few lines and no dependency. It changes no filtering behavior.
+
+## 31. Failed-query visibility (per-query outcome)
+
+Today s-hole classifies each query only as blocked or allowed, and the query log
+stores only that (`ts, client_ip, domain, blocked`). A query that got SERVFAIL is
+logged as an ordinary allowed row, indistinguishable from one that resolved. So an
+operator cannot answer "is my sinkhole holding up, and which queries failed?" from
+the app. The only current signal is the `upstream forward failed` WARN in the
+service log (`journalctl -u s-hole`, or the Windows Event Log). This item records a
+per-query outcome and surfaces failures in three places: the query-volume graph
+(#20), the recent-query filter (#23), and `/metrics`. (Raised in a 2026-09-12
+session.)
+
+Two failure scenarios exist, and they must stay distinct, because both reach the
+client as SERVFAIL and so cannot be told apart by rcode alone:
+
+- **Unresolved (s-hole synthesized the SERVFAIL).** `forward` returns an error
+  (every upstream failed at the transport level, or the query deadline hit), and
+  the handler answers with `dns.HandleFailed` (handler.go). This is the "does the
+  app hold up" signal: upstream reachability, a bad `upstreams:` address, a broken
+  network path, or too tight a deadline. It is the operator's problem to fix.
+- **Upstream error (relayed from a live upstream).** An upstream returned a valid
+  DNS message whose rcode is a failure (SERVFAIL or REFUSED), and s-hole relays it
+  verbatim. `exchange` treats only a transport error as an error, so this comes
+  back as success and is relayed. This is usually not s-hole's fault (a broken
+  authoritative server, a DNSSEC failure, a refusal). Collapsing it into the first
+  scenario would make the graph lie: a spike of one popular broken domain would
+  read as "the app is failing" when it is not.
+
+The distinction needs one bit beyond the rcode: did s-hole synthesize the failure,
+or relay an upstream message? So the log row wants a small outcome marker, not just
+a stored rcode.
+
+This shares the write-path and schema machinery of #29 and should reuse it. If #29
+lands first, this item adds one more field to the same `Record` struct and the same
+`ALTER TABLE` migration style:
+
+- **Schema.** Add an outcome column to the `queries` table (an idempotent
+  `ALTER TABLE ... ADD COLUMN`, matching the `CREATE TABLE IF NOT EXISTS` startup
+  migration style). Store enough to separate `ok` / `nxdomain` / `unresolved` /
+  `upstream-error` (a stored rcode plus a synthesized flag, or a single small
+  outcome enum). Existing rows read as `ok`, so the failed lines under-report for
+  buckets written before the upgrade; document this forward-only behavior the way
+  #21 and #29 document theirs.
+- **Write path.** The handler must carry the outcome into the logger, so logging
+  moves from before the forward (handler.go, where the row is written today) to a
+  single log call at the end of `ServeDNS` with the computed outcome. This is the
+  `Logger.Log` signature ripple #29 already calls out; the `Record` struct #29
+  proposes absorbs it. The write stays on the async, drop-on-full fan-out, so DNS
+  never blocks (a pinned invariant). The CL 72 masking choke point does not move.
+- **Read path (graph).** Extend `DBLogger.History` to sum the failed outcomes per
+  bucket and add fields to `Bucket`; the canvas draws the failed line(s). Not red
+  (blocked) and not green (allowed): amber/orange reads as trouble without a color
+  collision. Whether unresolved and upstream-error are one line or two is a UI
+  decision.
+- **Read path (filter).** Add the outcome to the `?blocked=`-style query parameters
+  and the segmented control in the recent-query panel (#23). "Failed" is a bit
+  orthogonal to blocked/allowed (a query is blocked, or allowed-and-ok, or
+  allowed-and-failed), so decide whether it is a fourth segment or its own filter
+  dimension.
+- **Metrics.** Expose the aggregate on `/metrics`, matching the `shole_*` naming:
+  `shole_forward_failures_total` (unresolved), `shole_upstream_errors_total`
+  (relayed failure rcode), and per-upstream `shole_upstream_failures_total`
+  incremented at `recordFailure` in the cooldown tracker (upstream.go). The
+  per-upstream counter is the "which upstream is flaky" attribution the query log
+  cannot give, because `forward` aggregates several upstreams into one generic
+  error. Keep the upstream address as the only label; add no `domain` label
+  anywhere (unbounded cardinality). Domain-level detail stays in the query log,
+  which is built for it.
+
+Design decisions to settle in the CL:
+
+- **What counts as failed.** Define the operator-facing "failed" narrowly as
+  unresolved (s-hole could not answer) plus relayed SERVFAIL/REFUSED. NXDOMAIN is a
+  valid answer, not a failure, and stays on the allowed side.
+- **One field or two.** A stored rcode plus a synthesized-flag bit, or a single
+  outcome enum. The enum is simpler to filter and graph; the rcode is richer for a
+  future per-rcode breakdown. Pick one and document it.
+- **One failed line or two.** Whether the graph and the filter separate unresolved
+  from upstream-error, or show a single "failed" series. The data supports both;
+  the UI need not.
+- **The two per-query counters go in `stats.Counter`.** They are subsets of
+  `total`, so each must obey the LOAD-ORDER INVARIANT (read before `total` in
+  `Snapshot`) and ship with its own `*NeverExceeds*UnderLoad` `-race` test, per the
+  counter rule in CLAUDE.md. The per-upstream counter lives in `upstreamTracker`,
+  not `stats`, so it is outside that rule.
+
+**Hot-path cost.** The outcome is already computed on the serving path (the handler
+already branches on blocked, cache hit, local PTR, and the forward result), so this
+forwards a value that exists into the async logger and bumps a counter. No new
+allocation, lock, or syscall on the serving goroutine. The `ALTER TABLE` column,
+the batched `INSERT`, and the `SUM` aggregate live off the hot path. Storage grows
+by about one byte per row on a retention-bounded table. `BenchmarkHandler_ServeDNS`
+can prove no regression before merge.
+
+Feeds #26 (the Grafana dashboard and alert rules would draw these series; a
+forward-failure-rate alert is a natural "upstreams are down" canary) and pairs with
+#28 (validate upstreams at config time), which targets the same silent
+upstream-misconfig class from the config side.
+
+Rated Medium: an observability win that completes the per-query-outcome story and
+turns a silent, log-only failure into a graph line, a filter, and a scrapeable
+metric. It is a write-path and schema change, so it is more involved than a UI-only
+tweak, and it depends on or reuses #29's `Record` struct and migration.
 
 ## Pending decisions
 

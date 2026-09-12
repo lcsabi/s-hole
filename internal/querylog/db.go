@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -292,17 +293,64 @@ type QueryRow struct {
 	Blocked  bool   `json:"blocked"`
 }
 
-// Recent returns the last n queries ordered newest-first. ctx is honored
-// as a query deadline; HTTP handlers pass r.Context() so an aborted client
-// connection unblocks the database query.
-func (d *DBLogger) Recent(ctx context.Context, n int) ([]QueryRow, error) {
-	rows, err := d.db.QueryContext(ctx,
-		"SELECT ts, client_ip, domain, blocked FROM queries ORDER BY id DESC LIMIT ?", n)
+// QueryFilter holds optional filters for a recent-query read. The zero value
+// matches every row, so Search with a zero filter is a plain Recent.
+//
+// Every field filters over a stored column, so a filter can only ever match what
+// the query-privacy mode wrote (CL 72 masks the client at write time). A client
+// filter therefore matches the stored, already-masked value, never a raw address.
+type QueryFilter struct {
+	Domain  string // case-insensitive substring of the domain; "" matches any
+	Client  string // exact match on the stored (masked) client; "" matches any
+	Blocked *bool  // nil matches any; else true for blocked, false for allowed
+}
+
+// Search returns the last n queries that match f, ordered newest-first. ctx is
+// honored as a query deadline; HTTP handlers pass r.Context() so an aborted
+// client connection unblocks the database query.
+//
+// The conditions are built dynamically and every value is bound as a parameter,
+// so no caller input reaches the SQL text. The domain filter is a substring
+// LIKE, which cannot use idx_queries_domain; at home scale the retention-bounded
+// table and the LIMIT keep the scan cheap (see the no-index note in CL 74).
+func (d *DBLogger) Search(ctx context.Context, f QueryFilter, n int) ([]QueryRow, error) {
+	var where []string
+	var args []any
+	if f.Domain != "" {
+		// Domains are stored lowercase, so lowercasing the term makes the match
+		// case-insensitive. Escape the LIKE metacharacters so a typed % or _ is a
+		// literal, not a wildcard.
+		where = append(where, "domain LIKE ? ESCAPE '\\'")
+		args = append(args, "%"+escapeLike(strings.ToLower(f.Domain))+"%")
+	}
+	if f.Client != "" {
+		where = append(where, "client_ip = ?")
+		args = append(args, f.Client)
+	}
+	if f.Blocked != nil {
+		where = append(where, "blocked = ?")
+		args = append(args, b2i(*f.Blocked))
+	}
+
+	q := "SELECT ts, client_ip, domain, blocked FROM queries"
+	if len(where) > 0 {
+		q += " WHERE " + strings.Join(where, " AND ")
+	}
+	q += " ORDER BY id DESC LIMIT ?"
+	args = append(args, n)
+
+	rows, err := d.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	return scanRows(rows)
+}
+
+// Recent returns the last n queries ordered newest-first. It is Search with an
+// empty filter, so the two share one query builder.
+func (d *DBLogger) Recent(ctx context.Context, n int) ([]QueryRow, error) {
+	return d.Search(ctx, QueryFilter{}, n)
 }
 
 // TopBlocked returns the n most-blocked domains across all recorded
@@ -399,6 +447,24 @@ func (d *DBLogger) History(ctx context.Context, window, bucket time.Duration) ([
 		}
 	}
 	return out, nil
+}
+
+// escapeLike escapes the LIKE metacharacters so a user-typed term matches
+// literally. The backslash is the ESCAPE character in Search, so escape it
+// first, then the % and _ wildcards.
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, "%", `\%`)
+	s = strings.ReplaceAll(s, "_", `\_`)
+	return s
+}
+
+// b2i maps a bool to the 0/1 the blocked column stores.
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func scanRows(rows *sql.Rows) ([]QueryRow, error) {

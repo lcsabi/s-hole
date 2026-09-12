@@ -251,7 +251,7 @@ The admin web UI is served at **`http://127.0.0.1:8080`** by default. This is lo
 |---|---|---|
 | `GET` | `/api/stats` | Live stats: uptime, query totals, block rate, cache hit rate, blocklist size, per-source blocklist health, top domains/clients (each client carries an optional `client_names` `label`), and the active `query_privacy` mode |
 | `GET` | `/api/check?domain=NAME` | Why a domain is blocked: the decision plus the full suffix walk (matched block entry, overriding whitelist entry). Diagnostic; changes no state and does not count in stats |
-| `GET` | `/api/queries?limit=N` | Last N queries from SQLite, newest first (default: 50, max: 1000). Each row carries an optional `client_names` `label` |
+| `GET` | `/api/queries?limit=N` | Last N queries from SQLite, newest first (default: 50, max: 1000). Filter with `?domain=` (substring), `?client=` (exact match on the stored value), or `?blocked=true`/`false`. Each row carries an optional `client_names` `label` |
 | `GET` | `/api/top-blocked?limit=N` | All-time most-blocked domains from SQLite (default: 50, max: 1000); empty when `query_db` is unset |
 | `GET` | `/api/history?window=24h&bucket=1h` | Per-bucket total and blocked query counts over the window, from SQLite (default: 24h window, 1h bucket; bucket count capped at 1000). Reports the effective `log_queries` mode (`all`/`blocked`/`none`/`off`), so the graph reflects only what is logged; empty when `query_db` is unset |
 | `GET` | `/api/whitelist` | List all runtime-whitelisted domains |

@@ -1022,7 +1022,7 @@
           : d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit' });
         const extraLines = historyLogging === 'blocked'
           ? ''
-          : `<br>total ${fmt(b.total)}`
+          : `<br><span style="color:var(--violet)">total ${fmt(b.total)}</span>`
             + `<br><span style="color:var(--teal)">cached ${fmt(b.cached)}</span>`;
         tip.innerHTML = `<strong>${when}</strong>${extraLines}`
           + `<br><span style="color:var(--red)">blocked ${fmt(b.blocked)}</span>`;

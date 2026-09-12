@@ -6,6 +6,7 @@ import (
 
 	"github.com/lcsabi/s-hole/internal/blocklist"
 	"github.com/lcsabi/s-hole/internal/cache"
+	"github.com/lcsabi/s-hole/internal/querylog"
 	"github.com/lcsabi/s-hole/internal/stats"
 	"github.com/miekg/dns"
 )
@@ -32,7 +33,7 @@ func (w *fakeWriter) Hijack()                   {}
 // nullLogger is a Logger that records nothing.
 type nullLogger struct{}
 
-func (nullLogger) Log(string, string, bool) {}
+func (nullLogger) Log(querylog.Record) {}
 
 // buildReq creates a single-question A query for name.
 func buildReq(name string) *dns.Msg {
@@ -107,15 +108,17 @@ func TestMaskClientIP(t *testing.T) {
 	}
 }
 
-// captureLogger records the last client value handed to Log so a test can
-// assert the query-log sink sees the masked address.
+// captureLogger records the last Record handed to Log so a test can assert the
+// query-log sink sees the masked address and the right per-query fields.
 type captureLogger struct {
 	clientIP string
+	last     querylog.Record
 	calls    int
 }
 
-func (c *captureLogger) Log(clientIP, _ string, _ bool) {
-	c.clientIP = clientIP
+func (c *captureLogger) Log(rec querylog.Record) {
+	c.clientIP = rec.ClientIP
+	c.last = rec
 	c.calls++
 }
 
@@ -265,6 +268,46 @@ func TestServeDNS_CacheHitAvoidsUpstream(t *testing.T) {
 	if s := counter.Snapshot(0); s.CacheHits != 1 {
 		t.Errorf("CacheHits = %d, want 1", s.CacheHits)
 	}
+}
+
+// TestServeDNS_LogsCacheHit proves the query-log Record carries CacheHit=true
+// only for a reply served from the cache. A blocked query short-circuits before
+// the cache, so it logs CacheHit=false (ROADMAP #29).
+func TestServeDNS_LogsCacheHit(t *testing.T) {
+	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+
+	t.Run("cache hit logs CacheHit=true", func(t *testing.T) {
+		store := blocklist.NewStore() // empty: query is allowed
+		c := cache.New(10)
+		defer c.Close()
+		c.Set(q, buildResp(q, net.IPv4(1, 2, 3, 4), 300))
+		log := &captureLogger{}
+		h := NewHandler(store, stats.New(), nil, log, "zero", 60, c, false, "raw")
+
+		h.ServeDNS(fakeClient(), buildReq("example.com"))
+
+		if log.calls != 1 {
+			t.Fatalf("logger called %d times, want 1", log.calls)
+		}
+		if !log.last.CacheHit || log.last.Blocked {
+			t.Errorf("cache-hit record = %+v, want CacheHit=true Blocked=false", log.last)
+		}
+	})
+
+	t.Run("blocked logs CacheHit=false", func(t *testing.T) {
+		store := blocklist.NewStore()
+		store.Replace([]string{"ads.example.com"})
+		c := cache.New(10)
+		defer c.Close()
+		log := &captureLogger{}
+		h := NewHandler(store, stats.New(), nil, log, "zero", 60, c, false, "raw")
+
+		h.ServeDNS(fakeClient(), buildReq("ads.example.com"))
+
+		if !log.last.Blocked || log.last.CacheHit {
+			t.Errorf("blocked record = %+v, want Blocked=true CacheHit=false", log.last)
+		}
+	})
 }
 
 func TestServeDNS_EmptyQuestion(t *testing.T) {

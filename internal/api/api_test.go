@@ -281,8 +281,8 @@ func TestQueriesEndpoint_WithRealDB(t *testing.T) {
 	}
 	defer db.Close()
 
-	db.Log("1.1.1.1", "first.com.", false)
-	db.Log("1.1.1.1", "second.com.", true)
+	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "first.com."})
+	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "second.com.", Blocked: true})
 	// Poll until the async writer has committed both rows instead of a fixed
 	// flush-tick sleep; CL 21 (S3) banned the hardcoded time.Sleep because it
 	// is both slow on a healthy runner and flaky under CI contention.
@@ -319,10 +319,10 @@ func TestTopBlockedEndpoint_WithRealDB(t *testing.T) {
 	}
 	defer db.Close()
 
-	db.Log("1.1.1.1", "ads.com.", true)
-	db.Log("1.1.1.1", "ads.com.", true)
-	db.Log("1.1.1.1", "tracker.com.", true)
-	db.Log("1.1.1.1", "allowed.com.", false) // must not appear
+	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "ads.com.", Blocked: true})
+	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "ads.com.", Blocked: true})
+	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "tracker.com.", Blocked: true})
+	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "allowed.com."}) // must not appear
 	// Poll for all four rows (not a fixed flush-tick sleep, CL 21 S3) so the
 	// per-domain counts below are stable: waiting for the full count ensures
 	// both ads.com rows are committed, not just one.
@@ -390,10 +390,11 @@ func TestHistoryEndpoint_WithRealDB(t *testing.T) {
 	}
 	defer db.Close()
 
-	db.Log("1.1.1.1", "ads.com.", true)
-	db.Log("1.1.1.1", "ads.com.", true)
-	db.Log("1.1.1.1", "allowed.com.", false)
-	waitForRows(t, db, 3)
+	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "ads.com.", Blocked: true})
+	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "ads.com.", Blocked: true})
+	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "allowed.com."})
+	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "cached.com.", CacheHit: true})
+	waitForRows(t, db, 4)
 
 	store := blocklist.NewStore()
 	s := New(stats.New(), db, store, nil, func() bool { return true })
@@ -419,10 +420,10 @@ func TestHistoryEndpoint_WithRealDB(t *testing.T) {
 	if len(body.Series) != 24 {
 		t.Fatalf("series length = %d, want 24", len(body.Series))
 	}
-	// All three rows land in the current (last) bucket.
+	// All four rows land in the current (last) bucket; one is a cache hit.
 	cur := body.Series[len(body.Series)-1]
-	if cur.Total != 3 || cur.Blocked != 2 {
-		t.Errorf("current bucket = {total %d, blocked %d}, want {3, 2}", cur.Total, cur.Blocked)
+	if cur.Total != 4 || cur.Blocked != 2 || cur.Cached != 1 {
+		t.Errorf("current bucket = {total %d, blocked %d, cached %d}, want {4, 2, 1}", cur.Total, cur.Blocked, cur.Cached)
 	}
 }
 
@@ -437,8 +438,8 @@ func TestHistoryEndpoint_BlockedModeReportsLogging(t *testing.T) {
 	}
 	defer db.Close()
 
-	db.Log("1.1.1.1", "ads.com.", true)
-	db.Log("1.1.1.1", "allowed.com.", false) // dropped: not logged under "blocked"
+	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "ads.com.", Blocked: true})
+	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "allowed.com."}) // dropped: not logged under "blocked"
 	waitForRows(t, db, 1)
 
 	store := blocklist.NewStore()
@@ -653,9 +654,9 @@ func TestQueriesEndpoint_Filtered(t *testing.T) {
 	}
 	defer db.Close()
 
-	db.Log("1.1.1.1", "ads.example.com.", true)
-	db.Log("2.2.2.2", "google.com.", false)
-	db.Log("2.2.2.2", "tracker.net.", true)
+	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "ads.example.com.", Blocked: true})
+	db.Log(querylog.Record{ClientIP: "2.2.2.2", Domain: "google.com."})
+	db.Log(querylog.Record{ClientIP: "2.2.2.2", Domain: "tracker.net.", Blocked: true})
 	waitForRows(t, db, 3)
 
 	store := blocklist.NewStore()

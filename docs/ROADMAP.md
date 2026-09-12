@@ -42,7 +42,7 @@ rails.
 | 26 | Grafana dashboard + Prometheus scrape/alert examples | Low | not started |
 | 27 | Install/uninstall robustness hardening (preflight, health check, shellcheck) | Medium | done (CL 66) |
 | 28 | Validate the upstreams at config time (format check + single-upstream note) | Low | not started |
-| 29 | "Cached" line on the query-volume graph (record cache-hit per query) | Medium | not started |
+| 29 | "Cached" line on the query-volume graph (record cache-hit per query) | Medium | done (CL 76) |
 | 30 | Go runtime gauges (goroutines, heap) in `/metrics` | Medium | not started |
 | 31 | Failed-query visibility (per-query outcome: graph, filter, `/metrics`) | Medium | not started |
 
@@ -52,10 +52,13 @@ dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
 implementation order, not the item-number order.
 
 Items 26, 29, 30, and 31 are the observability group. Recommended order: #29,
-then #31, then #26 last. #29 introduces the per-query `Record` struct and the
-`ALTER TABLE` migration in its simplest form (one already-counted boolean, no new
-metric), so it is the lowest-risk vehicle for that refactor; #31 then reuses both
-to add the outcome column, the graph and filter, and the failure metrics. #26
+then #31, then #26 last. #29 landed (CL 76): it introduced the per-query `Record`
+struct (in `querylog`) and the first idempotent `ALTER TABLE ... ADD COLUMN`
+migration (via the `ensureColumn` helper) in their simplest form (one
+already-counted boolean, no new metric), so it was the lowest-risk vehicle for
+that refactor. #31 then reuses both to add the outcome column, the graph and
+filter, and the failure metrics: it adds one `Outcome` field to the same `Record`
+and one more `ensureColumn` call. #26
 (Grafana and Prometheus examples) draws the metric surface, so it comes after the
 metrics exist, or the dashboard is revised on every new metric. #30 (runtime
 gauges) is independent of the log work and can land any time, but before #26.
@@ -1020,7 +1023,7 @@ upstream misconfiguration into a startup error (when nothing can forward) or a
 loud warning (when a single entry is wrong), on the same path `-check-config`
 already guards.
 
-## 29. "Cached" line on the query-volume graph
+## 29. "Cached" line on the query-volume graph (done, CL 76)
 
 The query-volume graph (#20) draws total and blocked per bucket. The third
 outcome an operator cares about, a cache hit, is not shown, because the query log
@@ -1177,9 +1180,9 @@ The distinction needs one bit beyond the rcode: did s-hole synthesize the failur
 or relay an upstream message? So the log row wants a small outcome marker, not just
 a stored rcode.
 
-This shares the write-path and schema machinery of #29 and should reuse it. If #29
-lands first, this item adds one more field to the same `Record` struct and the same
-`ALTER TABLE` migration style:
+This shares the write-path and schema machinery of #29, which landed first (CL 76).
+This item adds one more field to the same `Record` struct and one more idempotent
+`ensureColumn` migration call:
 
 - **Schema.** Add an outcome column to the `queries` table (an idempotent
   `ALTER TABLE ... ADD COLUMN`, matching the `CREATE TABLE IF NOT EXISTS` startup
@@ -1188,12 +1191,13 @@ lands first, this item adds one more field to the same `Record` struct and the s
   outcome enum). Existing rows read as `ok`, so the failed lines under-report for
   buckets written before the upgrade; document this forward-only behavior the way
   #21 and #29 document theirs.
-- **Write path.** The handler must carry the outcome into the logger, so logging
-  moves from before the forward (handler.go, where the row is written today) to a
-  single log call at the end of `ServeDNS` with the computed outcome. This is the
-  `Logger.Log` signature ripple #29 already calls out; the `Record` struct #29
-  proposes absorbs it. The write stays on the async, drop-on-full fan-out, so DNS
-  never blocks (a pinned invariant). The CL 72 masking choke point does not move.
+- **Write path.** The handler must carry the outcome into the logger. CL 76 already
+  logs at each decided outcome (blocked, cache hit, cache miss, private-PTR); this
+  item adds the computed outcome to each of those log calls, or consolidates them
+  into a single log call at the end of `ServeDNS`. This is the `Logger.Log` signature
+  ripple #29 handled; #29's `Record` struct absorbs the new field. The write stays on
+  the async, drop-on-full fan-out, so DNS never blocks (a pinned invariant). The
+  CL 72 masking choke point does not move.
 - **Read path (graph).** Extend `DBLogger.History` to sum the failed outcomes per
   bucket and add fields to `Bucket`; the canvas draws the failed line(s). Not red
   (blocked) and not green (allowed): amber/orange reads as trouble without a color

@@ -34,6 +34,7 @@ import (
 
 	"github.com/lcsabi/s-hole/internal/blocklist"
 	"github.com/lcsabi/s-hole/internal/cache"
+	"github.com/lcsabi/s-hole/internal/querylog"
 	"github.com/lcsabi/s-hole/internal/stats"
 	"github.com/miekg/dns"
 )
@@ -48,9 +49,10 @@ const queryDeadline = 10 * time.Second
 
 // Logger is the minimal log sink used by the DNS handler. Both the file
 // and SQLite query loggers satisfy it; cmd/s-hole/main.go fans out to multiple via
-// querylog.Multi.
+// querylog.Multi. It takes a querylog.Record so a new per-query field does not
+// change this signature (ROADMAP #31 adds the next field).
 type Logger interface {
-	Log(clientIP, domain string, blocked bool)
+	Log(rec querylog.Record)
 }
 
 // privateReverseZones lists the RFC 6303 locally-served DNS reverse zones.
@@ -171,16 +173,20 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	if h.localPTR && isPrivatePTR(q.Qtype, domain) {
 		h.counter.RecordQuery(clientIP, domain, false)
 		h.counter.RecordLocalPTR()
-		h.logger.Log(clientIP, domain, false)
+		h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain})
 		h.writeLocalNXDOMAIN(w, req)
 		return
 	}
 
 	blocked := h.store.IsBlocked(domain)
 	h.counter.RecordQuery(clientIP, domain, blocked)
-	h.logger.Log(clientIP, domain, blocked)
 
+	// Log at the point each outcome is decided, so the query-log row records
+	// whether the reply was served from cache (cache_hit). A blocked query
+	// short-circuits before the cache and a local-PTR answer never reaches it,
+	// so both log CacheHit=false; total = blocked + cached + forwarded.
 	if blocked {
+		h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Blocked: true})
 		h.writeSinkhole(w, req, q)
 		return
 	}
@@ -190,12 +196,18 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		if cached, ok := h.cache.Get(q); ok {
 			cached.Id = req.Id
 			h.counter.RecordCacheHit()
+			h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, CacheHit: true})
 			if err := w.WriteMsg(cached); err != nil {
 				logger.Warn("write cached response failed", "err", err, "domain", domain)
 			}
 			return
 		}
 	}
+
+	// Cache miss: log as a forwarded (allowed, not cached) query before the
+	// forward, so a query whose upstream later fails is still logged, matching
+	// the behavior before cache_hit recording moved the log call here.
+	h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain})
 
 	ctx, cancel := context.WithTimeout(context.Background(), queryDeadline)
 	defer cancel()

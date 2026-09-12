@@ -22,8 +22,9 @@ func TestFileLogger_LogAll(t *testing.T) {
 	l := NewFileLogger(path, "all")
 	defer l.Close()
 
-	l.Log("1.2.3.4", "ads.example.com.", true)
-	l.Log("1.2.3.4", "google.com.", false)
+	l.Log(Record{ClientIP: "1.2.3.4", Domain: "ads.example.com.", Blocked: true})
+	l.Log(Record{ClientIP: "1.2.3.4", Domain: "google.com."})
+	l.Log(Record{ClientIP: "1.2.3.4", Domain: "cdn.example.com.", CacheHit: true})
 
 	out := readAll(t, path)
 	if !strings.Contains(out, "BLOCK 1.2.3.4 ads.example.com.") {
@@ -32,6 +33,10 @@ func TestFileLogger_LogAll(t *testing.T) {
 	if !strings.Contains(out, "ALLOW 1.2.3.4 google.com.") {
 		t.Errorf("missing ALLOW line in: %s", out)
 	}
+	// A cache hit appends a trailing CACHED marker to the ALLOW line.
+	if !strings.Contains(out, "ALLOW 1.2.3.4 cdn.example.com. CACHED") {
+		t.Errorf("missing cached ALLOW line in: %s", out)
+	}
 }
 
 func TestFileLogger_LogBlockedOnly(t *testing.T) {
@@ -39,8 +44,8 @@ func TestFileLogger_LogBlockedOnly(t *testing.T) {
 	l := NewFileLogger(path, "blocked")
 	defer l.Close()
 
-	l.Log("1.2.3.4", "ads.example.com.", true)
-	l.Log("1.2.3.4", "google.com.", false)
+	l.Log(Record{ClientIP: "1.2.3.4", Domain: "ads.example.com.", Blocked: true})
+	l.Log(Record{ClientIP: "1.2.3.4", Domain: "google.com."})
 
 	out := readAll(t, path)
 	if !strings.Contains(out, "BLOCK") {
@@ -80,8 +85,8 @@ func TestFileLogger_LogNone(t *testing.T) {
 	l := NewFileLogger(path, "none")
 	defer l.Close()
 
-	l.Log("1.2.3.4", "ads.example.com.", true)
-	l.Log("1.2.3.4", "google.com.", false)
+	l.Log(Record{ClientIP: "1.2.3.4", Domain: "ads.example.com.", Blocked: true})
+	l.Log(Record{ClientIP: "1.2.3.4", Domain: "google.com."})
 
 	out := readAll(t, path)
 	if out != "" {
@@ -96,18 +101,17 @@ type recorder struct {
 	entries []string
 }
 
-func (r *recorder) Log(clientIP, domain string, blocked bool) {
+func (r *recorder) Log(rec Record) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.entries = append(r.entries, clientIP+"|"+domain)
-	_ = blocked
+	r.entries = append(r.entries, rec.ClientIP+"|"+rec.Domain)
 }
 
 func TestMulti_FansOut(t *testing.T) {
 	a, b := &recorder{}, &recorder{}
 	m := NewMulti(a, b)
-	m.Log("1.1.1.1", "example.com.", false)
-	m.Log("2.2.2.2", "ads.com.", true)
+	m.Log(Record{ClientIP: "1.1.1.1", Domain: "example.com."})
+	m.Log(Record{ClientIP: "2.2.2.2", Domain: "ads.com.", Blocked: true})
 
 	if len(a.entries) != 2 {
 		t.Errorf("logger a got %d entries, want 2", len(a.entries))

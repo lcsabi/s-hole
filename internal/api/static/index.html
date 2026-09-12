@@ -18,6 +18,9 @@
       /* Total line: a light violet, the visual blend of blocked (red) and
          allowed (green). */
       --violet: #c4b5fd;
+      /* Cached line on the query-volume graph: a teal distinct from the
+         blocked red and the total violet. */
+      --teal: #2dd4bf;
     }
 
     *,
@@ -411,6 +414,7 @@
 
     .legend .sw-total { background: var(--violet); }
     .legend .sw-blocked { background: var(--red); }
+    .legend .sw-cached { background: var(--teal); }
 
     .hist-note {
       margin-left: 10px;
@@ -520,6 +524,7 @@
         <span class="legend">
           <span id="legend-total"><span class="sw sw-total"></span>Total</span>
           <span><span class="sw sw-blocked"></span>Blocked</span>
+          <span id="legend-cached"><span class="sw sw-cached"></span>Cached</span>
         </span>
         <span class="hist-note" id="history-note"></span>
       </span>
@@ -850,8 +855,9 @@
     let historySeries = [];
     // The effective query-log mode the series reflects: 'all', 'blocked',
     // 'none', or 'off' (query_db unset). The graph draws itself honestly from it:
-    // both lines for 'all', a single blocked line for 'blocked', an empty state
-    // for 'none'/'off'. This is why the graph can differ from the stat cards,
+    // all three lines (total, blocked, cached) for 'all', a single blocked line
+    // for 'blocked', an empty state for 'none'/'off'. This is why the graph can
+    // differ from the stat cards,
     // which count every query from the in-memory counter regardless of logging.
     let historyLogging = 'off';
 
@@ -889,6 +895,9 @@
       // read as total traffic.
       const blockedOnly = mode === 'blocked';
       $('legend-total').hidden = blockedOnly;
+      // Cache hits are allowed queries, so they are never logged under
+      // "blocked"; hide the Cached swatch with Total in that mode.
+      $('legend-cached').hidden = blockedOnly;
       $('history-note').textContent = blockedOnly ? 'blocked queries only (log_queries: blocked)' : '';
 
       // No data source for a series: query logging is off (query_db unset, mode
@@ -919,6 +928,7 @@
       const color = (name, fallback) => (css.getPropertyValue(name).trim() || fallback);
       const red = color('--red', '#f87171');
       const violet = color('--violet', '#c4b5fd');
+      const teal = color('--teal', '#2dd4bf');
       const muted = color('--muted', '#64748b');
       const border = color('--border', '#252836');
 
@@ -971,7 +981,11 @@
         ctx.lineWidth = 1.5;
         ctx.stroke();
       };
+      // Draw total (the envelope) first, then cached, then blocked on top.
+      // Cached is only present under "all" (a cache hit is an allowed query);
+      // it scales to the same total max, so it never overshoots the envelope.
       if (drawTotal) drawSeries('total', violet, hexA(violet, 0.12));
+      if (drawTotal) drawSeries('cached', teal, hexA(teal, 0.14));
       drawSeries('blocked', red, hexA(red, 0.16));
 
       // A few thinned x-axis time labels.
@@ -1006,8 +1020,11 @@
         const when = historyWindow === '24h'
           ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
           : d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit' });
-        const totalLine = historyLogging === 'blocked' ? '' : `<br>total ${fmt(b.total)}`;
-        tip.innerHTML = `<strong>${when}</strong>${totalLine}`
+        const extraLines = historyLogging === 'blocked'
+          ? ''
+          : `<br><span style="color:var(--violet)">total ${fmt(b.total)}</span>`
+            + `<br><span style="color:var(--teal)">cached ${fmt(b.cached)}</span>`;
+        tip.innerHTML = `<strong>${when}</strong>${extraLines}`
           + `<br><span style="color:var(--red)">blocked ${fmt(b.blocked)}</span>`;
         tip.hidden = false;
         const wrapW = canvas.parentElement.clientWidth;

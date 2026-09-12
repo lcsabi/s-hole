@@ -463,7 +463,7 @@ func parseFlexDuration(s string) (time.Duration, error) {
 }
 
 // handleHistory serves a query-volume-over-time series from the SQLite query
-// log: per-bucket total and blocked counts over the requested window. When
+// log: per-bucket total, blocked, and cached counts over the requested window. When
 // query logging is disabled (s.db == nil) it returns an empty series rather than
 // an error, so the dashboard graph degrades to an empty panel instead of a
 // failure, exactly like /api/queries and /api/top-blocked.

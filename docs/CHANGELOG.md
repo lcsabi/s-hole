@@ -15,6 +15,14 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   changes between refreshes. (CL 71)
 
 ### Added
+- **"Cached" line on the query-volume graph.** The "Queries over time" graph now
+  draws a third line for cache hits, next to total and blocked, so caching
+  effectiveness over the day and the cache warm-up after a restart are visible;
+  the cache hit rate reads off the chart as the ratio of the cached line to the
+  total line. The query log records a per-query `cache_hit` flag (`GET /api/history`
+  reports a `cached` count per bucket), and the flat log file marks a cache hit with
+  a trailing ` CACHED` token on the ALLOW line. Recording is forward-only: rows
+  written before the upgrade read as not-cached. (CL 76)
 - **Query-log search and filter.** The recent-query log now filters by domain
   (substring), by block status (all, blocked, or allowed), and by client. The
   filter runs in SQL through `GET /api/queries?domain=&client=&blocked=`, so it
@@ -41,11 +49,11 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   active mode, and `/api/stats` echoes it. Override with `S_HOLE_QUERY_PRIVACY`.
   (CL 72)
 - **A "Queries over time" graph on the dashboard.** A new panel leads the
-  dashboard. It shows a two-line chart of total and blocked queries per time
+  dashboard. It shows a chart of total and blocked queries per time
   bucket, with a 24h / 7d window toggle and a per-bucket hover readout. A new
   `GET /api/history?window=24h&bucket=1h` endpoint aggregates the query log in
-  SQL. What the graph shows depends on `log_queries`: both lines under `all`, one
-  blocked line under `blocked`, and an empty state under `none` or when
+  SQL. What the graph shows depends on `log_queries`: total and blocked under
+  `all`, one blocked line under `blocked`, and an empty state under `none` or when
   `query_db` is unset. (CL 70)
 - **Collapsible panels.** The three panels that fetch their own data (Queries
   over time, Recent Queries, Top Blocked) now have a collapse arrow. Collapsing

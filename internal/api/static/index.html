@@ -360,12 +360,22 @@
       border-color: var(--accent);
     }
 
-    /* The active-filter row under the Recent Queries header. */
+    /* The active-filter row under the Recent Queries header. Tinted with the
+       accent color (not red, which means "blocked" here) so an active filter
+       reads as an intentional state, not an error. */
     .filter-bar {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 10px;
+      background: rgba(129, 140, 248, 0.1);
+    }
+
+    /* The "Filtering: …" summary. Accent color and semibold so the active
+       filter stands out from the neutral panel caps. */
+    #qf-summary {
+      color: var(--accent);
+      font-weight: 600;
     }
 
     .btn-link {

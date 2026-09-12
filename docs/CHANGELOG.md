@@ -20,8 +20,9 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   filter runs in SQL through `GET /api/queries?domain=&client=&blocked=`, so it
   matches only the stored (masked) columns. The client picker follows
   `query_privacy` and is hidden under `drop`. The active filter persists across
-  reloads. A filter row and a Clear button show while a filter is set, and the
-  dashboard header shows the active `query_privacy` mode at all times. (CL 74)
+  reloads. A highlighted filter row (with a "Filtering: …" summary and a Clear
+  button) shows while a filter is set, and the dashboard header shows the active
+  `query_privacy` mode at all times. (CL 74)
 - **Client name attribution.** A new `client_names` config map gives each client a
   label in the log and the Top Clients panel. A key is an exact IP or a CIDR. The
   value is the label. The panel and the recent-query log show the label with the

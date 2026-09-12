@@ -79,7 +79,7 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
 
 ### Prerequisites
 
-- Go 1.25 or later (for building from source)
+- Go 1.26 or later (for building from source)
 - Port 53 available (requires Administrator on Windows, root or `CAP_NET_BIND_SERVICE` on Linux)
 
 ### Install a pre-built release
@@ -686,7 +686,7 @@ $ s-hole -version
 s-hole v0.2.1
   commit:  ab12cd3
   built:   2026-06-24T12:00:00Z
-  go:      go1.25.0
+  go:      go1.26.0
   os/arch: linux/amd64
 ```
 

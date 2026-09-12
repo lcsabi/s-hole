@@ -51,6 +51,11 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   a panel hides it and stops polling its endpoint; the choice is remembered in
   the browser. (CL 70)
 
+### Changed
+- **Building from source now needs Go 1.26 or later** (was 1.25). The
+  `golang.org/x/sys` 0.48.0 dependency requires it. This affects source builds
+  only; the release binaries and the Docker image are unchanged. (CL 75)
+
 ## [0.2.1] - 2026-09-03
 
 ### Added

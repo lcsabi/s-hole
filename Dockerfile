@@ -1,4 +1,4 @@
-# Requires Go 1.25+ (driven by modernc.org/sqlite dependency).
+# Requires Go 1.26+ (driven by the golang.org/x/sys dependency).
 # golang:alpine tracks the latest stable release.
 
 # ── Build stage ───────────────────────────────────────────────

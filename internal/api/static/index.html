@@ -855,8 +855,9 @@
     let historySeries = [];
     // The effective query-log mode the series reflects: 'all', 'blocked',
     // 'none', or 'off' (query_db unset). The graph draws itself honestly from it:
-    // both lines for 'all', a single blocked line for 'blocked', an empty state
-    // for 'none'/'off'. This is why the graph can differ from the stat cards,
+    // all three lines (total, blocked, cached) for 'all', a single blocked line
+    // for 'blocked', an empty state for 'none'/'off'. This is why the graph can
+    // differ from the stat cards,
     // which count every query from the in-memory counter regardless of logging.
     let historyLogging = 'off';
 

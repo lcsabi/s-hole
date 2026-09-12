@@ -1180,9 +1180,9 @@ The distinction needs one bit beyond the rcode: did s-hole synthesize the failur
 or relay an upstream message? So the log row wants a small outcome marker, not just
 a stored rcode.
 
-This shares the write-path and schema machinery of #29 and should reuse it. If #29
-lands first, this item adds one more field to the same `Record` struct and the same
-`ALTER TABLE` migration style:
+This shares the write-path and schema machinery of #29, which landed first (CL 76).
+This item adds one more field to the same `Record` struct and one more idempotent
+`ensureColumn` migration call:
 
 - **Schema.** Add an outcome column to the `queries` table (an idempotent
   `ALTER TABLE ... ADD COLUMN`, matching the `CREATE TABLE IF NOT EXISTS` startup
@@ -1191,12 +1191,13 @@ lands first, this item adds one more field to the same `Record` struct and the s
   outcome enum). Existing rows read as `ok`, so the failed lines under-report for
   buckets written before the upgrade; document this forward-only behavior the way
   #21 and #29 document theirs.
-- **Write path.** The handler must carry the outcome into the logger, so logging
-  moves from before the forward (handler.go, where the row is written today) to a
-  single log call at the end of `ServeDNS` with the computed outcome. This is the
-  `Logger.Log` signature ripple #29 already calls out; the `Record` struct #29
-  proposes absorbs it. The write stays on the async, drop-on-full fan-out, so DNS
-  never blocks (a pinned invariant). The CL 72 masking choke point does not move.
+- **Write path.** The handler must carry the outcome into the logger. CL 76 already
+  logs at each decided outcome (blocked, cache hit, cache miss, private-PTR); this
+  item adds the computed outcome to each of those log calls, or consolidates them
+  into a single log call at the end of `ServeDNS`. This is the `Logger.Log` signature
+  ripple #29 handled; #29's `Record` struct absorbs the new field. The write stays on
+  the async, drop-on-full fan-out, so DNS never blocks (a pinned invariant). The
+  CL 72 masking choke point does not move.
 - **Read path (graph).** Extend `DBLogger.History` to sum the failed outcomes per
   bucket and add fields to `Bucket`; the canvas draws the failed line(s). Not red
   (blocked) and not green (allowed): amber/orange reads as trouble without a color

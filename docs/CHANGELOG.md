@@ -49,11 +49,11 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   active mode, and `/api/stats` echoes it. Override with `S_HOLE_QUERY_PRIVACY`.
   (CL 72)
 - **A "Queries over time" graph on the dashboard.** A new panel leads the
-  dashboard. It shows a two-line chart of total and blocked queries per time
+  dashboard. It shows a chart of total and blocked queries per time
   bucket, with a 24h / 7d window toggle and a per-bucket hover readout. A new
   `GET /api/history?window=24h&bucket=1h` endpoint aggregates the query log in
-  SQL. What the graph shows depends on `log_queries`: both lines under `all`, one
-  blocked line under `blocked`, and an empty state under `none` or when
+  SQL. What the graph shows depends on `log_queries`: total and blocked under
+  `all`, one blocked line under `blocked`, and an empty state under `none` or when
   `query_db` is unset. (CL 70)
 - **Collapsible panels.** The three panels that fetch their own data (Queries
   over time, Recent Queries, Top Blocked) now have a collapse arrow. Collapsing

@@ -44,6 +44,7 @@ rails.
 | 28 | Validate the upstreams at config time (format check + single-upstream note) | Low | not started |
 | 29 | "Cached" line on the query-volume graph (record cache-hit per query) | Medium | not started |
 | 30 | Go runtime gauges (goroutines, heap) in `/metrics` | Medium | not started |
+| 31 | Failed-query visibility (per-query outcome: graph, filter, `/metrics`) | Medium | not started |
 
 Items 19-26 came out of a 2026-08-24 feature-ideas session. Items 21-24 are a
 dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
@@ -1131,6 +1132,110 @@ query-log and UI change with no new metric.
 
 Rated Medium: an observability win that adds a real runtime signal to the binary
 for a few lines and no dependency. It changes no filtering behavior.
+
+## 31. Failed-query visibility (per-query outcome)
+
+Today s-hole classifies each query only as blocked or allowed, and the query log
+stores only that (`ts, client_ip, domain, blocked`). A query that got SERVFAIL is
+logged as an ordinary allowed row, indistinguishable from one that resolved. So an
+operator cannot answer "is my sinkhole holding up, and which queries failed?" from
+the app. The only current signal is the `upstream forward failed` WARN in the
+service log (`journalctl -u s-hole`, or the Windows Event Log). This item records a
+per-query outcome and surfaces failures in three places: the query-volume graph
+(#20), the recent-query filter (#23), and `/metrics`. (Raised in a 2026-09-12
+session.)
+
+Two failure scenarios exist, and they must stay distinct, because both reach the
+client as SERVFAIL and so cannot be told apart by rcode alone:
+
+- **Unresolved (s-hole synthesized the SERVFAIL).** `forward` returns an error
+  (every upstream failed at the transport level, or the query deadline hit), and
+  the handler answers with `dns.HandleFailed` (handler.go). This is the "does the
+  app hold up" signal: upstream reachability, a bad `upstreams:` address, a broken
+  network path, or too tight a deadline. It is the operator's problem to fix.
+- **Upstream error (relayed from a live upstream).** An upstream returned a valid
+  DNS message whose rcode is a failure (SERVFAIL or REFUSED), and s-hole relays it
+  verbatim. `exchange` treats only a transport error as an error, so this comes
+  back as success and is relayed. This is usually not s-hole's fault (a broken
+  authoritative server, a DNSSEC failure, a refusal). Collapsing it into the first
+  scenario would make the graph lie: a spike of one popular broken domain would
+  read as "the app is failing" when it is not.
+
+The distinction needs one bit beyond the rcode: did s-hole synthesize the failure,
+or relay an upstream message? So the log row wants a small outcome marker, not just
+a stored rcode.
+
+This shares the write-path and schema machinery of #29 and should reuse it. If #29
+lands first, this item adds one more field to the same `Record` struct and the same
+`ALTER TABLE` migration style:
+
+- **Schema.** Add an outcome column to the `queries` table (an idempotent
+  `ALTER TABLE ... ADD COLUMN`, matching the `CREATE TABLE IF NOT EXISTS` startup
+  migration style). Store enough to separate `ok` / `nxdomain` / `unresolved` /
+  `upstream-error` (a stored rcode plus a synthesized flag, or a single small
+  outcome enum). Existing rows read as `ok`, so the failed lines under-report for
+  buckets written before the upgrade; document this forward-only behavior the way
+  #21 and #29 document theirs.
+- **Write path.** The handler must carry the outcome into the logger, so logging
+  moves from before the forward (handler.go, where the row is written today) to a
+  single log call at the end of `ServeDNS` with the computed outcome. This is the
+  `Logger.Log` signature ripple #29 already calls out; the `Record` struct #29
+  proposes absorbs it. The write stays on the async, drop-on-full fan-out, so DNS
+  never blocks (a pinned invariant). The CL 72 masking choke point does not move.
+- **Read path (graph).** Extend `DBLogger.History` to sum the failed outcomes per
+  bucket and add fields to `Bucket`; the canvas draws the failed line(s). Not red
+  (blocked) and not green (allowed): amber/orange reads as trouble without a color
+  collision. Whether unresolved and upstream-error are one line or two is a UI
+  decision.
+- **Read path (filter).** Add the outcome to the `?blocked=`-style query parameters
+  and the segmented control in the recent-query panel (#23). "Failed" is a bit
+  orthogonal to blocked/allowed (a query is blocked, or allowed-and-ok, or
+  allowed-and-failed), so decide whether it is a fourth segment or its own filter
+  dimension.
+- **Metrics.** Expose the aggregate on `/metrics`, matching the `shole_*` naming:
+  `shole_forward_failures_total` (unresolved), `shole_upstream_errors_total`
+  (relayed failure rcode), and per-upstream `shole_upstream_failures_total`
+  incremented at `recordFailure` in the cooldown tracker (upstream.go). The
+  per-upstream counter is the "which upstream is flaky" attribution the query log
+  cannot give, because `forward` aggregates several upstreams into one generic
+  error. Keep the upstream address as the only label; add no `domain` label
+  anywhere (unbounded cardinality). Domain-level detail stays in the query log,
+  which is built for it.
+
+Design decisions to settle in the CL:
+
+- **What counts as failed.** Define the operator-facing "failed" narrowly as
+  unresolved (s-hole could not answer) plus relayed SERVFAIL/REFUSED. NXDOMAIN is a
+  valid answer, not a failure, and stays on the allowed side.
+- **One field or two.** A stored rcode plus a synthesized-flag bit, or a single
+  outcome enum. The enum is simpler to filter and graph; the rcode is richer for a
+  future per-rcode breakdown. Pick one and document it.
+- **One failed line or two.** Whether the graph and the filter separate unresolved
+  from upstream-error, or show a single "failed" series. The data supports both;
+  the UI need not.
+- **The two per-query counters go in `stats.Counter`.** They are subsets of
+  `total`, so each must obey the LOAD-ORDER INVARIANT (read before `total` in
+  `Snapshot`) and ship with its own `*NeverExceeds*UnderLoad` `-race` test, per the
+  counter rule in CLAUDE.md. The per-upstream counter lives in `upstreamTracker`,
+  not `stats`, so it is outside that rule.
+
+**Hot-path cost.** The outcome is already computed on the serving path (the handler
+already branches on blocked, cache hit, local PTR, and the forward result), so this
+forwards a value that exists into the async logger and bumps a counter. No new
+allocation, lock, or syscall on the serving goroutine. The `ALTER TABLE` column,
+the batched `INSERT`, and the `SUM` aggregate live off the hot path. Storage grows
+by about one byte per row on a retention-bounded table. `BenchmarkHandler_ServeDNS`
+can prove no regression before merge.
+
+Feeds #26 (the Grafana dashboard and alert rules would draw these series; a
+forward-failure-rate alert is a natural "upstreams are down" canary) and pairs with
+#28 (validate upstreams at config time), which targets the same silent
+upstream-misconfig class from the config side.
+
+Rated Medium: an observability win that completes the per-query-outcome story and
+turns a silent, log-only failure into a graph line, a filter, and a scrapeable
+metric. It is a write-path and schema change, so it is more involved than a UI-only
+tweak, and it depends on or reuses #29's `Record` struct and migration.
 
 ## Pending decisions
 

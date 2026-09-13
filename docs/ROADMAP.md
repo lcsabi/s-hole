@@ -1213,7 +1213,7 @@ This item adds one more field to the same `Record` struct and one more idempoten
   dimension.
 - **Metrics.** Expose the aggregate on `/metrics`, matching the `shole_*` naming:
   `shole_forward_failures_total` (unresolved), `shole_upstream_errors_total`
-  (relayed failure rcode), and per-upstream `shole_upstream_failures_total`
+  (relayed failure rcode), and per-upstream `shole_upstream_transport_failures_total`
   incremented at `recordFailure` in the cooldown tracker (upstream.go). The
   per-upstream counter is the "which upstream is flaky" attribution the query log
   cannot give, because `forward` aggregates several upstreams into one generic

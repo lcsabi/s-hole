@@ -21,7 +21,7 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   upstream returned SERVFAIL/REFUSED, which s-hole relayed); the recent-query log
   gains "Unresolved" and "Upstream error" filters (`GET /api/queries?outcome=`)
   and a status badge per row; and `/metrics` gains `shole_forward_failures_total`,
-  `shole_upstream_errors_total`, and per-upstream `shole_upstream_failures_total`.
+  `shole_upstream_errors_total`, and per-upstream `shole_upstream_transport_failures_total`.
   The flat log file marks a failed query with a trailing ` FAILED` token on the
   ALLOW line. Recording is forward-only: rows written before the upgrade read as
   not-failed. (CL 77)

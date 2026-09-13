@@ -82,12 +82,12 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	// counts relayed failure rcodes; the two sums differ because one unresolved
 	// query can fail several upstreams. Cardinality is bounded by the configured
 	// upstream count.
-	if s.upstreamFailures != nil {
-		if failures := s.upstreamFailures(); len(failures) > 0 {
-			fmt.Fprintln(w, "# HELP shole_upstream_failures_total Per-upstream cumulative transport failures (timeouts, refused connections) seen by the forward cooldown tracker.")
-			fmt.Fprintln(w, "# TYPE shole_upstream_failures_total counter")
+	if s.upstreamTransportFailures != nil {
+		if failures := s.upstreamTransportFailures(); len(failures) > 0 {
+			fmt.Fprintln(w, "# HELP shole_upstream_transport_failures_total Per-upstream cumulative transport failures (timeouts, refused connections) seen by the forward cooldown tracker.")
+			fmt.Fprintln(w, "# TYPE shole_upstream_transport_failures_total counter")
 			for addr, n := range failures {
-				fmt.Fprintf(w, "shole_upstream_failures_total{upstream=\"%s\"} %d\n", escapeLabel(addr), n)
+				fmt.Fprintf(w, "shole_upstream_transport_failures_total{upstream=\"%s\"} %d\n", escapeLabel(addr), n)
 			}
 		}
 	}

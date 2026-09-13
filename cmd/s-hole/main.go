@@ -220,9 +220,9 @@ func main() {
 	apiServer := api.New(counter, db, store, dnsCache, reloadFn)
 	apiServer.SetQueryPrivacy(cfg.QueryPrivacy)
 	apiServer.SetClientNames(cfg.ClientNames)
-	// Bridge the dnsserver per-upstream failure tracker to /metrics; api does
-	// not import dnsserver, so main wires the two.
-	apiServer.SetUpstreamFailures(dnsserver.UpstreamFailures)
+	// Bridge the dnsserver per-upstream transport-failure tracker to /metrics;
+	// api does not import dnsserver, so main wires the two.
+	apiServer.SetUpstreamTransportFailures(dnsserver.UpstreamTransportFailures)
 	if cfg.EnablePprof {
 		apiServer.EnablePprof(true)
 		mainLog.Warn("pprof endpoints enabled, bind api_listen to localhost only",

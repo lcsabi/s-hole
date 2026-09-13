@@ -960,12 +960,12 @@ func TestMetricsEndpoint_IncludesCacheStatsWhenWired(t *testing.T) {
 	}
 }
 
-func TestMetricsEndpoint_IncludesUpstreamFailuresWhenWired(t *testing.T) {
+func TestMetricsEndpoint_IncludesUpstreamTransportFailuresWhenWired(t *testing.T) {
 	// The per-upstream metric is emitted only when the accessor is wired (main
-	// bridges dnsserver.UpstreamFailures). Each upstream is a labeled sample.
+	// bridges dnsserver.UpstreamTransportFailures). Each upstream is a labeled sample.
 	store := blocklist.NewStore()
 	s := New(stats.New(), nil, store, nil, func() bool { return true })
-	s.SetUpstreamFailures(func() map[string]uint64 {
+	s.SetUpstreamTransportFailures(func() map[string]uint64 {
 		return map[string]uint64{"1.1.1.1:53": 4, "8.8.8.8:53": 0}
 	})
 	srv := httptest.NewServer(s.handler())
@@ -978,9 +978,9 @@ func TestMetricsEndpoint_IncludesUpstreamFailuresWhenWired(t *testing.T) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	want := []string{
-		"# TYPE shole_upstream_failures_total counter",
-		`shole_upstream_failures_total{upstream="1.1.1.1:53"} 4`,
-		`shole_upstream_failures_total{upstream="8.8.8.8:53"} 0`,
+		"# TYPE shole_upstream_transport_failures_total counter",
+		`shole_upstream_transport_failures_total{upstream="1.1.1.1:53"} 4`,
+		`shole_upstream_transport_failures_total{upstream="8.8.8.8:53"} 0`,
 	}
 	for _, w := range want {
 		if !strings.Contains(string(body), w) {
@@ -989,7 +989,7 @@ func TestMetricsEndpoint_IncludesUpstreamFailuresWhenWired(t *testing.T) {
 	}
 }
 
-func TestMetricsEndpoint_OmitsUpstreamFailuresWhenUnset(t *testing.T) {
+func TestMetricsEndpoint_OmitsUpstreamTransportFailuresWhenUnset(t *testing.T) {
 	// Without the accessor (the default), the metric must not appear.
 	store := blocklist.NewStore()
 	s := New(stats.New(), nil, store, nil, func() bool { return true })
@@ -1002,8 +1002,8 @@ func TestMetricsEndpoint_OmitsUpstreamFailuresWhenUnset(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	if strings.Contains(string(body), "shole_upstream_failures_total") {
-		t.Errorf("upstream_failures metric present without accessor:\n%s", body)
+	if strings.Contains(string(body), "shole_upstream_transport_failures_total") {
+		t.Errorf("upstream_transport_failures metric present without accessor:\n%s", body)
 	}
 }
 

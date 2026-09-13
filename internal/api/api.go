@@ -95,11 +95,12 @@ type Server struct {
 	// display time. It keys off the already-masked value the store holds, so it
 	// never exceeds the active queryPrivacy granularity. nil = attribution off.
 	labeler *clientLabeler
-	// upstreamFailures returns the cumulative per-upstream transport-failure
-	// counts for the shole_upstream_failures_total{upstream} metric. Wired from
-	// main to dnsserver.UpstreamFailures; nil leaves the metric off (the api
-	// package does not import dnsserver, so main bridges the two).
-	upstreamFailures func() map[string]uint64
+	// upstreamTransportFailures returns the cumulative per-upstream
+	// transport-failure counts for the shole_upstream_transport_failures_total{upstream}
+	// metric. Wired from main to dnsserver.UpstreamTransportFailures; nil leaves
+	// the metric off (the api package does not import dnsserver, so main bridges
+	// the two).
+	upstreamTransportFailures func() map[string]uint64
 }
 
 // New constructs a Server. db and dnsCache may be nil to disable the
@@ -133,13 +134,13 @@ func (s *Server) SetClientNames(m map[string]string) {
 	s.labeler = newClientLabeler(m)
 }
 
-// SetUpstreamFailures wires the per-upstream transport-failure accessor
-// (dnsserver.UpstreamFailures) so /metrics can emit
-// shole_upstream_failures_total{upstream=...}. Call before Serve; leaving it
-// unset omits that metric. main bridges the two packages so api need not import
-// dnsserver.
-func (s *Server) SetUpstreamFailures(fn func() map[string]uint64) {
-	s.upstreamFailures = fn
+// SetUpstreamTransportFailures wires the per-upstream transport-failure accessor
+// (dnsserver.UpstreamTransportFailures) so /metrics can emit
+// shole_upstream_transport_failures_total{upstream=...}. Call before Serve;
+// leaving it unset omits that metric. main bridges the two packages so api need
+// not import dnsserver.
+func (s *Server) SetUpstreamTransportFailures(fn func() map[string]uint64) {
+	s.upstreamTransportFailures = fn
 }
 
 // Timeouts protect the unauthenticated admin server from slowloris-style

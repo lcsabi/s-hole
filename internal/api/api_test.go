@@ -710,6 +710,59 @@ func TestQueriesEndpoint_Filtered(t *testing.T) {
 	}
 }
 
+func TestQueriesEndpoint_IncludesOutcomeLabel(t *testing.T) {
+	// Each row carries a computed outcome label so the dashboard and export read
+	// a name rather than decoding rcode and the synthesized flag.
+	dbPath := filepath.Join(t.TempDir(), "q.db")
+	db, err := querylog.NewDBLogger(dbPath, "all", 50*time.Millisecond, 0)
+	if err != nil {
+		t.Fatalf("NewDBLogger: %v", err)
+	}
+	defer db.Close()
+
+	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "ok.com."})
+	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "ads.com.", Blocked: true, Synthesized: true})
+	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "dead.com.", Rcode: 2, Synthesized: true})
+	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "broken.com.", Rcode: 2})
+	waitForRows(t, db, 4)
+
+	store := blocklist.NewStore()
+	s := New(stats.New(), db, store, nil, func() bool { return true })
+	srv := httptest.NewServer(s.handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/queries?limit=10")
+	if err != nil {
+		t.Fatalf("GET /api/queries: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var body struct {
+		Queries []struct {
+			Domain  string `json:"domain"`
+			Outcome string `json:"outcome"`
+		} `json:"queries"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := map[string]string{
+		"ok.com.":     "allowed",
+		"ads.com.":    "blocked",
+		"dead.com.":   "unresolved",
+		"broken.com.": "upstream_error",
+	}
+	got := map[string]string{}
+	for _, q := range body.Queries {
+		got[q.Domain] = q.Outcome
+	}
+	for domain, outcome := range want {
+		if got[domain] != outcome {
+			t.Errorf("outcome for %s = %q, want %q", domain, got[domain], outcome)
+		}
+	}
+}
+
 func TestWhitelistRemove_RejectsEmptyDomain(t *testing.T) {
 	_, srv := newTestServer(t, nil)
 	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/whitelist?domain=", nil)

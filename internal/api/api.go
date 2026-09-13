@@ -322,11 +322,15 @@ func parseLimit(r *http.Request) int {
 }
 
 // queryRow is a recent-queries row: the stored columns plus an optional
-// config-resolved client label. The label is resolved from the masked
-// ClientIP, so the recent-queries list never exposes more than QueryPrivacy.
+// config-resolved client label and a derived outcome label. The label is
+// resolved from the masked ClientIP, so the recent-queries list never exposes
+// more than QueryPrivacy. Outcome ("blocked"/"allowed"/"unresolved"/
+// "upstream_error") is computed once here from the row so the dashboard and any
+// export read a name instead of decoding rcode and the synthesized flag.
 type queryRow struct {
 	querylog.QueryRow
-	Label string `json:"label,omitempty"`
+	Label   string `json:"label,omitempty"`
+	Outcome string `json:"outcome"`
 }
 
 // parseQueryFilter reads the optional recent-query filters from the request.
@@ -378,7 +382,7 @@ func (s *Server) handleQueries(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]queryRow, len(rows))
 	for i, row := range rows {
-		out[i] = queryRow{QueryRow: row, Label: s.labeler.label(row.ClientIP)}
+		out[i] = queryRow{QueryRow: row, Label: s.labeler.label(row.ClientIP), Outcome: row.Outcome()}
 	}
 	writeJSON(w, response{Queries: out})
 }

@@ -339,9 +339,8 @@ type Entry struct {
 }
 
 // QueryRow is a single row returned from the database. Rcode and Synthesized
-// are the raw outcome columns; the dashboard derives the per-row status badge
-// (blocked, allowed, unresolved, or upstream error) from them the same way the
-// Record.Failed helpers and the History/Search SQL do.
+// are the raw outcome columns; Outcome collapses them into the operator-facing
+// status the dashboard and export show.
 type QueryRow struct {
 	TS          string `json:"ts"`
 	ClientIP    string `json:"client_ip"`
@@ -349,6 +348,26 @@ type QueryRow struct {
 	Blocked     bool   `json:"blocked"`
 	Rcode       int    `json:"rcode"`
 	Synthesized bool   `json:"synthesized"`
+}
+
+// Outcome collapses the row's stored columns into the operator-facing status:
+// "blocked", "unresolved" (s-hole synthesized a SERVFAIL), "upstream_error" (a
+// relayed SERVFAIL/REFUSED), or "allowed" (everything else, including NXDOMAIN,
+// which is a valid answer). It shares the failure rule with the Record helpers
+// via isUnresolved/isUpstreamError, so the API label, the flat log, and the
+// graph never disagree. The block check comes first: a blocked reply is
+// synthesized, but its rcode is never a failure, so it is reported as blocked.
+func (r QueryRow) Outcome() string {
+	switch {
+	case r.Blocked:
+		return "blocked"
+	case isUnresolved(r.Rcode, r.Synthesized):
+		return "unresolved"
+	case isUpstreamError(r.Rcode, r.Synthesized):
+		return "upstream_error"
+	default:
+		return "allowed"
+	}
 }
 
 // QueryFilter holds optional filters for a recent-query read. The zero value

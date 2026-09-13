@@ -497,6 +497,29 @@ func TestDBLogger_OutcomeRoundTrip(t *testing.T) {
 	}
 }
 
+func TestQueryRow_Outcome(t *testing.T) {
+	tests := []struct {
+		name string
+		row  QueryRow
+		want string
+	}{
+		{"allowed forwarded", QueryRow{Rcode: 0}, "allowed"},
+		{"allowed NXDOMAIN", QueryRow{Rcode: 3}, "allowed"},
+		{"blocked", QueryRow{Blocked: true, Rcode: 0, Synthesized: true}, "blocked"},
+		{"blocked NXDOMAIN mode", QueryRow{Blocked: true, Rcode: 3, Synthesized: true}, "blocked"},
+		{"unresolved", QueryRow{Rcode: rcodeServerFailure, Synthesized: true}, "unresolved"},
+		{"relayed SERVFAIL", QueryRow{Rcode: rcodeServerFailure}, "upstream_error"},
+		{"relayed REFUSED", QueryRow{Rcode: rcodeRefused}, "upstream_error"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.row.Outcome(); got != tc.want {
+				t.Errorf("Outcome() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDBLogger_SearchOutcome(t *testing.T) {
 	// The ?outcome= filter narrows to a failure kind. Seed rows with explicit
 	// rcode/synthesized so the two kinds are distinguishable.

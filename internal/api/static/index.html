@@ -851,13 +851,16 @@
       sel.value = queryFilter.client;
     }
 
-    // Per-row status badge. The failure rule (synthesized + rcode 2/5) matches
-    // the Go Record helpers and the History/Search SQL; keep the three in step.
+    // Per-row status badge. The server computes q.outcome from the stored row
+    // (see QueryRow.Outcome), so the failure rule stays in Go and SQL and the
+    // dashboard just maps the label to a badge.
     function outcomeBadge(q) {
-      if (q.blocked) return '<span class="badge badge-block">BLOCK</span>';
-      if (q.synthesized && q.rcode === 2) return '<span class="badge badge-unresolved">UNRESOLVED</span>';
-      if (!q.synthesized && (q.rcode === 2 || q.rcode === 5)) return '<span class="badge badge-upstream">UPSTREAM ERR</span>';
-      return '<span class="badge badge-allow">ALLOW</span>';
+      switch (q.outcome) {
+        case 'blocked': return '<span class="badge badge-block">BLOCK</span>';
+        case 'unresolved': return '<span class="badge badge-unresolved">UNRESOLVED</span>';
+        case 'upstream_error': return '<span class="badge badge-upstream">UPSTREAM ERR</span>';
+        default: return '<span class="badge badge-allow">ALLOW</span>';
+      }
     }
 
     // Fetch and render the recent-queries table for the current filter. Split out

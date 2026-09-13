@@ -115,6 +115,19 @@ const (
 	rcodeRefused       = 5 // REFUSED
 )
 
+// isUnresolved and isUpstreamError classify a stored outcome (the reply rcode
+// plus the synthesized flag) into the two failure kinds. Record and QueryRow
+// both derive from them, so the failure rule lives in one place. The
+// History/Search SQL and the dashboard cannot call Go, so they mirror the same
+// rule (rcode 2 = SERVFAIL, 5 = REFUSED); keep the copies in step.
+func isUnresolved(rcode int, synthesized bool) bool {
+	return synthesized && rcode == rcodeServerFailure
+}
+
+func isUpstreamError(rcode int, synthesized bool) bool {
+	return !synthesized && (rcode == rcodeServerFailure || rcode == rcodeRefused)
+}
+
 // Failed reports whether the query ended in a failure an operator cares
 // about: an unresolved query or a relayed upstream failure. NXDOMAIN is a
 // valid answer, not a failure, so it is not counted here.
@@ -126,14 +139,14 @@ func (r Record) Failed() bool {
 // SERVFAIL because every upstream failed at the transport level or the
 // query deadline hit.
 func (r Record) Unresolved() bool {
-	return r.Synthesized && r.Rcode == rcodeServerFailure
+	return isUnresolved(r.Rcode, r.Synthesized)
 }
 
 // UpstreamError reports a failure rcode relayed verbatim from a live
 // upstream (SERVFAIL or REFUSED). This is usually not s-hole's fault (a
 // broken authoritative server, a DNSSEC failure, or a refusal).
 func (r Record) UpstreamError() bool {
-	return !r.Synthesized && (r.Rcode == rcodeServerFailure || r.Rcode == rcodeRefused)
+	return isUpstreamError(r.Rcode, r.Synthesized)
 }
 
 // Logger is the interface that all query log backends must implement.

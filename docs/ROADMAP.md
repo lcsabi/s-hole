@@ -46,6 +46,7 @@ rails.
 | 30 | Go runtime gauges (goroutines, heap) in `/metrics` | Medium | not started |
 | 31 | Failed-query visibility (per-query outcome: graph, filter, `/metrics`) | Medium | done (CL 77) |
 | 32 | Streaming byte-parse: insert blocklist domains directly into the block set | Medium | not started |
+| 33 | Cache packed wire bytes: drop the per-hit `dns.Msg` copy | Medium | not started |
 
 Items 19-26 came out of a 2026-08-24 feature-ideas session. Items 21-24 are a
 dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
@@ -1308,11 +1309,18 @@ Churn is the `TotalAlloc` delta per manual reload, averaged over repeated reload
 | --- | --- | --- | --- | --- |
 | 79,981 domains | ~19.8 MB | ~247 B | flat ~7.1 MB | ~34.7 MB |
 | 319,048 domains | ~74.2 MB | ~233 B | flat ~23.1 MB | ~94.7 MB |
+| 440,243 domains | ~103 MB (projected) | ~233 B | ~39.3 MB (idle snapshot) | not run |
 
-Two facts from the table. Churn scales linearly with domain count (~233 B/domain),
-so a 1,000,000-domain list projects to ~230 MB churned per reload and a peak `Sys`
-in the few-hundred-MB range. Retained `HeapAlloc` stays flat across repeated reloads
-at each size, so a reload leaks nothing; the churn is transient the GC reclaims.
+These are the recorded baseline numbers for a later before/after comparison; keep
+them as measured. Two facts from the table. Churn scales linearly with domain count
+(~233 B/domain), so the 440k churn is projected from the linear fit (no reload loop
+was run at 440k, only an idle footprint snapshot), and a 1,000,000-domain list
+projects to ~230 MB churned per reload with a peak `Sys` in the few-hundred-MB range.
+Retained `HeapAlloc` stays flat across repeated reloads at each measured size, so a
+reload leaks nothing; the churn is transient the GC reclaims. Retained heap runs
+~70-90 B/domain, slightly superlinear at 440k (the Go map's bucket array grows in
+power-of-2 steps). The process-level resident footprint (RSS) for the same three
+sizes is in the DESIGN blocklist-store section as operator sizing guidance.
 
 Allocation attribution, from the 319k `-alloc_space -base` diff (78.49 MB sampled,
 within ~6% of the `TotalAlloc` delta, so the proportions are sound). About 5% of the
@@ -1353,6 +1361,79 @@ on a small box (a Raspberry Pi at 512 MB to 1 GB), which is the real deployment 
 the baseline projects at 1,000,000 domains. It also simplifies the loader by
 removing two throwaway layers, which fits a binary whose identity is a tight
 dependency graph and a small, auditable hot path.
+
+## 33. Cache packed wire bytes: drop the per-hit `dns.Msg` copy
+
+A cache hit is already fast, but profiling shows its cost is almost all one thing:
+copying the cached `dns.Msg`. `cache.Get` returns `e.msg.Copy()` so the caller can
+set the reply `Id` and decrement the TTLs without mutating the shared cached entry.
+That deep copy (a new `Msg`, a copy of every `RR`) is the dominant per-hit cost.
+(Raised and measured in a 2026-09-13 session.)
+
+### Baseline (measured before implementation)
+
+Same method and environment as #32 (Go 1.26.5, clocksource `tsc`). Note the earlier
+66 us/hit reading was a VM `acpi_pm` clock artifact, not the real cost; these are the
+numbers to compare against. From `go test -bench=BenchmarkHandler_ServeDNS -benchmem`:
+
+| path | ns/op | B/op | allocs/op |
+| --- | --- | --- | --- |
+| Blocked (sinkhole reply) | ~550-600 | 264 | 5 |
+| Cache hit | ~830-1000 | 304 | 7 |
+
+Serial and `_Parallel` agree, so there is no lock regression on the read path. A CPU
+profile of the cache-hit benchmark (`-cpuprofile`, handler-attributable time only,
+runtime GC and profiler frames excluded) puts the copy front and centre:
+
+| site | share of cache-hit CPU | note |
+| --- | --- | --- |
+| `cache.Get` (cumulative) | ~43% | the whole hit path |
+| `dns.(*Msg).CopyTo` | ~26% | the deep message copy |
+| `dns.(*A).copy` | ~14% | per-answer-record copy |
+| `runtime.mallocgc` (cumulative) | ~27% | allocations the copy drives |
+| map lookup, `decrementTTLs`, `normalize` | ~1% each | the actual cache logic |
+
+So the copy and the garbage it makes are the cache-hit cost; the cache logic is noise
+next to it.
+
+### Idea
+
+Store the response once in packed wire form at `Set` time, not as a `dns.Msg`. On a
+hit, copy the byte slice (one contiguous allocation, far cheaper than a `Msg` tree),
+patch the two-byte `Id` in place, adjust the TTL fields in place, and write the raw
+bytes. This drops the per-hit allocation count and removes `CopyTo`/`A.copy` from the
+path. It is the s-hole-scale form of the cache-layout idea recorded under Pending
+decisions (the Cloudflare per-entry-footprint note).
+
+### Complications to settle in the CL
+
+- **TTL patching in wire form.** Decrementing TTLs means finding each RR's four-byte
+  TTL field in the packed message. Name compression makes a blind offset walk unsafe,
+  so record each answer's TTL offset at `Set` time (the message is packed once there)
+  and patch by stored offset on `Get`. No re-parse on the hot path.
+- **The write path.** The handler calls `w.WriteMsg(cached)` today, which packs the
+  `Msg`. Writing raw bytes needs the correct framing (UDP writes the message; TCP
+  needs the two-byte length prefix) and must keep the EDNS0 mirroring the current
+  path does. A wire-protocol mistake here is a real bug class, so it needs its own
+  tests.
+- **Correctness invariants to keep.** Cached bytes are immutable and shared; each hit
+  copies the slice and patches its own copy, so concurrency stays safe. Only
+  NOERROR-with-answers replies are cached (unchanged), so rcode and flag handling
+  stays simple.
+
+### Trade-off
+
+This cuts against "auditable in an afternoon": wire-level TTL patching and a raw
+write path are more subtle than returning a `*dns.Msg`. So validate the win with a
+benchmark first. The prize is removing the dominant hot-path allocation (7 allocs/hit
+toward ~1-2) and roughly 40% of cache-hit CPU. Cache hits are a large share of
+allowed traffic, so the win lands on the busiest path. If a prototype does not beat
+the ~830 ns and 7-alloc baseline above by a clear margin, do not take on the
+complexity.
+
+Rated Medium: a hot-path efficiency win on the busiest allowed path, with no change
+to filtering behavior or the cache's external contract, weighed against real added
+complexity in the cache and the DNS write path.
 
 ## Pending decisions
 

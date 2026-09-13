@@ -251,16 +251,16 @@ The admin web UI is served at **`http://127.0.0.1:8080`** by default. This is lo
 |---|---|---|
 | `GET` | `/api/stats` | Live stats: uptime, query totals, block rate, cache hit rate, blocklist size, per-source blocklist health, top domains/clients (each client carries an optional `client_names` `label`), and the active `query_privacy` mode |
 | `GET` | `/api/check?domain=NAME` | Why a domain is blocked: the decision plus the full suffix walk (matched block entry, overriding whitelist entry). Diagnostic; changes no state and does not count in stats |
-| `GET` | `/api/queries?limit=N` | Last N queries from SQLite, newest first (default: 50, max: 1000). Filter with `?domain=` (substring), `?client=` (exact match on the stored value), or `?blocked=true`/`false`. Each row carries an optional `client_names` `label` |
+| `GET` | `/api/queries?limit=N` | Last N queries from SQLite, newest first (default: 50, max: 1000). Filter with `?domain=` (substring), `?client=` (exact match on the stored value), `?blocked=true`/`false`, or `?outcome=unresolved`/`upstream-error` (failed queries). Each row carries an optional `client_names` `label` |
 | `GET` | `/api/top-blocked?limit=N` | All-time most-blocked domains from SQLite (default: 50, max: 1000); empty when `query_db` is unset |
-| `GET` | `/api/history?window=24h&bucket=1h` | Per-bucket total, blocked, and cached (cache-hit) query counts over the window, from SQLite (default: 24h window, 1h bucket; bucket count capped at 1000). Reports the effective `log_queries` mode (`all`/`blocked`/`none`/`off`), so the graph reflects only what is logged; empty when `query_db` is unset |
+| `GET` | `/api/history?window=24h&bucket=1h` | Per-bucket total, blocked, cached (cache-hit), unresolved, and upstream-error query counts over the window, from SQLite (default: 24h window, 1h bucket; bucket count capped at 1000). Reports the effective `log_queries` mode (`all`/`blocked`/`none`/`off`), so the graph reflects only what is logged; empty when `query_db` is unset |
 | `GET` | `/api/whitelist` | List all runtime-whitelisted domains |
 | `POST` | `/api/whitelist` | Add a domain. Body: `{"domain": "example.com"}` |
 | `DELETE` | `/api/whitelist?domain=…` | Remove a domain from the runtime whitelist |
 | `POST` | `/api/reload` | Trigger an immediate blocklist refresh. De-duplicated via a single-flight mutex; returns `"reload already in progress"` if one is already running |
 | `GET`  | `/healthz` | Liveness probe. Always 200 OK while the HTTP server is responsive |
 | `GET`  | `/readyz` | Readiness probe. 200 OK once the blocklist has loaded at least one entry, 503 otherwise |
-| `GET`  | `/metrics` | Prometheus text exposition: `shole_queries_total`, `shole_blocked_total`, `shole_local_ptr_total`, `shole_cache_hits_total`, `shole_cache_misses_total`, `shole_cache_size`, `shole_cache_dropped_total`, `shole_blocklist_size`, `shole_blocklist_source_size`, `shole_blocklist_source_stale`, `shole_whitelist_size`, `shole_query_log_dropped_total` |
+| `GET`  | `/metrics` | Prometheus text exposition: `shole_queries_total`, `shole_blocked_total`, `shole_local_ptr_total`, `shole_cache_hits_total`, `shole_forward_failures_total`, `shole_upstream_errors_total`, `shole_upstream_failures_total{upstream}`, `shole_cache_misses_total`, `shole_cache_size`, `shole_cache_dropped_total`, `shole_blocklist_size`, `shole_blocklist_source_size`, `shole_blocklist_source_stale`, `shole_whitelist_size`, `shole_query_log_dropped_total` |
 | `GET`  | `/debug/pprof/*` | Standard Go pprof endpoints. Registered **only** when `enable_pprof: true` is set in config (or `S_HOLE_ENABLE_PPROF=1`). Pair with `api_listen: "127.0.0.1:8080"`. |
 
 Runtime whitelist changes take effect immediately but do not persist across restarts. To make a whitelist entry permanent, add it to `config.yaml`.

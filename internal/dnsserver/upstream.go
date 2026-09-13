@@ -29,10 +29,19 @@ const upstreamCooldown = 30 * time.Second
 type upstreamTracker struct {
 	mu      sync.Mutex
 	lastErr map[string]time.Time
+	// failures is the cumulative per-upstream transport-failure count, surfaced
+	// as shole_upstream_failures_total{upstream=...}. Unlike lastErr, a success
+	// does not reset it: it is a monotonic counter for /metrics, not cooldown
+	// state. It counts only transport failures (recordFailure), never a relayed
+	// upstream failure rcode, which arrives as a successful exchange.
+	failures map[string]uint64
 }
 
 func newUpstreamTracker() *upstreamTracker {
-	return &upstreamTracker{lastErr: make(map[string]time.Time)}
+	return &upstreamTracker{
+		lastErr:  make(map[string]time.Time),
+		failures: make(map[string]uint64),
+	}
 }
 
 func (t *upstreamTracker) shouldSkip(addr string, now time.Time) bool {
@@ -48,6 +57,7 @@ func (t *upstreamTracker) shouldSkip(addr string, now time.Time) bool {
 func (t *upstreamTracker) recordFailure(addr string, now time.Time) {
 	t.mu.Lock()
 	t.lastErr[addr] = now
+	t.failures[addr]++
 	t.mu.Unlock()
 }
 
@@ -57,10 +67,32 @@ func (t *upstreamTracker) recordSuccess(addr string) {
 	t.mu.Unlock()
 }
 
+// FailureCounts returns a copy of the cumulative per-upstream transport-failure
+// counts. The copy is safe to read after the call returns; the map is small
+// (one entry per configured upstream).
+func (t *upstreamTracker) FailureCounts() map[string]uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make(map[string]uint64, len(t.failures))
+	for addr, n := range t.failures {
+		out[addr] = n
+	}
+	return out
+}
+
 // forwardTracker is the package-level tracker shared by every call to
 // forward(). Stateful but per-process; tests construct their own via
 // forwardWith.
 var forwardTracker = newUpstreamTracker()
+
+// UpstreamFailures returns the cumulative per-upstream transport-failure counts
+// from the shared forward tracker, keyed by upstream address. cmd/s-hole wires
+// it into the API so /metrics can emit shole_upstream_failures_total per
+// upstream, the "which upstream is flaky" signal the query log cannot give
+// (forward aggregates several upstreams into one generic error).
+func UpstreamFailures() map[string]uint64 {
+	return forwardTracker.FailureCounts()
+}
 
 // forward tries each upstream in order and returns the first successful
 // reply. Upstreams that failed within upstreamCooldown are skipped on the

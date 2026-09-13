@@ -394,7 +394,11 @@ func TestHistoryEndpoint_WithRealDB(t *testing.T) {
 	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "ads.com.", Blocked: true})
 	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "allowed.com."})
 	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "cached.com.", CacheHit: true})
-	waitForRows(t, db, 4)
+	// rcode 2 = SERVFAIL: synthesized is an unresolved query, relayed is an
+	// upstream error.
+	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "dead.com.", Rcode: 2, Synthesized: true})
+	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "broken.com.", Rcode: 2})
+	waitForRows(t, db, 6)
 
 	store := blocklist.NewStore()
 	s := New(stats.New(), db, store, nil, func() bool { return true })
@@ -420,10 +424,12 @@ func TestHistoryEndpoint_WithRealDB(t *testing.T) {
 	if len(body.Series) != 24 {
 		t.Fatalf("series length = %d, want 24", len(body.Series))
 	}
-	// All four rows land in the current (last) bucket; one is a cache hit.
+	// All six rows land in the current (last) bucket: one cache hit, one
+	// unresolved, one relayed upstream error.
 	cur := body.Series[len(body.Series)-1]
-	if cur.Total != 4 || cur.Blocked != 2 || cur.Cached != 1 {
-		t.Errorf("current bucket = {total %d, blocked %d, cached %d}, want {4, 2, 1}", cur.Total, cur.Blocked, cur.Cached)
+	if cur.Total != 6 || cur.Blocked != 2 || cur.Cached != 1 || cur.Unresolved != 1 || cur.UpstreamError != 1 {
+		t.Errorf("current bucket = {total %d, blocked %d, cached %d, unresolved %d, upstream_error %d}, want {6, 2, 1, 1, 1}",
+			cur.Total, cur.Blocked, cur.Cached, cur.Unresolved, cur.UpstreamError)
 	}
 }
 
@@ -609,19 +615,23 @@ func TestParseQueryFilter(t *testing.T) {
 	// blocked accepts only "true"/"false" (any other value leaves it unset).
 	tru, fls := true, false
 	cases := []struct {
-		query      string
-		wantDomain string
-		wantClient string
-		wantBlk    *bool
+		query       string
+		wantDomain  string
+		wantClient  string
+		wantBlk     *bool
+		wantOutcome string
 	}{
-		{"", "", "", nil},
-		{"domain=ads", "ads", "", nil},
-		{"domain=%20ads%20", "ads", "", nil},
-		{"client=1.2.3.4", "", "1.2.3.4", nil},
-		{"blocked=true", "", "", &tru},
-		{"blocked=false", "", "", &fls},
-		{"blocked=garbage", "", "", nil},
-		{"domain=ex&client=1.2.3.4&blocked=true", "ex", "1.2.3.4", &tru},
+		{"", "", "", nil, ""},
+		{"domain=ads", "ads", "", nil, ""},
+		{"domain=%20ads%20", "ads", "", nil, ""},
+		{"client=1.2.3.4", "", "1.2.3.4", nil, ""},
+		{"blocked=true", "", "", &tru, ""},
+		{"blocked=false", "", "", &fls, ""},
+		{"blocked=garbage", "", "", nil, ""},
+		{"outcome=unresolved", "", "", nil, "unresolved"},
+		{"outcome=upstream-error", "", "", nil, "upstream-error"},
+		{"outcome=garbage", "", "", nil, ""},
+		{"domain=ex&client=1.2.3.4&blocked=true", "ex", "1.2.3.4", &tru, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.query, func(t *testing.T) {
@@ -632,6 +642,9 @@ func TestParseQueryFilter(t *testing.T) {
 			}
 			if f.Client != tc.wantClient {
 				t.Errorf("Client = %q, want %q", f.Client, tc.wantClient)
+			}
+			if f.Outcome != tc.wantOutcome {
+				t.Errorf("Outcome = %q, want %q", f.Outcome, tc.wantOutcome)
 			}
 			switch {
 			case tc.wantBlk == nil && f.Blocked != nil:
@@ -657,7 +670,10 @@ func TestQueriesEndpoint_Filtered(t *testing.T) {
 	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "ads.example.com.", Blocked: true})
 	db.Log(querylog.Record{ClientIP: "2.2.2.2", Domain: "google.com."})
 	db.Log(querylog.Record{ClientIP: "2.2.2.2", Domain: "tracker.net.", Blocked: true})
-	waitForRows(t, db, 3)
+	// rcode 2 = SERVFAIL: one unresolved (synthesized), one relayed upstream error.
+	db.Log(querylog.Record{ClientIP: "3.3.3.3", Domain: "dead.com.", Rcode: 2, Synthesized: true})
+	db.Log(querylog.Record{ClientIP: "3.3.3.3", Domain: "broken.com.", Rcode: 2})
+	waitForRows(t, db, 5)
 
 	store := blocklist.NewStore()
 	s := New(stats.New(), db, store, nil, func() bool { return true })
@@ -678,12 +694,14 @@ func TestQueriesEndpoint_Filtered(t *testing.T) {
 		query string
 		want  int
 	}{
-		{"limit=10", 3},
+		{"limit=10", 5},
 		{"domain=example", 1},
 		{"blocked=true", 2},
-		{"blocked=false", 1},
+		{"blocked=false", 3},
 		{"client=2.2.2.2", 2},
 		{"client=2.2.2.2&blocked=true", 1},
+		{"outcome=unresolved", 1},
+		{"outcome=upstream-error", 1},
 	}
 	for _, tc := range cases {
 		if n := get(tc.query); n != tc.want {
@@ -820,6 +838,10 @@ func TestMetricsEndpoint(t *testing.T) {
 	s.counter.RecordQuery("1.1.1.1", "ads.com.", true)
 	s.counter.RecordQuery("1.1.1.1", "google.com.", false)
 	s.counter.RecordCacheHit()
+	s.counter.RecordQuery("1.1.1.1", "dead.com.", false)
+	s.counter.RecordForwardFailure()
+	s.counter.RecordQuery("1.1.1.1", "broken.com.", false)
+	s.counter.RecordUpstreamError()
 
 	resp, err := http.Get(srv.URL + "/metrics")
 	if err != nil {
@@ -834,9 +856,11 @@ func TestMetricsEndpoint(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	want := []string{
-		"shole_queries_total 2",
+		"shole_queries_total 4",
 		"shole_blocked_total 1",
 		"shole_cache_hits_total 1",
+		"shole_forward_failures_total 1",
+		"shole_upstream_errors_total 1",
 		"shole_blocklist_size",
 		"# HELP shole_queries_total",
 		"# TYPE shole_queries_total counter",
@@ -880,6 +904,53 @@ func TestMetricsEndpoint_IncludesCacheStatsWhenWired(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "shole_cache_dropped_total 5") {
 		t.Errorf("expected cache_dropped_total=5 in body:\n%s", body)
+	}
+}
+
+func TestMetricsEndpoint_IncludesUpstreamFailuresWhenWired(t *testing.T) {
+	// The per-upstream metric is emitted only when the accessor is wired (main
+	// bridges dnsserver.UpstreamFailures). Each upstream is a labeled sample.
+	store := blocklist.NewStore()
+	s := New(stats.New(), nil, store, nil, func() bool { return true })
+	s.SetUpstreamFailures(func() map[string]uint64 {
+		return map[string]uint64{"1.1.1.1:53": 4, "8.8.8.8:53": 0}
+	})
+	srv := httptest.NewServer(s.handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	want := []string{
+		"# TYPE shole_upstream_failures_total counter",
+		`shole_upstream_failures_total{upstream="1.1.1.1:53"} 4`,
+		`shole_upstream_failures_total{upstream="8.8.8.8:53"} 0`,
+	}
+	for _, w := range want {
+		if !strings.Contains(string(body), w) {
+			t.Errorf("metrics body missing %q\nfull body:\n%s", w, body)
+		}
+	}
+}
+
+func TestMetricsEndpoint_OmitsUpstreamFailuresWhenUnset(t *testing.T) {
+	// Without the accessor (the default), the metric must not appear.
+	store := blocklist.NewStore()
+	s := New(stats.New(), nil, store, nil, func() bool { return true })
+	srv := httptest.NewServer(s.handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(body), "shole_upstream_failures_total") {
+		t.Errorf("upstream_failures metric present without accessor:\n%s", body)
 	}
 }
 

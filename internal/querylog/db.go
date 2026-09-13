@@ -18,8 +18,10 @@ CREATE TABLE IF NOT EXISTS queries (
 	ts        TEXT    NOT NULL,
 	client_ip TEXT    NOT NULL,
 	domain    TEXT    NOT NULL,
-	blocked   INTEGER NOT NULL,
-	cache_hit INTEGER NOT NULL DEFAULT 0
+	blocked     INTEGER NOT NULL,
+	cache_hit   INTEGER NOT NULL DEFAULT 0,
+	rcode       INTEGER NOT NULL DEFAULT 0,
+	synthesized INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_queries_ts      ON queries(ts);
 CREATE INDEX IF NOT EXISTS idx_queries_blocked ON queries(blocked);
@@ -32,9 +34,16 @@ CREATE INDEX IF NOT EXISTS idx_queries_domain  ON queries(domain);
 // no "ADD COLUMN IF NOT EXISTS", so each additive column is gated on a
 // table_info probe (ensureColumn). A newly created database already has every
 // column, so migrate is a no-op on it. Existing rows take the column DEFAULT,
-// so cache_hit reads 0 (not cached) for rows written before the upgrade.
+// so cache_hit reads 0 (not cached), and rcode/synthesized read 0 (so an old
+// row is never counted as a failed query), for rows written before the upgrade.
 func migrate(db *sql.DB) error {
-	return ensureColumn(db, "queries", "cache_hit", "ALTER TABLE queries ADD COLUMN cache_hit INTEGER NOT NULL DEFAULT 0")
+	if err := ensureColumn(db, "queries", "cache_hit", "ALTER TABLE queries ADD COLUMN cache_hit INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "queries", "rcode", "ALTER TABLE queries ADD COLUMN rcode INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	return ensureColumn(db, "queries", "synthesized", "ALTER TABLE queries ADD COLUMN synthesized INTEGER NOT NULL DEFAULT 0")
 }
 
 // ensureColumn runs ddl to add column to table only when the column is not
@@ -67,11 +76,13 @@ func ensureColumn(db *sql.DB, table, column, ddl string) error {
 }
 
 type entry struct {
-	ts       time.Time
-	clientIP string
-	domain   string
-	blocked  bool
-	cacheHit bool
+	ts          time.Time
+	clientIP    string
+	domain      string
+	blocked     bool
+	cacheHit    bool
+	rcode       int
+	synthesized bool
 }
 
 // Tuning constants for the async writer. flushBatchSize is the largest
@@ -222,7 +233,7 @@ func (d *DBLogger) Log(rec Record) {
 		return
 	}
 	select {
-	case d.ch <- entry{ts: time.Now(), clientIP: rec.ClientIP, domain: rec.Domain, blocked: rec.Blocked, cacheHit: rec.CacheHit}:
+	case d.ch <- entry{ts: time.Now(), clientIP: rec.ClientIP, domain: rec.Domain, blocked: rec.Blocked, cacheHit: rec.CacheHit, rcode: rec.Rcode, synthesized: rec.Synthesized}:
 	default:
 		// Drop under extreme load rather than blocking a DNS goroutine.
 		// The counter is surfaced via /metrics so operators see when this
@@ -303,7 +314,7 @@ func (d *DBLogger) flush(batch []entry) {
 		logger.Error("db begin failed, dropping batch", "entries", len(batch), "err", err)
 		return
 	}
-	stmt, err := tx.Prepare("INSERT INTO queries(ts,client_ip,domain,blocked,cache_hit) VALUES(?,?,?,?,?)")
+	stmt, err := tx.Prepare("INSERT INTO queries(ts,client_ip,domain,blocked,cache_hit,rcode,synthesized) VALUES(?,?,?,?,?,?,?)")
 	if err != nil {
 		logger.Error("db prepare failed, dropping batch", "entries", len(batch), "err", err)
 		_ = tx.Rollback() // the Prepare error above is the actionable one
@@ -312,7 +323,7 @@ func (d *DBLogger) flush(batch []entry) {
 	defer stmt.Close()
 
 	for _, e := range batch {
-		if _, err := stmt.Exec(e.ts.Format(time.RFC3339), e.clientIP, e.domain, b2i(e.blocked), b2i(e.cacheHit)); err != nil {
+		if _, err := stmt.Exec(e.ts.Format(time.RFC3339), e.clientIP, e.domain, b2i(e.blocked), b2i(e.cacheHit), e.rcode, b2i(e.synthesized)); err != nil {
 			logger.Warn("db insert", "err", err)
 		}
 	}
@@ -327,12 +338,17 @@ type Entry struct {
 	Count int64  `json:"count"`
 }
 
-// QueryRow is a single row returned from the database.
+// QueryRow is a single row returned from the database. Rcode and Synthesized
+// are the raw outcome columns; the dashboard derives the per-row status badge
+// (blocked, allowed, unresolved, or upstream error) from them the same way the
+// Record.Failed helpers and the History/Search SQL do.
 type QueryRow struct {
-	TS       string `json:"ts"`
-	ClientIP string `json:"client_ip"`
-	Domain   string `json:"domain"`
-	Blocked  bool   `json:"blocked"`
+	TS          string `json:"ts"`
+	ClientIP    string `json:"client_ip"`
+	Domain      string `json:"domain"`
+	Blocked     bool   `json:"blocked"`
+	Rcode       int    `json:"rcode"`
+	Synthesized bool   `json:"synthesized"`
 }
 
 // QueryFilter holds optional filters for a recent-query read. The zero value
@@ -345,6 +361,7 @@ type QueryFilter struct {
 	Domain  string // case-insensitive substring of the domain; "" matches any
 	Client  string // exact match on the stored (masked) client; "" matches any
 	Blocked *bool  // nil matches any; else true for blocked, false for allowed
+	Outcome string // "" matches any; "unresolved" or "upstream-error" narrows to that failure
 }
 
 // Search returns the last n queries that match f, ordered newest-first. ctx is
@@ -373,8 +390,18 @@ func (d *DBLogger) Search(ctx context.Context, f QueryFilter, n int) ([]QueryRow
 		where = append(where, "blocked = ?")
 		args = append(args, b2i(*f.Blocked))
 	}
+	// The failure rule (synthesized + rcode) matches Record.Unresolved /
+	// Record.UpstreamError and the History CASE sums; keep the three in step.
+	switch f.Outcome {
+	case "unresolved":
+		where = append(where, "synthesized = 1 AND rcode = ?")
+		args = append(args, rcodeServerFailure)
+	case "upstream-error":
+		where = append(where, "synthesized = 0 AND rcode IN (?, ?)")
+		args = append(args, rcodeServerFailure, rcodeRefused)
+	}
 
-	q := "SELECT ts, client_ip, domain, blocked FROM queries"
+	q := "SELECT ts, client_ip, domain, blocked, rcode, synthesized FROM queries"
 	if len(where) > 0 {
 		q += " WHERE " + strings.Join(where, " AND ")
 	}
@@ -426,12 +453,17 @@ func (d *DBLogger) TopBlocked(ctx context.Context, n int) ([]Entry, error) {
 // Bucket is one time bucket in a query-volume history series. Cached is the
 // subset of Total served from the response cache. Blocked and Cached do not
 // overlap (a blocked query never reaches the cache), so the forwarded count is
-// the remainder: Total - Blocked - Cached.
+// the remainder: Total - Blocked - Cached. Unresolved and UpstreamError are the
+// two failure kinds; both are subsets of the forwarded remainder (a blocked,
+// cached, or local reply never fails), so they overlap neither Blocked nor
+// Cached.
 type Bucket struct {
-	Start   int64 `json:"start"` // bucket start, unix seconds (UTC)
-	Total   int64 `json:"total"`
-	Blocked int64 `json:"blocked"`
-	Cached  int64 `json:"cached"`
+	Start         int64 `json:"start"` // bucket start, unix seconds (UTC)
+	Total         int64 `json:"total"`
+	Blocked       int64 `json:"blocked"`
+	Cached        int64 `json:"cached"`
+	Unresolved    int64 `json:"unresolved"`     // s-hole synthesized a SERVFAIL
+	UpstreamError int64 `json:"upstream_error"` // relayed SERVFAIL/REFUSED from an upstream
 }
 
 // History returns a dense per-bucket count series covering roughly the last
@@ -455,11 +487,17 @@ func (d *DBLogger) History(ctx context.Context, window, bucket time.Duration) ([
 	}
 
 	cutoff := time.Now().Add(-window).Format(time.RFC3339)
+	// The two failure CASE sums encode the same rule as Record.Unresolved /
+	// Record.UpstreamError and the Search filter (rcode 2 = SERVFAIL, 5 =
+	// REFUSED); keep the three in step. The literals are constants, not caller
+	// input, so they are inlined rather than bound.
 	rows, err := d.db.QueryContext(ctx, `
 		SELECT (CAST(strftime('%s', ts) AS INTEGER) / ?1) * ?1 AS bucket_start,
 		       COUNT(*)       AS total,
 		       SUM(blocked)   AS blocked,
-		       SUM(cache_hit) AS cached
+		       SUM(cache_hit) AS cached,
+		       SUM(CASE WHEN synthesized=1 AND rcode=2 THEN 1 ELSE 0 END) AS unresolved,
+		       SUM(CASE WHEN synthesized=0 AND rcode IN (2,5) THEN 1 ELSE 0 END) AS upstream_error
 		FROM queries
 		WHERE ts >= ?2
 		GROUP BY bucket_start`, bucketSecs, cutoff)
@@ -471,7 +509,7 @@ func (d *DBLogger) History(ctx context.Context, window, bucket time.Duration) ([
 	counts := make(map[int64]Bucket)
 	for rows.Next() {
 		var b Bucket
-		if err := rows.Scan(&b.Start, &b.Total, &b.Blocked, &b.Cached); err != nil {
+		if err := rows.Scan(&b.Start, &b.Total, &b.Blocked, &b.Cached, &b.Unresolved, &b.UpstreamError); err != nil {
 			return nil, err
 		}
 		counts[b.Start] = b
@@ -506,7 +544,7 @@ func escapeLike(s string) string {
 	return s
 }
 
-// b2i maps a bool to the 0/1 the blocked and cache_hit columns store.
+// b2i maps a bool to the 0/1 the blocked, cache_hit, and synthesized columns store.
 func b2i(b bool) int {
 	if b {
 		return 1
@@ -518,11 +556,12 @@ func scanRows(rows *sql.Rows) ([]QueryRow, error) {
 	var out []QueryRow
 	for rows.Next() {
 		var r QueryRow
-		var blocked int
-		if err := rows.Scan(&r.TS, &r.ClientIP, &r.Domain, &blocked); err != nil {
+		var blocked, synthesized int
+		if err := rows.Scan(&r.TS, &r.ClientIP, &r.Domain, &blocked, &r.Rcode, &synthesized); err != nil {
 			return nil, err
 		}
 		r.Blocked = blocked == 1
+		r.Synthesized = synthesized == 1
 		out = append(out, r)
 	}
 	return out, rows.Err()

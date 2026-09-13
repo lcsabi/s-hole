@@ -13,7 +13,7 @@
 //
 //	GET    /api/stats            JSON Snapshot
 //	GET    /api/check            block decision for ?domain=NAME (diagnostic; no stats/log side effects)
-//	GET    /api/queries          recent rows from SQLite (?limit=N, default 50, max 1000; filter ?domain= substring, ?client= exact, ?blocked=true/false)
+//	GET    /api/queries          recent rows from SQLite (?limit=N, default 50, max 1000; filter ?domain= substring, ?client= exact, ?blocked=true/false, ?outcome=unresolved/upstream-error)
 //	GET    /api/top-blocked      all-time most-blocked domains from SQLite (?limit=N, default 50, max 1000)
 //	GET    /api/history          per-bucket query volume from SQLite (?window=24h&bucket=1h; bucket count capped at 1000)
 //	GET    /api/whitelist        runtime whitelist (sorted)
@@ -95,6 +95,11 @@ type Server struct {
 	// display time. It keys off the already-masked value the store holds, so it
 	// never exceeds the active queryPrivacy granularity. nil = attribution off.
 	labeler *clientLabeler
+	// upstreamFailures returns the cumulative per-upstream transport-failure
+	// counts for the shole_upstream_failures_total{upstream} metric. Wired from
+	// main to dnsserver.UpstreamFailures; nil leaves the metric off (the api
+	// package does not import dnsserver, so main bridges the two).
+	upstreamFailures func() map[string]uint64
 }
 
 // New constructs a Server. db and dnsCache may be nil to disable the
@@ -126,6 +131,15 @@ func (s *Server) SetQueryPrivacy(mode string) {
 // leaves attribution off. Like SetQueryPrivacy, this does not affect masking.
 func (s *Server) SetClientNames(m map[string]string) {
 	s.labeler = newClientLabeler(m)
+}
+
+// SetUpstreamFailures wires the per-upstream transport-failure accessor
+// (dnsserver.UpstreamFailures) so /metrics can emit
+// shole_upstream_failures_total{upstream=...}. Call before Serve; leaving it
+// unset omits that metric. main bridges the two packages so api need not import
+// dnsserver.
+func (s *Server) SetUpstreamFailures(fn func() map[string]uint64) {
+	s.upstreamFailures = fn
 }
 
 // Timeouts protect the unauthenticated admin server from slowloris-style
@@ -316,9 +330,12 @@ type queryRow struct {
 }
 
 // parseQueryFilter reads the optional recent-query filters from the request.
-// domain is a substring, client an exact match on the stored (masked) value, and
-// blocked accepts "true" or "false" (any other value leaves the block status
-// unfiltered). Every field is optional; an empty filter matches every row.
+// domain is a substring, client an exact match on the stored (masked) value,
+// blocked accepts "true" or "false", and outcome accepts "unresolved" or
+// "upstream-error" to narrow to that failure kind (any other value leaves the
+// status/outcome unfiltered). Every field is optional; an empty filter matches
+// every row. The dashboard status control sends either blocked or outcome, not
+// both, but the two are independent filters here.
 func parseQueryFilter(r *http.Request) querylog.QueryFilter {
 	q := r.URL.Query()
 	f := querylog.QueryFilter{
@@ -332,6 +349,10 @@ func parseQueryFilter(r *http.Request) querylog.QueryFilter {
 	case "false":
 		b := false
 		f.Blocked = &b
+	}
+	switch q.Get("outcome") {
+	case "unresolved", "upstream-error":
+		f.Outcome = q.Get("outcome")
 	}
 	return f
 }

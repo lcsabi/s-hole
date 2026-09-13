@@ -44,7 +44,7 @@ rails.
 | 28 | Validate the upstreams at config time (format check + single-upstream note) | Low | not started |
 | 29 | "Cached" line on the query-volume graph (record cache-hit per query) | Medium | done (CL 76) |
 | 30 | Go runtime gauges (goroutines, heap) in `/metrics` | Medium | not started |
-| 31 | Failed-query visibility (per-query outcome: graph, filter, `/metrics`) | Medium | not started |
+| 31 | Failed-query visibility (per-query outcome: graph, filter, `/metrics`) | Medium | done (CL 77) |
 
 Items 19-26 came out of a 2026-08-24 feature-ideas session. Items 21-24 are a
 dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
@@ -56,9 +56,12 @@ then #31, then #26 last. #29 landed (CL 76): it introduced the per-query `Record
 struct (in `querylog`) and the first idempotent `ALTER TABLE ... ADD COLUMN`
 migration (via the `ensureColumn` helper) in their simplest form (one
 already-counted boolean, no new metric), so it was the lowest-risk vehicle for
-that refactor. #31 then reuses both to add the outcome column, the graph and
-filter, and the failure metrics: it adds one `Outcome` field to the same `Record`
-and one more `ensureColumn` call. #26
+that refactor. #31 landed (CL 77): it reused both to add the graph lines, the
+filter, and the failure metrics. It stored the outcome as an rcode plus a
+synthesized-flag pair on the same `Record` (two `ensureColumn` calls), rather than
+the single `Outcome` enum first sketched here, because the rcode is richer for a
+future per-rcode breakdown and the two fields separate an unresolved query
+(s-hole synthesized the SERVFAIL) from a relayed upstream failure. #26
 (Grafana and Prometheus examples) draws the metric surface, so it comes after the
 metrics exist, or the dashboard is revised on every new metric. #30 (runtime
 gauges) is independent of the log work and can land any time, but before #26.

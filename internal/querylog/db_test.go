@@ -420,6 +420,125 @@ func TestMigrate_AddsCacheHitColumn(t *testing.T) {
 	}
 }
 
+func TestMigrate_AddsOutcomeColumns(t *testing.T) {
+	// A post-CL76, pre-CL77 database has cache_hit but not the rcode or
+	// synthesized columns. NewDBLogger must add both idempotently, and existing
+	// rows must read rcode=0, synthesized=0 (so an old row is never counted as a
+	// failed query), the documented forward-only behavior.
+	path := filepath.Join(t.TempDir(), "old.db")
+
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open old db: %v", err)
+	}
+	if _, err := old.Exec(`CREATE TABLE queries (
+		id        INTEGER PRIMARY KEY AUTOINCREMENT,
+		ts        TEXT    NOT NULL,
+		client_ip TEXT    NOT NULL,
+		domain    TEXT    NOT NULL,
+		blocked   INTEGER NOT NULL,
+		cache_hit INTEGER NOT NULL DEFAULT 0
+	)`); err != nil {
+		t.Fatalf("create old schema: %v", err)
+	}
+	if _, err := old.Exec(
+		"INSERT INTO queries(ts,client_ip,domain,blocked,cache_hit) VALUES(?,?,?,?,?)",
+		time.Now().Format(time.RFC3339), "1.1.1.1", "pre-upgrade.com.", 0, 0); err != nil {
+		t.Fatalf("seed old row: %v", err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatalf("close old db: %v", err)
+	}
+
+	db, err := NewDBLogger(path, "all", time.Hour, 0)
+	if err != nil {
+		t.Fatalf("NewDBLogger on old db: %v", err)
+	}
+	defer db.Close()
+
+	var rcode, synthesized int
+	if err := db.db.QueryRow("SELECT rcode, synthesized FROM queries WHERE domain = 'pre-upgrade.com.'").Scan(&rcode, &synthesized); err != nil {
+		t.Fatalf("read migrated row: %v", err)
+	}
+	if rcode != 0 || synthesized != 0 {
+		t.Errorf("pre-upgrade row = {rcode %d, synthesized %d}, want {0, 0}", rcode, synthesized)
+	}
+
+	// Re-running the migration is a no-op (idempotent), not an error.
+	if err := migrate(db.db); err != nil {
+		t.Errorf("second migrate: %v", err)
+	}
+}
+
+func TestDBLogger_OutcomeRoundTrip(t *testing.T) {
+	// Drive the full write path (Log -> channel -> flush INSERT) for each
+	// outcome, then assert History sums the two failure kinds per bucket. A
+	// blocked, cached, or successfully forwarded query never counts as failed.
+	db, _ := newDB(t, "all")
+	defer db.Close()
+
+	db.Log(Record{ClientIP: "1.1.1.1", Domain: "ok.com."})                                                 // forwarded NOERROR
+	db.Log(Record{ClientIP: "1.1.1.1", Domain: "blocked.com.", Blocked: true, Synthesized: true})          // blocked
+	db.Log(Record{ClientIP: "1.1.1.1", Domain: "dead.com.", Rcode: rcodeServerFailure, Synthesized: true}) // unresolved
+	db.Log(Record{ClientIP: "1.1.1.1", Domain: "broken.com.", Rcode: rcodeServerFailure})                  // relayed SERVFAIL
+	db.Log(Record{ClientIP: "1.1.1.1", Domain: "refused.com.", Rcode: rcodeRefused})                       // relayed REFUSED
+	db.Log(Record{ClientIP: "1.1.1.1", Domain: "nx.com.", Rcode: 3})                                       // NXDOMAIN, not a failure
+
+	time.Sleep(150 * time.Millisecond) // let the flush tick persist the batch
+
+	series, err := db.History(context.Background(), time.Hour, time.Hour)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	cur := series[len(series)-1]
+	if cur.Total != 6 || cur.Unresolved != 1 || cur.UpstreamError != 2 {
+		t.Errorf("bucket = {total %d, unresolved %d, upstream_error %d}, want {6, 1, 2}",
+			cur.Total, cur.Unresolved, cur.UpstreamError)
+	}
+}
+
+func TestDBLogger_SearchOutcome(t *testing.T) {
+	// The ?outcome= filter narrows to a failure kind. Seed rows with explicit
+	// rcode/synthesized so the two kinds are distinguishable.
+	db, _ := newDB(t, "all")
+	defer db.Close()
+
+	seed := func(domain string, blocked, rcode, synthesized int) {
+		t.Helper()
+		if _, err := db.db.Exec(
+			"INSERT INTO queries(ts,client_ip,domain,blocked,rcode,synthesized) VALUES(?,?,?,?,?,?)",
+			time.Now().Format(time.RFC3339), "1.1.1.1", domain, blocked, rcode, synthesized); err != nil {
+			t.Fatalf("seed insert: %v", err)
+		}
+	}
+	seed("ok.com.", 0, 0, 0)
+	seed("blocked.com.", 1, 0, 1)
+	seed("dead.com.", 0, rcodeServerFailure, 1)   // unresolved
+	seed("broken.com.", 0, rcodeServerFailure, 0) // relayed SERVFAIL
+	seed("refused.com.", 0, rcodeRefused, 0)      // relayed REFUSED
+
+	ctx := context.Background()
+	tests := []struct {
+		outcome string
+		want    int
+	}{
+		{"", 5},
+		{"unresolved", 1},
+		{"upstream-error", 2},
+	}
+	for _, tc := range tests {
+		t.Run("outcome="+tc.outcome, func(t *testing.T) {
+			rows, err := db.Search(ctx, QueryFilter{Outcome: tc.outcome}, 100)
+			if err != nil {
+				t.Fatalf("Search: %v", err)
+			}
+			if len(rows) != tc.want {
+				t.Errorf("outcome %q returned %d rows, want %d", tc.outcome, len(rows), tc.want)
+			}
+		})
+	}
+}
+
 func TestDBLogger_TopBlockedTieOrder(t *testing.T) {
 	// b/056: equal-count blocked domains come back ordered by domain ascending,
 	// matching the in-memory topN tie-break so the dashboard's "Since start" and

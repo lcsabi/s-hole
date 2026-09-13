@@ -15,6 +15,16 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   changes between refreshes. (CL 71)
 
 ### Added
+- **Failed-query visibility.** s-hole now records a per-query outcome and shows
+  failures in three places: the query-volume graph gains two lines, unresolved
+  (s-hole could not answer, so it returned SERVFAIL) and upstream error (a live
+  upstream returned SERVFAIL/REFUSED, which s-hole relayed); the recent-query log
+  gains "Unresolved" and "Upstream error" filters (`GET /api/queries?outcome=`)
+  and a status badge per row; and `/metrics` gains `shole_forward_failures_total`,
+  `shole_upstream_errors_total`, and per-upstream `shole_upstream_failures_total`.
+  The flat log file marks a failed query with a trailing ` FAILED` token on the
+  ALLOW line. Recording is forward-only: rows written before the upgrade read as
+  not-failed. (CL 77)
 - **"Cached" line on the query-volume graph.** The "Queries over time" graph now
   draws a third line for cache hits, next to total and blocked, so caching
   effectiveness over the day and the cache warm-up after a restart are visible;

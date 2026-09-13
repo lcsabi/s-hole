@@ -256,15 +256,34 @@ State-changing admin requests leave an audit line in the application log. A whit
 | `/metrics` | GET | Prometheus text exposition: `shole_queries_total`, `shole_blocked_total`, `shole_local_ptr_total`, `shole_cache_hits_total`, `shole_forward_failures_total`, `shole_upstream_errors_total`, `shole_upstream_transport_failures_total{upstream}`, `shole_cache_misses_total`, `shole_cache_size`, `shole_cache_dropped_total`, `shole_blocklist_size`, `shole_blocklist_source_size`, `shole_blocklist_source_stale`, `shole_whitelist_size`, `shole_query_log_dropped_total` |
 | `/debug/pprof/*` | GET | Standard Go pprof handlers. **Only registered when `enable_pprof: true`** (or `S_HOLE_ENABLE_PPROF=1`). Off by default; intended for incident response on a localhost-bound admin server. |
 
-The three failure metrics answer different questions, so read them together, not as one number:
+#### Metrics reference
 
-| Metric | Counts | Points at |
+Each metric also carries a `# HELP` line on the endpoint itself; this table is the canonical prose reference. Counters only rise; gauges rise and fall. Some metrics appear only when the relevant feature is enabled (noted below).
+
+| Metric | Type | Meaning |
 |---|---|---|
-| `shole_forward_failures_total` | Queries s-hole could not answer at all: every upstream failed to respond, so s-hole returned SERVFAIL itself | The environment or config (upstreams down, a bad address, a broken network path, too tight a deadline) |
-| `shole_upstream_errors_total` | An upstream answered with a failure rcode (SERVFAIL or REFUSED) and s-hole relayed it | The upstream or the domain being looked up, not s-hole |
-| `shole_upstream_transport_failures_total{upstream}` | Per-upstream count of transport failures (timeout, refused connection) for each configured resolver | One specific flaky upstream |
+| `shole_queries_total` | counter | Every DNS query handled. The denominator for the ratios below. |
+| `shole_blocked_total` | counter | Queries that matched the block set and got a sinkhole reply. |
+| `shole_local_ptr_total` | counter | PTR queries for RFC 6303 private ranges answered locally with NXDOMAIN (never forwarded). |
+| `shole_cache_hits_total` | counter | Responses served from the in-memory cache. |
+| `shole_forward_failures_total` | counter | Queries s-hole could not resolve: every upstream failed to respond, so s-hole synthesized SERVFAIL. Points at the environment or config (upstreams down, a bad address, a broken network path, too tight a deadline). |
+| `shole_upstream_errors_total` | counter | Failure rcodes (SERVFAIL/REFUSED) a live upstream returned and s-hole relayed. Points at the upstream or the domain, not s-hole. |
+| `shole_upstream_transport_failures_total{upstream}` | counter | Per-upstream count of transport failures (timeout, refused connection). Points at one specific flaky upstream. Emitted only when the accessor is wired (it always is under `cmd/s-hole`). |
+| `shole_cache_misses_total` | counter | Cache misses, meaning the query was forwarded upstream. Present only when caching is enabled. |
+| `shole_cache_size` | gauge | Entries currently in the response cache. Caching enabled only. |
+| `shole_cache_dropped_total` | counter | Cache inserts dropped because the cache was full of unexpired entries (the cache-pressure signal). Caching enabled only. |
+| `shole_blocklist_size` | gauge | Domains in the active block set, after dedup. |
+| `shole_blocklist_source_size{url}` | gauge | Domains one source contributed, before dedup, so the per-source samples sum to more than `shole_blocklist_size`. One sample per configured source. |
+| `shole_blocklist_source_stale{url}` | gauge | 1 while a source is served from its on-disk cache after a failed fetch (or has never loaded), else 0. |
+| `shole_whitelist_size` | gauge | Domains in the runtime whitelist. |
+| `shole_query_log_dropped_total` | counter | Query-log rows dropped because the writer queue was full (the logging back-pressure signal). Present only when `query_db` is set. |
 
-The first two are process-wide counters (subsets of `shole_queries_total`); the third is labeled per upstream address. A single transport failure bumps the per-upstream counter but does not become a forward failure unless failover to every other upstream also fails, so the per-upstream sum and `shole_forward_failures_total` differ by design. `shole_upstream_errors_total` (a relayed error response) and `shole_upstream_transport_failures_total` (could not reach the upstream) are named apart on purpose so they do not read as synonyms.
+How the query counters relate (read them together, not as one number):
+
+- `shole_queries_total` = `shole_blocked_total` + `shole_local_ptr_total` + `shole_cache_hits_total` + forwarded, where forwarded is the remainder (it has no counter of its own).
+- `shole_cache_hits_total` + `shole_cache_misses_total` covers only the queries that reached the cache; a blocked or local-PTR query never does.
+- `shole_forward_failures_total` and `shole_upstream_errors_total` are subsets of the forwarded remainder.
+- The `shole_upstream_transport_failures_total` samples sum to more than `shole_forward_failures_total`: a single transport failure bumps the per-upstream counter but becomes a forward failure only when failover to every other upstream also fails. `shole_upstream_errors_total` (a relayed error response) and `shole_upstream_transport_failures_total` (could not reach the upstream) are named apart on purpose so they do not read as synonyms.
 
 ### Observability and Logging
 

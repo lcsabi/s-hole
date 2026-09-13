@@ -50,7 +50,7 @@ const queryDeadline = 10 * time.Second
 // Logger is the minimal log sink used by the DNS handler. Both the file
 // and SQLite query loggers satisfy it; cmd/s-hole/main.go fans out to multiple via
 // querylog.Multi. It takes a querylog.Record so a new per-query field does not
-// change this signature (ROADMAP #31 adds the next field).
+// change this signature.
 type Logger interface {
 	Log(rec querylog.Record)
 }
@@ -173,7 +173,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	if h.localPTR && isPrivatePTR(q.Qtype, domain) {
 		h.counter.RecordQuery(clientIP, domain, false)
 		h.counter.RecordLocalPTR()
-		h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain})
+		h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Rcode: dns.RcodeNameError, Synthesized: true})
 		h.writeLocalNXDOMAIN(w, req)
 		return
 	}
@@ -182,11 +182,17 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	h.counter.RecordQuery(clientIP, domain, blocked)
 
 	// Log at the point each outcome is decided, so the query-log row records
-	// whether the reply was served from cache (cache_hit). A blocked query
-	// short-circuits before the cache and a local-PTR answer never reaches it,
-	// so both log CacheHit=false; total = blocked + cached + forwarded.
+	// the cache-hit flag (cache_hit) and the outcome (rcode + synthesized). A
+	// blocked query short-circuits before the cache and a local-PTR answer
+	// never reaches it, so both log CacheHit=false; total = blocked + cached +
+	// forwarded. The block reply is synthesized locally: NXDOMAIN in "nxdomain"
+	// mode, NOERROR otherwise (matching writeSinkhole), neither a failure rcode.
 	if blocked {
-		h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Blocked: true})
+		blockRcode := dns.RcodeSuccess
+		if h.blockMode == "nxdomain" {
+			blockRcode = dns.RcodeNameError
+		}
+		h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Blocked: true, Rcode: blockRcode, Synthesized: true})
 		h.writeSinkhole(w, req, q)
 		return
 	}
@@ -196,7 +202,9 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		if cached, ok := h.cache.Get(q); ok {
 			cached.Id = req.Id
 			h.counter.RecordCacheHit()
-			h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, CacheHit: true})
+			// Relayed from cache, not synthesized. The cache stores only
+			// NOERROR-with-answers replies, so cached.Rcode is NOERROR.
+			h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, CacheHit: true, Rcode: cached.Rcode})
 			if err := w.WriteMsg(cached); err != nil {
 				logger.Warn("write cached response failed", "err", err, "domain", domain)
 			}
@@ -204,19 +212,31 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		}
 	}
 
-	// Cache miss: log as a forwarded (allowed, not cached) query before the
-	// forward, so a query whose upstream later fails is still logged, matching
-	// the behavior before cache_hit recording moved the log call here.
-	h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain})
-
+	// Cache miss: forward, then log with the outcome the forward produced.
+	// The log call moved after the forward (it was before it for the cache_hit
+	// work in CL 76) so the row records rcode and the synthesized flag. A
+	// forwarded query is still always logged, in both the error and success
+	// branches, so the move does not lose the row a failed upstream used to log.
 	ctx, cancel := context.WithTimeout(context.Background(), queryDeadline)
 	defer cancel()
 	resp, err := forward(ctx, req, h.upstreams)
 	if err != nil {
+		// Unresolved: every upstream failed at the transport level or the
+		// deadline hit, so s-hole synthesizes the SERVFAIL (dns.HandleFailed).
 		logger.Warn("upstream forward failed", "err", err, "domain", domain)
+		h.counter.RecordForwardFailure()
+		h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Rcode: dns.RcodeServerFailure, Synthesized: true})
 		dns.HandleFailed(w, req)
 		return
 	}
+
+	// A live upstream answered. If it relayed a failure rcode (SERVFAIL or
+	// REFUSED), that is an upstream error, distinct from an unresolved query:
+	// s-hole relayed it, it did not synthesize it.
+	if resp.Rcode == dns.RcodeServerFailure || resp.Rcode == dns.RcodeRefused {
+		h.counter.RecordUpstreamError()
+	}
+	h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Rcode: resp.Rcode})
 
 	if h.cache != nil {
 		h.cache.Set(q, resp)

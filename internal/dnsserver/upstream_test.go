@@ -51,6 +51,35 @@ func startMockUpstream(t *testing.T, ip net.IP) (addr string, hits *atomic.Int64
 	return pc.LocalAddr().String(), hits
 }
 
+// startMockUpstreamRcode spins up a UDP server that answers every query with a
+// valid DNS message carrying the given rcode and no answer records. It models a
+// live upstream that relays a failure (SERVFAIL/REFUSED): the exchange succeeds
+// at the transport level, so the handler relays the rcode rather than treating
+// it as an unresolved query.
+func startMockUpstreamRcode(t *testing.T, rcode int) (addr string, hits *atomic.Int64) {
+	t.Helper()
+	hits = new(atomic.Int64)
+
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	srv := &dns.Server{
+		PacketConn: pc,
+		Handler: dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
+			hits.Add(1)
+			resp := new(dns.Msg)
+			resp.SetRcode(req, rcode)
+			w.WriteMsg(resp)
+		}),
+	}
+	go srv.ActivateAndServe()
+	t.Cleanup(func() { srv.Shutdown() })
+
+	return pc.LocalAddr().String(), hits
+}
+
 // startTruncatingUpstream runs a UDP server that always replies with the
 // TC bit set and an empty answer section, plus (optionally) a TCP server
 // on the same port that returns the full answer. This is the shape of a

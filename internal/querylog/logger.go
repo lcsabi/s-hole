@@ -30,8 +30,10 @@ var logger = slog.With("pkg", "querylog")
 // FileLogger writes one line per query to a flat file, or to stdout when
 // the configured path is empty. The format is fixed for easy parsing by
 // shell tools (grep, tail): "<RFC3339> <ALLOW|BLOCK> <client> <domain>",
-// with a trailing " CACHED" token on a cache hit (ALLOW lines only; a
-// blocked query never reaches the cache).
+// with an optional trailing marker on ALLOW lines: " CACHED" on a cache hit
+// or " FAILED" on a failed query (unresolved or a relayed upstream failure).
+// The two markers are mutually exclusive, and a blocked query carries
+// neither (it never reaches the cache and its rcode is not a failure).
 type FileLogger struct {
 	f          *os.File
 	logQueries string
@@ -72,6 +74,8 @@ func (l *FileLogger) Log(rec Record) {
 	marker := ""
 	if rec.CacheHit {
 		marker = " CACHED"
+	} else if rec.Failed() {
+		marker = " FAILED"
 	}
 	fmt.Fprintf(l.f, "%s %s %s %s%s\n", time.Now().Format(time.RFC3339), action, rec.ClientIP, rec.Domain, marker)
 }
@@ -87,12 +91,49 @@ func (l *FileLogger) Close() error {
 
 // Record is one query log entry passed to Log. It is a struct rather than
 // positional arguments so a new per-query field does not churn every Logger
-// implementation's signature (ROADMAP #31 adds an Outcome field here next).
+// implementation's signature.
+//
+// Rcode and Synthesized together record the query outcome (CL 77). Rcode is
+// the DNS rcode of the reply s-hole sent or relayed (0 = NOERROR).
+// Synthesized is true when s-hole built the reply itself (a block, a local
+// PTR answer, or a synthesized SERVFAIL) and false when it relayed an
+// upstream or cached message. The Failed helpers derive the operator-facing
+// outcome from the two: see Failed, Unresolved, and UpstreamError.
 type Record struct {
-	ClientIP string
-	Domain   string
-	Blocked  bool
-	CacheHit bool // served from the response cache; ALLOW queries only
+	ClientIP    string
+	Domain      string
+	Blocked     bool
+	CacheHit    bool // served from the response cache; ALLOW queries only
+	Rcode       int  // DNS rcode of the reply s-hole sent or relayed; 0 = NOERROR
+	Synthesized bool // s-hole built the reply itself, vs relayed from upstream/cache
+}
+
+// DNS failure rcodes, kept as local constants so querylog stays free of a
+// miekg/dns import (it is a pure logging and storage package).
+const (
+	rcodeServerFailure = 2 // SERVFAIL
+	rcodeRefused       = 5 // REFUSED
+)
+
+// Failed reports whether the query ended in a failure an operator cares
+// about: an unresolved query or a relayed upstream failure. NXDOMAIN is a
+// valid answer, not a failure, so it is not counted here.
+func (r Record) Failed() bool {
+	return r.Unresolved() || r.UpstreamError()
+}
+
+// Unresolved reports the query s-hole could not answer: it synthesized a
+// SERVFAIL because every upstream failed at the transport level or the
+// query deadline hit.
+func (r Record) Unresolved() bool {
+	return r.Synthesized && r.Rcode == rcodeServerFailure
+}
+
+// UpstreamError reports a failure rcode relayed verbatim from a live
+// upstream (SERVFAIL or REFUSED). This is usually not s-hole's fault (a
+// broken authoritative server, a DNSSEC failure, or a refusal).
+func (r Record) UpstreamError() bool {
+	return !r.Synthesized && (r.Rcode == rcodeServerFailure || r.Rcode == rcodeRefused)
 }
 
 // Logger is the interface that all query log backends must implement.

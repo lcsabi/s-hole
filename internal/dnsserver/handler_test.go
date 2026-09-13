@@ -391,6 +391,73 @@ func TestServeDNS_UpstreamFailureProducesServfail(t *testing.T) {
 	}
 }
 
+// TestServeDNS_LogsOutcome proves the forward path records the query outcome
+// (rcode + synthesized) and bumps the matching failure counter (CL 77). The
+// three cases that reach the forward step: a clean NOERROR answer, an
+// unresolved query (every upstream failed, s-hole synthesizes SERVFAIL), and a
+// relayed upstream failure rcode (the upstream answered SERVFAIL/REFUSED).
+func TestServeDNS_LogsOutcome(t *testing.T) {
+	t.Run("ok forwarded NOERROR", func(t *testing.T) {
+		addr, _ := startMockUpstream(t, net.IPv4(4, 4, 4, 4))
+		counter := stats.New()
+		log := &captureLogger{}
+		h := NewHandler(blocklist.NewStore(), counter, []string{addr}, log, "zero", 60, nil, false, "raw")
+
+		h.ServeDNS(fakeClient(), buildReq("example.com"))
+
+		if log.calls != 1 {
+			t.Fatalf("logger called %d times, want 1", log.calls)
+		}
+		if log.last.Synthesized || log.last.Rcode != dns.RcodeSuccess || log.last.Failed() {
+			t.Errorf("record = %+v, want Rcode=0 Synthesized=false not-failed", log.last)
+		}
+		if s := counter.Snapshot(0); s.ForwardFailures != 0 || s.UpstreamErrors != 0 {
+			t.Errorf("counters = {forward %d, upstream %d}, want {0, 0}", s.ForwardFailures, s.UpstreamErrors)
+		}
+	})
+
+	t.Run("unresolved when all upstreams fail", func(t *testing.T) {
+		counter := stats.New()
+		log := &captureLogger{}
+		h := NewHandler(blocklist.NewStore(), counter, []string{"127.0.0.1:1"}, log, "zero", 60, nil, false, "raw")
+
+		w := fakeClient()
+		h.ServeDNS(w, buildReq("example.com"))
+
+		if w.written == nil || w.written.Rcode != dns.RcodeServerFailure {
+			t.Fatalf("client reply = %+v, want SERVFAIL", w.written)
+		}
+		if !log.last.Unresolved() || !log.last.Synthesized || log.last.Rcode != dns.RcodeServerFailure {
+			t.Errorf("record = %+v, want unresolved (SERVFAIL, synthesized)", log.last)
+		}
+		if s := counter.Snapshot(0); s.ForwardFailures != 1 || s.UpstreamErrors != 0 {
+			t.Errorf("counters = {forward %d, upstream %d}, want {1, 0}", s.ForwardFailures, s.UpstreamErrors)
+		}
+	})
+
+	for _, rc := range []int{dns.RcodeServerFailure, dns.RcodeRefused} {
+		t.Run("upstream error relaying rcode "+dns.RcodeToString[rc], func(t *testing.T) {
+			addr, _ := startMockUpstreamRcode(t, rc)
+			counter := stats.New()
+			log := &captureLogger{}
+			h := NewHandler(blocklist.NewStore(), counter, []string{addr}, log, "zero", 60, nil, false, "raw")
+
+			w := fakeClient()
+			h.ServeDNS(w, buildReq("example.com"))
+
+			if w.written == nil || w.written.Rcode != rc {
+				t.Fatalf("client reply rcode = %v, want relayed %v", w.written, dns.RcodeToString[rc])
+			}
+			if !log.last.UpstreamError() || log.last.Synthesized || log.last.Rcode != rc {
+				t.Errorf("record = %+v, want upstream error (rcode %d, not synthesized)", log.last, rc)
+			}
+			if s := counter.Snapshot(0); s.UpstreamErrors != 1 || s.ForwardFailures != 0 {
+				t.Errorf("counters = {forward %d, upstream %d}, want {0, 1}", s.ForwardFailures, s.UpstreamErrors)
+			}
+		})
+	}
+}
+
 func TestServeDNS_WriteSinkholeErrorIsLogged(t *testing.T) {
 	// Confirm the writeSinkhole error branch is exercised when the
 	// ResponseWriter fails. We don't capture log output here; the

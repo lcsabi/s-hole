@@ -21,6 +21,12 @@
       /* Cached line on the query-volume graph: a teal distinct from the
          blocked red and the total violet. */
       --teal: #2dd4bf;
+      /* Failure lines on the query-volume graph: amber for unresolved (s-hole
+         synthesized a SERVFAIL) and orange for upstream errors (a relayed
+         failure rcode). Both read as trouble without colliding with blocked
+         (red), cached (teal), or total (violet). */
+      --amber: #fbbf24;
+      --orange: #fb923c;
     }
 
     *,
@@ -249,6 +255,16 @@
       color: var(--green);
     }
 
+    .badge-unresolved {
+      background: rgba(251, 191, 36, 0.15);
+      color: var(--amber);
+    }
+
+    .badge-upstream {
+      background: rgba(251, 146, 60, 0.15);
+      color: var(--orange);
+    }
+
     /* ── Full-width panel ────────────────────────────────────── */
     .full {
       margin: 0 24px 24px;
@@ -415,6 +431,8 @@
     .legend .sw-total { background: var(--violet); }
     .legend .sw-blocked { background: var(--red); }
     .legend .sw-cached { background: var(--teal); }
+    .legend .sw-unresolved { background: var(--amber); }
+    .legend .sw-upstream { background: var(--orange); }
 
     .hist-note {
       margin-left: 10px;
@@ -525,6 +543,8 @@
           <span id="legend-total"><span class="sw sw-total"></span>Total</span>
           <span><span class="sw sw-blocked"></span>Blocked</span>
           <span id="legend-cached"><span class="sw sw-cached"></span>Cached</span>
+          <span id="legend-unresolved"><span class="sw sw-unresolved"></span>Unresolved</span>
+          <span id="legend-upstream"><span class="sw sw-upstream"></span>Upstream error</span>
         </span>
         <span class="hist-note" id="history-note"></span>
       </span>
@@ -635,6 +655,8 @@
           <button type="button" data-status="all" class="active">All</button>
           <button type="button" data-status="true">Blocked</button>
           <button type="button" data-status="false">Allowed</button>
+          <button type="button" data-status="unresolved">Unresolved</button>
+          <button type="button" data-status="upstream-error">Upstream error</button>
         </span>
         <select id="qf-client" class="filter-select" title="Filter by client" hidden>
           <option value="">All clients</option>
@@ -732,7 +754,7 @@
       const saved = JSON.parse(localStorage.getItem(QUERY_FILTER_KEY));
       if (saved && typeof saved === 'object') {
         if (typeof saved.domain === 'string') queryFilter.domain = saved.domain.trim();
-        if (['all', 'true', 'false'].includes(saved.status)) queryFilter.status = saved.status;
+        if (['all', 'true', 'false', 'unresolved', 'upstream-error'].includes(saved.status)) queryFilter.status = saved.status;
         if (typeof saved.client === 'string') queryFilter.client = saved.client;
       }
     } catch (e) {}
@@ -748,7 +770,10 @@
       const p = new URLSearchParams({ limit: '50' });
       if (queryFilter.domain) p.set('domain', queryFilter.domain);
       if (queryFilter.client) p.set('client', queryFilter.client);
-      if (queryFilter.status !== 'all') p.set('blocked', queryFilter.status);
+      // The status control is one exclusive picker over two server params:
+      // blocked true/false, or a failure outcome.
+      if (queryFilter.status === 'true' || queryFilter.status === 'false') p.set('blocked', queryFilter.status);
+      else if (queryFilter.status !== 'all') p.set('outcome', queryFilter.status);
       return '/api/queries?' + p.toString();
     }
 
@@ -762,6 +787,8 @@
       if (queryFilter.domain) parts.push(`domain contains "${queryFilter.domain}"`);
       if (queryFilter.status === 'true') parts.push('blocked only');
       else if (queryFilter.status === 'false') parts.push('allowed only');
+      else if (queryFilter.status === 'unresolved') parts.push('unresolved only');
+      else if (queryFilter.status === 'upstream-error') parts.push('upstream errors only');
       if (queryFilter.client) parts.push(`client ${queryFilter.client}`);
       $('qf-summary').textContent = 'Filtering: ' + parts.join(', ');
     }
@@ -824,6 +851,15 @@
       sel.value = queryFilter.client;
     }
 
+    // Per-row status badge. The failure rule (synthesized + rcode 2/5) matches
+    // the Go Record helpers and the History/Search SQL; keep the three in step.
+    function outcomeBadge(q) {
+      if (q.blocked) return '<span class="badge badge-block">BLOCK</span>';
+      if (q.synthesized && q.rcode === 2) return '<span class="badge badge-unresolved">UNRESOLVED</span>';
+      if (!q.synthesized && (q.rcode === 2 || q.rcode === 5)) return '<span class="badge badge-upstream">UPSTREAM ERR</span>';
+      return '<span class="badge badge-allow">ALLOW</span>';
+    }
+
     // Fetch and render the recent-queries table for the current filter. Split out
     // of refresh() so a filter change can refetch at once, not on the next tick.
     async function refreshQueries() {
@@ -833,9 +869,7 @@
         const rows = queries || [];
         setTbody('queries', rows.length
           ? rows.map(q => {
-            const badge = q.blocked
-              ? '<span class="badge badge-block">BLOCK</span>'
-              : '<span class="badge badge-allow">ALLOW</span>';
+            const badge = outcomeBadge(q);
             const t = new Date(q.ts).toLocaleTimeString();
             return `<tr>
               <td class="muted num">${t}</td>
@@ -896,8 +930,12 @@
       const blockedOnly = mode === 'blocked';
       $('legend-total').hidden = blockedOnly;
       // Cache hits are allowed queries, so they are never logged under
-      // "blocked"; hide the Cached swatch with Total in that mode.
+      // "blocked"; hide the Cached swatch with Total in that mode. Failures are
+      // allowed queries too (a blocked query never forwards), so hide the two
+      // failure swatches the same way.
       $('legend-cached').hidden = blockedOnly;
+      $('legend-unresolved').hidden = blockedOnly;
+      $('legend-upstream').hidden = blockedOnly;
       $('history-note').textContent = blockedOnly ? 'blocked queries only (log_queries: blocked)' : '';
 
       // No data source for a series: query logging is off (query_db unset, mode
@@ -929,6 +967,8 @@
       const red = color('--red', '#f87171');
       const violet = color('--violet', '#c4b5fd');
       const teal = color('--teal', '#2dd4bf');
+      const amber = color('--amber', '#fbbf24');
+      const orange = color('--orange', '#fb923c');
       const muted = color('--muted', '#64748b');
       const border = color('--border', '#252836');
 
@@ -981,11 +1021,16 @@
         ctx.lineWidth = 1.5;
         ctx.stroke();
       };
-      // Draw total (the envelope) first, then cached, then blocked on top.
-      // Cached is only present under "all" (a cache hit is an allowed query);
-      // it scales to the same total max, so it never overshoots the envelope.
+      // Draw total (the envelope) first, then cached, then the failure lines,
+      // then blocked on top. Cached and the two failure series are only present
+      // under "all" (they are allowed queries); each is a subset of the
+      // forwarded remainder, so all scale to the same total max and never
+      // overshoot the envelope. Failures draw last of the "all"-only series so
+      // a spike stays visible over cached.
       if (drawTotal) drawSeries('total', violet, hexA(violet, 0.12));
       if (drawTotal) drawSeries('cached', teal, hexA(teal, 0.14));
+      if (drawTotal) drawSeries('unresolved', amber, hexA(amber, 0.16));
+      if (drawTotal) drawSeries('upstream_error', orange, hexA(orange, 0.16));
       drawSeries('blocked', red, hexA(red, 0.16));
 
       // A few thinned x-axis time labels.
@@ -1023,7 +1068,9 @@
         const extraLines = historyLogging === 'blocked'
           ? ''
           : `<br><span style="color:var(--violet)">total ${fmt(b.total)}</span>`
-            + `<br><span style="color:var(--teal)">cached ${fmt(b.cached)}</span>`;
+            + `<br><span style="color:var(--teal)">cached ${fmt(b.cached)}</span>`
+            + `<br><span style="color:var(--amber)">unresolved ${fmt(b.unresolved)}</span>`
+            + `<br><span style="color:var(--orange)">upstream error ${fmt(b.upstream_error)}</span>`;
         tip.innerHTML = `<strong>${when}</strong>${extraLines}`
           + `<br><span style="color:var(--red)">blocked ${fmt(b.blocked)}</span>`;
         tip.hidden = false;

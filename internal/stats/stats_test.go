@@ -411,6 +411,71 @@ func TestCounter_CacheHitRateNeverExceeds100UnderLoad(t *testing.T) {
 	wg.Wait()
 }
 
+func TestCounter_ForwardFailuresNeverExceedsTotalUnderLoad(t *testing.T) {
+	// The b/021 pattern applied to the forward-failure counter (CL 77). The
+	// handler records an unresolved query as RecordQuery then
+	// RecordForwardFailure, so forwardFailures is the strictly-later counter; if
+	// Snapshot read total before it, a concurrent query landing between the two
+	// loads could make forwardFailures > total. Hammer the path and assert the
+	// invariant on every read.
+	c := New()
+
+	stop := atomic.Bool{}
+	var wg sync.WaitGroup
+
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for !stop.Load() {
+				// Mirror handler.go: RecordQuery first, then RecordForwardFailure.
+				c.RecordQuery("1.1.1.1", "dead.example.com.", false)
+				c.RecordForwardFailure()
+			}
+		}()
+	}
+
+	for range 5000 {
+		s := c.Snapshot(0)
+		if s.ForwardFailures > s.TotalQueries {
+			t.Fatalf("invariant violated: forwardFailures=%d > total=%d", s.ForwardFailures, s.TotalQueries)
+		}
+	}
+	stop.Store(true)
+	wg.Wait()
+}
+
+func TestCounter_UpstreamErrorsNeverExceedsTotalUnderLoad(t *testing.T) {
+	// The b/021 pattern applied to the upstream-error counter (CL 77). The
+	// handler records a relayed failure rcode as RecordQuery then
+	// RecordUpstreamError, so upstreamErrors is the strictly-later counter.
+	c := New()
+
+	stop := atomic.Bool{}
+	var wg sync.WaitGroup
+
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for !stop.Load() {
+				// Mirror handler.go: RecordQuery first, then RecordUpstreamError.
+				c.RecordQuery("1.1.1.1", "broken.example.com.", false)
+				c.RecordUpstreamError()
+			}
+		}()
+	}
+
+	for range 5000 {
+		s := c.Snapshot(0)
+		if s.UpstreamErrors > s.TotalQueries {
+			t.Fatalf("invariant violated: upstreamErrors=%d > total=%d", s.UpstreamErrors, s.TotalQueries)
+		}
+	}
+	stop.Store(true)
+	wg.Wait()
+}
+
 // BenchmarkCounter_RecordQuery measures the per-query stats cost. RecordQuery
 // runs on every query and updates the top-N maps under a lock.
 func BenchmarkCounter_RecordQuery(b *testing.B) {

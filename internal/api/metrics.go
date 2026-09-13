@@ -64,6 +64,34 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintln(w, "# TYPE shole_cache_hits_total counter")
 	fmt.Fprintf(w, "shole_cache_hits_total %d\n", snap.CacheHits)
 
+	// Failure visibility (CL 77). forward_failures is the "does the app hold
+	// up" signal: s-hole could not resolve the query and synthesized a SERVFAIL.
+	// upstream_errors is a failure rcode a live upstream returned and s-hole
+	// relayed, usually not s-hole's fault.
+	fmt.Fprintln(w, "# HELP shole_forward_failures_total Total DNS queries s-hole could not resolve (every upstream failed, so it synthesized a SERVFAIL).")
+	fmt.Fprintln(w, "# TYPE shole_forward_failures_total counter")
+	fmt.Fprintf(w, "shole_forward_failures_total %d\n", snap.ForwardFailures)
+
+	fmt.Fprintln(w, "# HELP shole_upstream_errors_total Total failure rcodes (SERVFAIL/REFUSED) relayed from a live upstream.")
+	fmt.Fprintln(w, "# TYPE shole_upstream_errors_total counter")
+	fmt.Fprintf(w, "shole_upstream_errors_total %d\n", snap.UpstreamErrors)
+
+	// Per-upstream transport failures: which upstream is flaky, the attribution
+	// the query log cannot give (forward aggregates several upstreams into one
+	// generic error). Distinct from shole_upstream_errors_total above, which
+	// counts relayed failure rcodes; the two sums differ because one unresolved
+	// query can fail several upstreams. Cardinality is bounded by the configured
+	// upstream count.
+	if s.upstreamFailures != nil {
+		if failures := s.upstreamFailures(); len(failures) > 0 {
+			fmt.Fprintln(w, "# HELP shole_upstream_failures_total Per-upstream cumulative transport failures (timeouts, refused connections) seen by the forward cooldown tracker.")
+			fmt.Fprintln(w, "# TYPE shole_upstream_failures_total counter")
+			for addr, n := range failures {
+				fmt.Fprintf(w, "shole_upstream_failures_total{upstream=\"%s\"} %d\n", escapeLabel(addr), n)
+			}
+		}
+	}
+
 	if s.dnsCache != nil {
 		// Hits are already exposed above from the stats counter; only
 		// misses and size come from the cache itself.

@@ -78,10 +78,10 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 
 	// Per-upstream transport failures: which upstream is flaky, the attribution
 	// the query log cannot give (forward aggregates several upstreams into one
-	// generic error). Distinct from shole_upstream_errors_total above, which
-	// counts relayed failure rcodes; the two sums differ because one unresolved
-	// query can fail several upstreams. Cardinality is bounded by the configured
-	// upstream count.
+	// generic error). Distinct from shole_upstream_errors_total above: that
+	// counts relayed failure rcodes (a successful exchange with a bad answer),
+	// this counts transport failures (no answer at all), so the two measure
+	// disjoint events. Cardinality is bounded by the configured upstream count.
 	if s.upstreamTransportFailures != nil {
 		if failures := s.upstreamTransportFailures(); len(failures) > 0 {
 			fmt.Fprintln(w, "# HELP shole_upstream_transport_failures_total Per-upstream cumulative transport failures (timeouts, refused connections) seen by the forward cooldown tracker.")

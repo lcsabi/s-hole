@@ -272,7 +272,7 @@ Each metric also carries a `# HELP` line on the endpoint itself; this table is t
 | `shole_cache_hits_total` | counter | Responses served from the in-memory cache. |
 | `shole_forward_failures_total` | counter | Queries s-hole could not resolve: every upstream failed to respond, so s-hole synthesized SERVFAIL. Points at the environment or config (upstreams down, a bad address, a broken network path, too tight a deadline). |
 | `shole_upstream_errors_total` | counter | Failure rcodes (SERVFAIL/REFUSED) a live upstream returned and s-hole relayed. Points at the upstream or the domain, not s-hole. |
-| `shole_upstream_transport_failures_total{upstream}` | counter | Per-upstream count of transport failures (timeout, refused connection). Points at one specific flaky upstream. Emitted only when the accessor is wired (it always is under `cmd/s-hole`). |
+| `shole_upstream_transport_failures_total{upstream}` | counter | Per-upstream count of transport failures (timeout, refused connection). Points at one specific flaky upstream. Emitted once at least one upstream has recorded a transport failure (a healthy resolver pool emits no sample), and only when the accessor is wired, which it always is under `cmd/s-hole`. |
 | `shole_cache_misses_total` | counter | Cache misses, meaning the query was forwarded upstream. Present only when caching is enabled. |
 | `shole_cache_size` | gauge | Entries currently in the response cache. Caching enabled only. |
 | `shole_cache_dropped_total` | counter | Cache inserts dropped because the cache was full of unexpired entries (the cache-pressure signal). Caching enabled only. |
@@ -287,7 +287,7 @@ How the query counters relate (read them together, not as one number):
 - `shole_queries_total` = `shole_blocked_total` + `shole_local_ptr_total` + `shole_cache_hits_total` + forwarded, where forwarded is the remainder (it has no counter of its own).
 - `shole_cache_hits_total` + `shole_cache_misses_total` covers only the queries that reached the cache; a blocked or local-PTR query never does.
 - `shole_forward_failures_total` and `shole_upstream_errors_total` are subsets of the forwarded remainder.
-- The `shole_upstream_transport_failures_total` samples sum to more than `shole_forward_failures_total`: a single transport failure bumps the per-upstream counter but becomes a forward failure only when failover to every other upstream also fails. `shole_upstream_errors_total` (a relayed error response) and `shole_upstream_transport_failures_total` (could not reach the upstream) are named apart on purpose so they do not read as synonyms.
+- The `shole_upstream_transport_failures_total` samples sum to at least `shole_forward_failures_total` (equal only with a single configured upstream): a transport failure bumps the per-upstream counter but becomes a forward failure only when failover to every other upstream also fails, so with two or more upstreams a failure that failover recovers adds to the per-upstream sum without adding a forward failure. `shole_upstream_errors_total` (a relayed error response) and `shole_upstream_transport_failures_total` (could not reach the upstream) are named apart on purpose so they do not read as synonyms.
 
 ### Observability and Logging
 

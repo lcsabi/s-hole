@@ -1151,7 +1151,7 @@ query-log and UI change with no new metric.
 Rated Medium: an observability win that adds a real runtime signal to the binary
 for a few lines and no dependency. It changes no filtering behavior.
 
-## 31. Failed-query visibility (per-query outcome)
+## 31. Failed-query visibility (per-query outcome) (done, CL 77)
 
 Today s-hole classifies each query only as blocked or allowed, and the query log
 stores only that (`ts, client_ip, domain, blocked`). A query that got SERVFAIL is

@@ -45,7 +45,7 @@ rails.
 | 29 | "Cached" line on the query-volume graph (record cache-hit per query) | Medium | done (CL 76) |
 | 30 | Go runtime gauges (goroutines, heap) in `/metrics` | Medium | not started |
 | 31 | Failed-query visibility (per-query outcome: graph, filter, `/metrics`) | Medium | done (CL 77) |
-| 32 | Streaming blocklist parse: drop the intermediate `all []string` on reload | Low | not started |
+| 32 | Streaming byte-parse: insert blocklist domains directly into the block set | Medium | not started |
 
 Items 19-26 came out of a 2026-08-24 feature-ideas session. Items 21-24 are a
 dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
@@ -1257,32 +1257,79 @@ turns a silent, log-only failure into a graph line, a filter, and a scrapeable
 metric. It is a write-path and schema change, so it is more involved than a UI-only
 tweak, and it depends on or reuses #29's `Record` struct and migration.
 
-## 32. Streaming blocklist parse: drop the intermediate slice on reload
+## 32. Streaming byte-parse: insert blocklist domains directly into the block set
 
-`Update` (`internal/blocklist/loader.go`) parses each source into a `[]string` and
-appends every source into one `all []string`, then `Store.Replace` builds a new map
-from it and swaps the pointer under lock. So the reload peak holds three copies of
-the domain data at once: the live old map (still serving `IsBlocked`), the `all`
-slice, and the new map being built. `parseHostsFormat` already reads line by line
-with a `bufio.Scanner`; it just collects the result into a slice. (Raised in a
-2026-09-13 session.)
+A reload allocates a large amount of short-lived memory, and profiling shows most
+of it is avoidable. The chain is `Update` (`internal/blocklist/loader.go`) calls
+`parseHostsFormat`, which reads each source line by line and collects a
+per-source `[]string`; `Update` appends every source into one `all []string`;
+`Store.Replace` then builds a fresh map from `all` and swaps the pointer under lock.
+So a reload allocates three throwaway layers on top of the map it must build: the
+per-line parse strings, the per-source slice, and the combined `all` slice. (Raised
+and measured in a 2026-09-13 session.)
 
-Change the parse to insert each domain directly into the new set as it scans,
-instead of returning a `[]string`. The `all` slice then never materializes, and the
-peak drops from about 3x to a true 2x (old map plus new map). The raw download is
-already streamed to disk with a `TeeReader`, so the response body is never fully
-held in memory; this closes the one remaining full in-memory copy.
+The fix is one rewrite of the parse path, not two changes:
 
-Keep the atomic swap. Building a fresh map and swapping one pointer is the cheapest
-design that is also memory-safe (Go maps crash on a concurrent read and write) and
-keeps the read path lock-light: the periodic reload pays the cost, not the per-query
-hot path. The 2x map peak is inherent to the swap and is not worth giving up. A
-rejected alternative is to stream domains straight into the live map. It would break
-the "readers see the old set or the new set, never a partial update" invariant
-(`TestStore_ReplaceIsAtomic`), leave the set grow-only so a domain dropped upstream
-never leaves, and break the all-or-nothing commit that keeps a half-fetched list
-from going live. It also still needs locking to avoid the concurrent-map crash, so
-it adds complexity and loses the guarantee.
+- Parse on `scanner.Bytes()` and find the domain field with `IndexByte`/`bytes.Cut`,
+  so no per-line `Text()` string and no `strings.Fields` slice is allocated.
+- Insert each accepted domain directly into the destination map, materializing the
+  domain string exactly once at insert. No per-source `[]string` and no `all` slice
+  ever exist.
+
+This leaves only the two allocations a reload cannot avoid: the new map and one
+string per unique domain (the map key). Everything else in the table below is
+transient garbage this removes.
+
+**Keep the atomic swap.** Build the fresh map, then swap one pointer under the write
+lock. That is the cheapest design that is also memory-safe (Go maps crash on a
+concurrent read and write) and keeps the read path lock-light: the periodic reload
+pays the cost, not the per-query hot path. Building the new map is the one
+irreducible cost (about 20% of reload churn, see the baseline), and it is not worth
+giving up. A rejected alternative is to stream domains straight into the live map. It
+would break the "readers see the old set or the new set, never a partial update"
+invariant (`TestStore_ReplaceIsAtomic`), leave the set grow-only so a domain dropped
+upstream never leaves, and break the all-or-nothing commit that keeps a half-fetched
+list from going live. It also still needs locking to avoid the concurrent-map crash,
+so it adds complexity and loses the guarantee.
+
+### Baseline (measured before implementation)
+
+These numbers are the "before" side of the win. Capture the "after" the same way in
+the CL that implements this item, so the PR shows the delta. Method: build with
+`S_HOLE_ENABLE_PPROF=1`, drive `POST /api/reload`, read `TotalAlloc` from
+`/debug/pprof/heap?debug=1&gc=1` across reloads for the churn, and
+`go tool pprof -alloc_space -base before.pb.gz after.pb.gz` for the attribution.
+Environment: Go 1.26.5, branch `cl77-failed-query-visibility`, 2026-09-13.
+
+Churn is the `TotalAlloc` delta per manual reload, averaged over repeated reloads
+(variance was under 0.1%):
+
+| blocklist size | churn / reload | churn / domain | retained heap (`HeapAlloc`) | peak `Sys` high-water |
+| --- | --- | --- | --- | --- |
+| 79,981 domains | ~19.8 MB | ~247 B | flat ~7.1 MB | ~34.7 MB |
+| 319,048 domains | ~74.2 MB | ~233 B | flat ~23.1 MB | ~94.7 MB |
+
+Two facts from the table. Churn scales linearly with domain count (~233 B/domain),
+so a 1,000,000-domain list projects to ~230 MB churned per reload and a peak `Sys`
+in the few-hundred-MB range. Retained `HeapAlloc` stays flat across repeated reloads
+at each size, so a reload leaks nothing; the churn is transient the GC reclaims.
+
+Allocation attribution, from the 319k `-alloc_space -base` diff (78.49 MB sampled,
+within ~6% of the `TotalAlloc` delta, so the proportions are sound). About 5% of the
+raw profile was the pprof endpoint and the dashboard poll and is excluded here:
+
+| site | share | what it is | removed by this item? |
+| --- | --- | --- | --- |
+| `parseHostsFormat` | ~41% | per-line and per-domain string work plus the per-source `[]string` | mostly yes |
+| `Store.Replace` | ~20% | the new map plus `normalize` keys | no (irreducible) |
+| `Update` (`all` append) | ~14% | the combined intermediate slice | yes |
+| `bufio.Scanner.Text` | ~12% | the per-line string copy | yes (`scanner.Bytes`) |
+| `strings.Fields` | ~8% | the per-line field split | yes |
+
+So about 20% (the map build) is the floor, and the other ~55-60% is intermediate
+slices and redundant parse strings this item removes. The target is to cut reload
+churn from ~74 MB toward the ~23 MB retained floor at 319k domains, roughly a
+55-60% reduction, with the same proportional drop in the peak.
 
 Design decisions to settle in the CL:
 
@@ -1291,16 +1338,21 @@ Design decisions to settle in the CL:
   `FuzzParseHostsFormat` and the allocation guards in `alloc_test.go` move with it.
   Read `alloc_test.go` first: it may already pin the per-reload allocation count
   this change improves, so update the expected numbers there.
+- **String lifetime.** Today a stored domain is a substring of the line string, so it
+  can pin the whole line's backing array. Materializing one fresh string per domain
+  at insert removes that pinning. Confirm the retained heap does not rise from the
+  extra copy; the removed pinning should offset it.
 - **Cross-source dedupe.** Inserting into one shared set dedupes across sources for
   free (two lists that both carry `doubleclick.net` collapse to one entry), which
   the append-then-build path already did at map-build time. No behavior change, but
   state it so the per-source count math is not read as a regression.
 
-Rated Low by the impact rubric: it changes no filtering behavior and no user-facing
-output. The saving is a reload-time transient that matters only at the extreme high
-end (multi-million-entry lists on a small box). It is an efficiency and
-code-clarity polish, worth doing for a binary whose identity is a tight dependency
-graph and a small, auditable hot path.
+Rated Medium by the impact rubric: it changes no filtering behavior and no
+user-facing output, but the peak-memory drop is what keeps a large list from an OOM
+on a small box (a Raspberry Pi at 512 MB to 1 GB), which is the real deployment risk
+the baseline projects at 1,000,000 domains. It also simplifies the loader by
+removing two throwaway layers, which fits a binary whose identity is a tight
+dependency graph and a small, auditable hot path.
 
 ## Pending decisions
 

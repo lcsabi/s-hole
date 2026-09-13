@@ -201,13 +201,17 @@ The `*sql.DB` pool is pinned to a **single connection** (`SetMaxOpenConns(1)`). 
 The SQLite schema:
 ```sql
 CREATE TABLE queries (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts        TEXT    NOT NULL,
-    client_ip TEXT    NOT NULL,
-    domain    TEXT    NOT NULL,
-    blocked   INTEGER NOT NULL
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          TEXT    NOT NULL,
+    client_ip   TEXT    NOT NULL,
+    domain      TEXT    NOT NULL,
+    blocked     INTEGER NOT NULL,
+    cache_hit   INTEGER NOT NULL DEFAULT 0,  -- CL 76
+    rcode       INTEGER NOT NULL DEFAULT 0,  -- CL 77: reply rcode (0 = NOERROR)
+    synthesized INTEGER NOT NULL DEFAULT 0   -- CL 77: 1 if s-hole built the reply itself
 );
 ```
+The columns after `blocked` were added by later CLs. SQLite has no `ADD COLUMN IF NOT EXISTS`, so `migrate` adds each on startup only when a `PRAGMA table_info` probe shows it absent (the `ensureColumn` helper); a fresh database already has them. Older rows take the column `DEFAULT`, so a query written before the upgrade reads `cache_hit=0` and `rcode=0, synthesized=0` (never a failure). This forward-only behavior is why the cached and failure graph lines under-report for buckets predating each feature.
 
 `log_queries` controls verbosity: `all` (default), `blocked`-only, or `none`. Both backends respect this setting independently.
 

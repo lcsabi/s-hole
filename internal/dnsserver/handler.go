@@ -184,8 +184,8 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// Log at the point each outcome is decided, so the query-log row records
 	// the cache-hit flag (cache_hit) and the outcome (rcode + synthesized). A
 	// blocked query short-circuits before the cache and a local-PTR answer
-	// never reaches it, so both log CacheHit=false; total = blocked + cached +
-	// forwarded. The block reply is synthesized locally: NXDOMAIN in "nxdomain"
+	// never reaches it, so both log CacheHit=false; total = blocked + localPTR +
+	// cached + forwarded. The block reply is synthesized locally: NXDOMAIN in "nxdomain"
 	// mode, NOERROR otherwise (matching writeSinkhole), neither a failure rcode.
 	if blocked {
 		blockRcode := dns.RcodeSuccess

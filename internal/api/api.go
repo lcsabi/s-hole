@@ -13,7 +13,7 @@
 //
 //	GET    /api/stats            JSON Snapshot
 //	GET    /api/check            block decision for ?domain=NAME (diagnostic; no stats/log side effects)
-//	GET    /api/queries          recent rows from SQLite (?limit=N, default 50, max 1000; filter ?domain= substring, ?client= exact, ?blocked=true/false)
+//	GET    /api/queries          recent rows from SQLite (?limit=N, default 50, max 1000; filter ?domain= substring, ?client= exact, ?blocked=true/false, ?outcome=unresolved/upstream-error)
 //	GET    /api/top-blocked      all-time most-blocked domains from SQLite (?limit=N, default 50, max 1000)
 //	GET    /api/history          per-bucket query volume from SQLite (?window=24h&bucket=1h; bucket count capped at 1000)
 //	GET    /api/whitelist        runtime whitelist (sorted)
@@ -22,7 +22,7 @@
 //	POST   /api/reload           trigger blocklist refresh (single-flight)
 //	GET    /healthz              liveness probe (always 200 when running)
 //	GET    /readyz               readiness probe (200 once blocklist > 0)
-//	GET    /metrics              Prometheus text exposition (queries, blocked, local_ptr, cache, blocklist)
+//	GET    /metrics              Prometheus text exposition (queries, blocked, local_ptr, cache, failures, blocklist)
 //	GET    /debug/pprof/*        net/http/pprof handlers (/symbol also POST); opt-in via EnablePprof
 //	GET    /                     embedded SPA from internal/api/static/
 package api
@@ -95,6 +95,12 @@ type Server struct {
 	// display time. It keys off the already-masked value the store holds, so it
 	// never exceeds the active queryPrivacy granularity. nil = attribution off.
 	labeler *clientLabeler
+	// upstreamTransportFailures returns the cumulative per-upstream
+	// transport-failure counts for the shole_upstream_transport_failures_total{upstream}
+	// metric. Wired from main to dnsserver.UpstreamTransportFailures; nil leaves
+	// the metric off (the api package does not import dnsserver, so main bridges
+	// the two).
+	upstreamTransportFailures func() map[string]uint64
 }
 
 // New constructs a Server. db and dnsCache may be nil to disable the
@@ -126,6 +132,15 @@ func (s *Server) SetQueryPrivacy(mode string) {
 // leaves attribution off. Like SetQueryPrivacy, this does not affect masking.
 func (s *Server) SetClientNames(m map[string]string) {
 	s.labeler = newClientLabeler(m)
+}
+
+// SetUpstreamTransportFailures wires the per-upstream transport-failure accessor
+// (dnsserver.UpstreamTransportFailures) so /metrics can emit
+// shole_upstream_transport_failures_total{upstream=...}. Call before Serve;
+// leaving it unset omits that metric. main bridges the two packages so api need
+// not import dnsserver.
+func (s *Server) SetUpstreamTransportFailures(fn func() map[string]uint64) {
+	s.upstreamTransportFailures = fn
 }
 
 // Timeouts protect the unauthenticated admin server from slowloris-style
@@ -308,17 +323,24 @@ func parseLimit(r *http.Request) int {
 }
 
 // queryRow is a recent-queries row: the stored columns plus an optional
-// config-resolved client label. The label is resolved from the masked
-// ClientIP, so the recent-queries list never exposes more than QueryPrivacy.
+// config-resolved client label and a derived outcome label. The label is
+// resolved from the masked ClientIP, so the recent-queries list never exposes
+// more than QueryPrivacy. Outcome ("blocked"/"allowed"/"unresolved"/
+// "upstream_error") is computed once here from the row so the dashboard and any
+// export read a name instead of decoding rcode and the synthesized flag.
 type queryRow struct {
 	querylog.QueryRow
-	Label string `json:"label,omitempty"`
+	Label   string `json:"label,omitempty"`
+	Outcome string `json:"outcome"`
 }
 
 // parseQueryFilter reads the optional recent-query filters from the request.
-// domain is a substring, client an exact match on the stored (masked) value, and
-// blocked accepts "true" or "false" (any other value leaves the block status
-// unfiltered). Every field is optional; an empty filter matches every row.
+// domain is a substring, client an exact match on the stored (masked) value,
+// blocked accepts "true" or "false", and outcome accepts "unresolved" or
+// "upstream-error" to narrow to that failure kind (any other value leaves the
+// status/outcome unfiltered). Every field is optional; an empty filter matches
+// every row. The dashboard status control sends either blocked or outcome, not
+// both, but the two are independent filters here.
 func parseQueryFilter(r *http.Request) querylog.QueryFilter {
 	q := r.URL.Query()
 	f := querylog.QueryFilter{
@@ -332,6 +354,10 @@ func parseQueryFilter(r *http.Request) querylog.QueryFilter {
 	case "false":
 		b := false
 		f.Blocked = &b
+	}
+	switch q.Get("outcome") {
+	case "unresolved", "upstream-error":
+		f.Outcome = q.Get("outcome")
 	}
 	return f
 }
@@ -357,7 +383,7 @@ func (s *Server) handleQueries(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]queryRow, len(rows))
 	for i, row := range rows {
-		out[i] = queryRow{QueryRow: row, Label: s.labeler.label(row.ClientIP)}
+		out[i] = queryRow{QueryRow: row, Label: s.labeler.label(row.ClientIP), Outcome: row.Outcome()}
 	}
 	writeJSON(w, response{Queries: out})
 }
@@ -463,7 +489,8 @@ func parseFlexDuration(s string) (time.Duration, error) {
 }
 
 // handleHistory serves a query-volume-over-time series from the SQLite query
-// log: per-bucket total, blocked, and cached counts over the requested window. When
+// log: per-bucket total, blocked, cached, and the two failure counts (unresolved
+// and upstream-error) over the requested window. When
 // query logging is disabled (s.db == nil) it returns an empty series rather than
 // an error, so the dashboard graph degrades to an empty panel instead of a
 // failure, exactly like /api/queries and /api/top-blocked.

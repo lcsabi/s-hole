@@ -44,20 +44,22 @@ const topNMaxEntries = 4096
 // incremented after total, maintaining total ≥ localPTR at all times.
 //
 // LOAD-ORDER INVARIANT (read this before adding a counter). Every per-query
-// counter below (blocked, localPTR, cacheHit) is incremented AFTER
-// RecordQuery bumps total. Snapshot must therefore read each of them BEFORE
-// it reads total; otherwise a query completing between the two atomic loads
-// makes the counter exceed the total captured alongside it, surfacing as a
-// >100 % ratio on the dashboard. This exact mistake has regressed three
-// times: b/021 (blocked), b/033 (localPTR), b/036 (cacheHit). If you add a
-// counter that a query increments after total, load it before total in
-// Snapshot and add a `*NeverExceeds*UnderLoad` regression test next to the
-// existing three.
+// counter below (blocked, localPTR, cacheHit, forwardFailures, upstreamErrors)
+// is incremented AFTER RecordQuery bumps total. Snapshot must therefore read
+// each of them BEFORE it reads total; otherwise a query completing between the
+// two atomic loads makes the counter exceed the total captured alongside it,
+// surfacing as a >100 % ratio on the dashboard. This exact mistake has
+// regressed three times: b/021 (blocked), b/033 (localPTR), b/036 (cacheHit).
+// If you add a counter that a query increments after total, load it before
+// total in Snapshot and add a `*NeverExceeds*UnderLoad` regression test next to
+// the existing ones.
 type Counter struct {
-	total    atomic.Int64
-	cacheHit atomic.Int64
-	localPTR atomic.Int64
-	start    time.Time
+	total           atomic.Int64
+	cacheHit        atomic.Int64
+	localPTR        atomic.Int64
+	forwardFailures atomic.Int64 // queries s-hole could not resolve (synthesized SERVFAIL)
+	upstreamErrors  atomic.Int64 // relayed SERVFAIL/REFUSED from a live upstream
+	start           time.Time
 
 	mu         sync.Mutex
 	blocked    int64            // guarded by mu
@@ -81,6 +83,12 @@ type Summary struct {
 	LocalPTRCount int64   `json:"local_ptr_count"`
 	CacheHits     int64   `json:"cache_hits"`
 	CacheHitPct   float64 `json:"cache_hit_pct"`
+	// ForwardFailures counts queries s-hole could not resolve (every upstream
+	// failed, so it synthesized a SERVFAIL). UpstreamErrors counts failure
+	// rcodes (SERVFAIL/REFUSED) relayed from a live upstream. Both are subsets
+	// of TotalQueries.
+	ForwardFailures int64 `json:"forward_failures"`
+	UpstreamErrors  int64 `json:"upstream_errors"`
 	// BlocklistSize is the current number of domains in the block set.
 	// Set by the API handler (not Counter.Snapshot) because the stats
 	// package does not depend on the blocklist package.
@@ -168,6 +176,22 @@ func (c *Counter) RecordLocalPTR() {
 	c.localPTR.Add(1)
 }
 
+// RecordForwardFailure increments the unresolved-query counter. Called from
+// the DNS handler after RecordQuery when every upstream failed and s-hole
+// synthesized a SERVFAIL. The caller must invoke RecordQuery first so that
+// total ≥ forwardFailures at all times.
+func (c *Counter) RecordForwardFailure() {
+	c.forwardFailures.Add(1)
+}
+
+// RecordUpstreamError increments the relayed-failure counter. Called from the
+// DNS handler after RecordQuery when a live upstream answered with a failure
+// rcode (SERVFAIL/REFUSED) that s-hole relayed. The caller must invoke
+// RecordQuery first so that total ≥ upstreamErrors at all times.
+func (c *Counter) RecordUpstreamError() {
+	c.upstreamErrors.Add(1)
+}
+
 // topNTarget selects which of the two tally maps Snapshot/topN reads.
 // We pass an enum rather than the map pointer itself so the map header is
 // read under c.mu; see R31. Reading c.topDomains as a function argument
@@ -187,9 +211,11 @@ const (
 // two loads can make the later-incremented counter exceed the total we
 // captured. RecordQuery increments total, then blocked (under mu); the PTR
 // path additionally calls RecordLocalPTR after RecordQuery; the cache-hit
-// path calls RecordCacheHit after RecordQuery. So blocked, localPTR, and
-// cacheHit are all read before total, the b/021 fix, extended to localPTR
-// (b/033) and cacheHit (b/036). This keeps total ≥ blocked, total ≥ localPTR,
+// path calls RecordCacheHit after RecordQuery; the forward path calls
+// RecordForwardFailure or RecordUpstreamError after RecordQuery. So blocked,
+// localPTR, cacheHit, forwardFailures, and upstreamErrors are all read before
+// total, the b/021 fix, extended to localPTR (b/033), cacheHit (b/036), and the
+// two failure counters (CL 77). This keeps total ≥ blocked, total ≥ localPTR,
 // and hits ≤ forwardable on every snapshot, so forwardable below can never go
 // negative and CacheHitPct can never exceed 100 %. The cache-hit denominator
 // excludes both blocked and localPTR because neither class ever reaches the
@@ -200,6 +226,8 @@ func (c *Counter) Snapshot(topN int) Summary {
 	c.mu.Unlock()
 	localPTR := c.localPTR.Load()
 	hits := c.cacheHit.Load()
+	forwardFailures := c.forwardFailures.Load()
+	upstreamErrors := c.upstreamErrors.Load()
 	total := c.total.Load()
 	blockPct := 0.0
 	if total > 0 {
@@ -211,15 +239,17 @@ func (c *Counter) Snapshot(topN int) Summary {
 		hitPct = float64(hits) / float64(forwardable) * 100
 	}
 	return Summary{
-		Uptime:        time.Since(c.start).Round(time.Second).String(),
-		TotalQueries:  total,
-		BlockedCount:  blocked,
-		BlockedPct:    blockPct,
-		LocalPTRCount: localPTR,
-		CacheHits:     hits,
-		CacheHitPct:   hitPct,
-		TopDomains:    c.topN(topNDomains, topN),
-		TopClients:    c.topN(topNClients, topN),
+		Uptime:          time.Since(c.start).Round(time.Second).String(),
+		TotalQueries:    total,
+		BlockedCount:    blocked,
+		BlockedPct:      blockPct,
+		LocalPTRCount:   localPTR,
+		CacheHits:       hits,
+		CacheHitPct:     hitPct,
+		ForwardFailures: forwardFailures,
+		UpstreamErrors:  upstreamErrors,
+		TopDomains:      c.topN(topNDomains, topN),
+		TopClients:      c.topN(topNClients, topN),
 	}
 }
 

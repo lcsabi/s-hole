@@ -44,7 +44,9 @@ rails.
 | 28 | Validate the upstreams at config time (format check + single-upstream note) | Low | not started |
 | 29 | "Cached" line on the query-volume graph (record cache-hit per query) | Medium | done (CL 76) |
 | 30 | Go runtime gauges (goroutines, heap) in `/metrics` | Medium | not started |
-| 31 | Failed-query visibility (per-query outcome: graph, filter, `/metrics`) | Medium | not started |
+| 31 | Failed-query visibility (per-query outcome: graph, filter, `/metrics`) | Medium | done (CL 77) |
+| 32 | Streaming byte-parse: insert blocklist domains directly into the block set | Medium | not started |
+| 33 | Cache packed wire bytes: drop the per-hit `dns.Msg` copy | Medium | not started |
 
 Items 19-26 came out of a 2026-08-24 feature-ideas session. Items 21-24 are a
 dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
@@ -56,9 +58,12 @@ then #31, then #26 last. #29 landed (CL 76): it introduced the per-query `Record
 struct (in `querylog`) and the first idempotent `ALTER TABLE ... ADD COLUMN`
 migration (via the `ensureColumn` helper) in their simplest form (one
 already-counted boolean, no new metric), so it was the lowest-risk vehicle for
-that refactor. #31 then reuses both to add the outcome column, the graph and
-filter, and the failure metrics: it adds one `Outcome` field to the same `Record`
-and one more `ensureColumn` call. #26
+that refactor. #31 landed (CL 77): it reused both to add the graph lines, the
+filter, and the failure metrics. It stored the outcome as an rcode plus a
+synthesized-flag pair on the same `Record` (two `ensureColumn` calls), rather than
+the single `Outcome` enum first sketched here, because the rcode is richer for a
+future per-rcode breakdown and the two fields separate an unresolved query
+(s-hole synthesized the SERVFAIL) from a relayed upstream failure. #26
 (Grafana and Prometheus examples) draws the metric surface, so it comes after the
 metrics exist, or the dashboard is revised on every new metric. #30 (runtime
 gauges) is independent of the log work and can land any time, but before #26.
@@ -1148,7 +1153,7 @@ query-log and UI change with no new metric.
 Rated Medium: an observability win that adds a real runtime signal to the binary
 for a few lines and no dependency. It changes no filtering behavior.
 
-## 31. Failed-query visibility (per-query outcome)
+## 31. Failed-query visibility (per-query outcome) (done, CL 77)
 
 Today s-hole classifies each query only as blocked or allowed, and the query log
 stores only that (`ts, client_ip, domain, blocked`). A query that got SERVFAIL is
@@ -1210,7 +1215,7 @@ This item adds one more field to the same `Record` struct and one more idempoten
   dimension.
 - **Metrics.** Expose the aggregate on `/metrics`, matching the `shole_*` naming:
   `shole_forward_failures_total` (unresolved), `shole_upstream_errors_total`
-  (relayed failure rcode), and per-upstream `shole_upstream_failures_total`
+  (relayed failure rcode), and per-upstream `shole_upstream_transport_failures_total`
   incremented at `recordFailure` in the cooldown tracker (upstream.go). The
   per-upstream counter is the "which upstream is flaky" attribution the query log
   cannot give, because `forward` aggregates several upstreams into one generic
@@ -1252,6 +1257,183 @@ Rated Medium: an observability win that completes the per-query-outcome story an
 turns a silent, log-only failure into a graph line, a filter, and a scrapeable
 metric. It is a write-path and schema change, so it is more involved than a UI-only
 tweak, and it depends on or reuses #29's `Record` struct and migration.
+
+## 32. Streaming byte-parse: insert blocklist domains directly into the block set
+
+A reload allocates a large amount of short-lived memory, and profiling shows most
+of it is avoidable. The chain is `Update` (`internal/blocklist/loader.go`) calls
+`parseHostsFormat`, which reads each source line by line and collects a
+per-source `[]string`; `Update` appends every source into one `all []string`;
+`Store.Replace` then builds a fresh map from `all` and swaps the pointer under lock.
+So a reload allocates three throwaway layers on top of the map it must build: the
+per-line parse strings, the per-source slice, and the combined `all` slice. (Raised
+and measured in a 2026-09-13 session.)
+
+The fix is one rewrite of the parse path, not two changes:
+
+- Parse on `scanner.Bytes()` and find the domain field with `IndexByte`/`bytes.Cut`,
+  so no per-line `Text()` string and no `strings.Fields` slice is allocated.
+- Insert each accepted domain directly into the destination map, materializing the
+  domain string exactly once at insert. No per-source `[]string` and no `all` slice
+  ever exist.
+
+This leaves only the two allocations a reload cannot avoid: the new map and one
+string per unique domain (the map key). Everything else in the table below is
+transient garbage this removes.
+
+**Keep the atomic swap.** Build the fresh map, then swap one pointer under the write
+lock. That is the cheapest design that is also memory-safe (Go maps crash on a
+concurrent read and write) and keeps the read path lock-light: the periodic reload
+pays the cost, not the per-query hot path. Building the new map is the one
+irreducible cost (about 20% of reload churn, see the baseline), and it is not worth
+giving up. A rejected alternative is to stream domains straight into the live map. It
+would break the "readers see the old set or the new set, never a partial update"
+invariant (`TestStore_ReplaceIsAtomic`), leave the set grow-only so a domain dropped
+upstream never leaves, and break the all-or-nothing commit that keeps a half-fetched
+list from going live. It also still needs locking to avoid the concurrent-map crash,
+so it adds complexity and loses the guarantee.
+
+### Baseline (measured before implementation)
+
+These numbers are the "before" side of the win. Capture the "after" the same way in
+the CL that implements this item, so the PR shows the delta. Method: build with
+`S_HOLE_ENABLE_PPROF=1`, drive `POST /api/reload`, read `TotalAlloc` from
+`/debug/pprof/heap?debug=1&gc=1` across reloads for the churn, and
+`go tool pprof -alloc_space -base before.pb.gz after.pb.gz` for the attribution.
+Environment: Go 1.26.5, branch `cl77-failed-query-visibility`, 2026-09-13.
+
+Churn is the `TotalAlloc` delta per manual reload, averaged over repeated reloads
+(variance was under 0.1%):
+
+| blocklist size | churn / reload | churn / domain | retained heap (`HeapAlloc`) | peak `Sys` high-water |
+| --- | --- | --- | --- | --- |
+| 79,981 domains | ~19.8 MB | ~247 B | flat ~7.1 MB | ~34.7 MB |
+| 319,048 domains | ~74.2 MB | ~233 B | flat ~23.1 MB | ~94.7 MB |
+| 440,243 domains | ~103 MB (projected) | ~233 B | ~39.3 MB (idle snapshot) | not run |
+
+These are the recorded baseline numbers for a later before/after comparison; keep
+them as measured. Two facts from the table. Churn scales linearly with domain count
+(~233 B/domain), so the 440k churn is projected from the linear fit (no reload loop
+was run at 440k, only an idle footprint snapshot), and a 1,000,000-domain list
+projects to ~230 MB churned per reload with a peak `Sys` in the few-hundred-MB range.
+Retained `HeapAlloc` stays flat across repeated reloads at each measured size, so a
+reload leaks nothing; the churn is transient the GC reclaims. Retained heap runs
+~70-90 B/domain, slightly superlinear at 440k (the Go map's bucket array grows in
+power-of-2 steps). The process-level resident footprint (RSS) for the same three
+sizes is in the DESIGN blocklist-store section as operator sizing guidance.
+
+Allocation attribution, from the 319k `-alloc_space -base` diff (78.49 MB sampled,
+within ~6% of the `TotalAlloc` delta, so the proportions are sound). About 5% of the
+raw profile was the pprof endpoint and the dashboard poll and is excluded here:
+
+| site | share | what it is | removed by this item? |
+| --- | --- | --- | --- |
+| `parseHostsFormat` | ~41% | per-line and per-domain string work plus the per-source `[]string` | mostly yes |
+| `Store.Replace` | ~20% | the new map plus `normalize` keys | no (irreducible) |
+| `Update` (`all` append) | ~14% | the combined intermediate slice | yes |
+| `bufio.Scanner.Text` | ~12% | the per-line string copy | yes (`scanner.Bytes`) |
+| `strings.Fields` | ~8% | the per-line field split | yes |
+
+So about 20% (the map build) is the floor, and the other ~55-60% is intermediate
+slices and redundant parse strings this item removes. The target is to cut reload
+churn from ~74 MB toward the ~23 MB retained floor at 319k domains, roughly a
+55-60% reduction, with the same proportional drop in the peak.
+
+Design decisions to settle in the CL:
+
+- **Parse seam.** `parseHostsFormat(r io.Reader) ([]string, error)` becomes an
+  insert-into-set signature (a callback, or a passed-in set). The fuzz target
+  `FuzzParseHostsFormat` and the allocation guards in `alloc_test.go` move with it.
+  Read `alloc_test.go` first: it may already pin the per-reload allocation count
+  this change improves, so update the expected numbers there.
+- **String lifetime.** Today a stored domain is a substring of the line string, so it
+  can pin the whole line's backing array. Materializing one fresh string per domain
+  at insert removes that pinning. Confirm the retained heap does not rise from the
+  extra copy; the removed pinning should offset it.
+- **Cross-source dedupe.** Inserting into one shared set dedupes across sources for
+  free (two lists that both carry `doubleclick.net` collapse to one entry), which
+  the append-then-build path already did at map-build time. No behavior change, but
+  state it so the per-source count math is not read as a regression.
+
+Rated Medium by the impact rubric: it changes no filtering behavior and no
+user-facing output, but the peak-memory drop is what keeps a large list from an OOM
+on a small box (a Raspberry Pi at 512 MB to 1 GB), which is the real deployment risk
+the baseline projects at 1,000,000 domains. It also simplifies the loader by
+removing two throwaway layers, which fits a binary whose identity is a tight
+dependency graph and a small, auditable hot path.
+
+## 33. Cache packed wire bytes: drop the per-hit `dns.Msg` copy
+
+A cache hit is already fast, but profiling shows its cost is almost all one thing:
+copying the cached `dns.Msg`. `cache.Get` returns `e.msg.Copy()` so the caller can
+set the reply `Id` and decrement the TTLs without mutating the shared cached entry.
+That deep copy (a new `Msg`, a copy of every `RR`) is the dominant per-hit cost.
+(Raised and measured in a 2026-09-13 session.)
+
+### Baseline (measured before implementation)
+
+Same method and environment as #32 (Go 1.26.5, clocksource `tsc`). Note the earlier
+66 us/hit reading was a VM `acpi_pm` clock artifact, not the real cost; these are the
+numbers to compare against. From `go test -bench=BenchmarkHandler_ServeDNS -benchmem`:
+
+| path | ns/op | B/op | allocs/op |
+| --- | --- | --- | --- |
+| Blocked (sinkhole reply) | ~550-600 | 264 | 5 |
+| Cache hit | ~830-1000 | 304 | 7 |
+
+Serial and `_Parallel` agree, so there is no lock regression on the read path. A CPU
+profile of the cache-hit benchmark (`-cpuprofile`, handler-attributable time only,
+runtime GC and profiler frames excluded) puts the copy front and centre:
+
+| site | share of cache-hit CPU | note |
+| --- | --- | --- |
+| `cache.Get` (cumulative) | ~43% | the whole hit path |
+| `dns.(*Msg).CopyTo` | ~26% | the deep message copy |
+| `dns.(*A).copy` | ~14% | per-answer-record copy |
+| `runtime.mallocgc` (cumulative) | ~27% | allocations the copy drives |
+| map lookup, `decrementTTLs`, `normalize` | ~1% each | the actual cache logic |
+
+So the copy and the garbage it makes are the cache-hit cost; the cache logic is noise
+next to it.
+
+### Idea
+
+Store the response once in packed wire form at `Set` time, not as a `dns.Msg`. On a
+hit, copy the byte slice (one contiguous allocation, far cheaper than a `Msg` tree),
+patch the two-byte `Id` in place, adjust the TTL fields in place, and write the raw
+bytes. This drops the per-hit allocation count and removes `CopyTo`/`A.copy` from the
+path. It is the s-hole-scale form of the cache-layout idea recorded under Pending
+decisions (the Cloudflare per-entry-footprint note).
+
+### Complications to settle in the CL
+
+- **TTL patching in wire form.** Decrementing TTLs means finding each RR's four-byte
+  TTL field in the packed message. Name compression makes a blind offset walk unsafe,
+  so record each answer's TTL offset at `Set` time (the message is packed once there)
+  and patch by stored offset on `Get`. No re-parse on the hot path.
+- **The write path.** The handler calls `w.WriteMsg(cached)` today, which packs the
+  `Msg`. Writing raw bytes needs the correct framing (UDP writes the message; TCP
+  needs the two-byte length prefix) and must keep the EDNS0 mirroring the current
+  path does. A wire-protocol mistake here is a real bug class, so it needs its own
+  tests.
+- **Correctness invariants to keep.** Cached bytes are immutable and shared; each hit
+  copies the slice and patches its own copy, so concurrency stays safe. Only
+  NOERROR-with-answers replies are cached (unchanged), so rcode and flag handling
+  stays simple.
+
+### Trade-off
+
+This cuts against "auditable in an afternoon": wire-level TTL patching and a raw
+write path are more subtle than returning a `*dns.Msg`. So validate the win with a
+benchmark first. The prize is removing the dominant hot-path allocation (7 allocs/hit
+toward ~1-2) and roughly 40% of cache-hit CPU. Cache hits are a large share of
+allowed traffic, so the win lands on the busiest path. If a prototype does not beat
+the ~830 ns and 7-alloc baseline above by a clear margin, do not take on the
+complexity.
+
+Rated Medium: a hot-path efficiency win on the busiest allowed path, with no change
+to filtering behavior or the cache's external contract, weighed against real added
+complexity in the cache and the DNS write path.
 
 ## Pending decisions
 

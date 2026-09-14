@@ -39,6 +39,64 @@ func TestFileLogger_LogAll(t *testing.T) {
 	}
 }
 
+func TestRecord_FailureDerivation(t *testing.T) {
+	tests := []struct {
+		name                              string
+		rec                               Record
+		failed, unresolved, upstreamError bool
+	}{
+		{name: "forwarded NOERROR", rec: Record{Rcode: 0}},
+		{name: "relayed NXDOMAIN", rec: Record{Rcode: 3}},
+		{name: "blocked NXDOMAIN mode", rec: Record{Blocked: true, Rcode: 3, Synthesized: true}},
+		{name: "blocked zero mode", rec: Record{Blocked: true, Rcode: 0, Synthesized: true}},
+		{name: "local PTR NXDOMAIN", rec: Record{Rcode: 3, Synthesized: true}},
+		{name: "unresolved", rec: Record{Rcode: rcodeServerFailure, Synthesized: true}, failed: true, unresolved: true},
+		{name: "relayed SERVFAIL", rec: Record{Rcode: rcodeServerFailure}, failed: true, upstreamError: true},
+		{name: "relayed REFUSED", rec: Record{Rcode: rcodeRefused}, failed: true, upstreamError: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.rec.Failed(); got != tc.failed {
+				t.Errorf("Failed() = %v, want %v", got, tc.failed)
+			}
+			if got := tc.rec.Unresolved(); got != tc.unresolved {
+				t.Errorf("Unresolved() = %v, want %v", got, tc.unresolved)
+			}
+			if got := tc.rec.UpstreamError(); got != tc.upstreamError {
+				t.Errorf("UpstreamError() = %v, want %v", got, tc.upstreamError)
+			}
+		})
+	}
+}
+
+func TestFileLogger_FailedMarker(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "queries.log")
+	l := NewFileLogger(path, "all")
+	defer l.Close()
+
+	// Unresolved (synthesized SERVFAIL) and a relayed upstream failure both mark
+	// the ALLOW line with FAILED. A successful ALLOW and a cache hit do not.
+	l.Log(Record{ClientIP: "1.2.3.4", Domain: "dead.example.com.", Rcode: rcodeServerFailure, Synthesized: true})
+	l.Log(Record{ClientIP: "1.2.3.4", Domain: "broken.example.com.", Rcode: rcodeRefused})
+	l.Log(Record{ClientIP: "1.2.3.4", Domain: "ok.example.com."})
+	l.Log(Record{ClientIP: "1.2.3.4", Domain: "cdn.example.com.", CacheHit: true})
+
+	out := readAll(t, path)
+	if !strings.Contains(out, "ALLOW 1.2.3.4 dead.example.com. FAILED") {
+		t.Errorf("missing FAILED marker for unresolved query in: %s", out)
+	}
+	if !strings.Contains(out, "ALLOW 1.2.3.4 broken.example.com. FAILED") {
+		t.Errorf("missing FAILED marker for upstream error in: %s", out)
+	}
+	if strings.Contains(out, "ok.example.com. FAILED") {
+		t.Errorf("FAILED marker on a successful ALLOW in: %s", out)
+	}
+	// CACHED and FAILED are mutually exclusive; a cache hit stays CACHED.
+	if !strings.Contains(out, "cdn.example.com. CACHED") || strings.Contains(out, "cdn.example.com. FAILED") {
+		t.Errorf("cache hit should be CACHED, not FAILED, in: %s", out)
+	}
+}
+
 func TestFileLogger_LogBlockedOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "queries.log")
 	l := NewFileLogger(path, "blocked")

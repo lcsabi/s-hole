@@ -90,6 +90,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 74](cls/CL-74.md) | Query-log search / filter (ROADMAP #23) |
 | [CL 75](cls/CL-75.md) | Bump golang.org/x/sys to 0.48.0 and raise the Go floor to 1.26 |
 | [CL 76](cls/CL-76.md) | "Cached" line on the query-volume graph: record cache-hit per query (ROADMAP #29) |
+| [CL 77](cls/CL-77.md) | Failed-query visibility: per-query outcome on the graph, filter, and /metrics (ROADMAP #31) |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

@@ -503,6 +503,27 @@ install` registers the event source and `-service uninstall` removes it. The
 per-query `ALLOW`/`BLOCK` log is separate: set `log_file` to keep it, since
 stdout is discarded under the service.
 
+### Monitoring (Prometheus + Grafana)
+
+s-hole serves Prometheus metrics at `/metrics`, and the built-in dashboard covers
+the day-to-day view with no extra software. If you already run Prometheus and
+Grafana, the `deploy/` directory has ready-made assets to plug s-hole into that
+stack:
+
+- `deploy/prometheus.yml`: an example scrape config for the s-hole target.
+- `deploy/prometheus-alerts.yml`: example alert rules (resolver down, empty block
+  set, stale source, dropped query-log rows, forward and upstream failures,
+  goroutine growth).
+- `deploy/grafana-dashboard.json`: a dashboard for the `shole_*` metrics. Import it
+  in Grafana (Dashboards > New > Import) and pick your Prometheus data source.
+
+These are optional. They do not replace the built-in dashboard.
+
+The default `api_listen` binds `127.0.0.1`, so Prometheus must run on the same
+host. To scrape from another host, set `api_listen: "0.0.0.0:8080"` and use the
+LAN IP as the target. Do not expose `/metrics` to the public internet: the admin
+API is unauthenticated.
+
 ---
 
 ## Building from Source
@@ -602,7 +623,7 @@ $env:GOOS=""; $env:GOARCH=""
 .
 ├── cmd/s-hole/        application entry point (main package)
 ├── internal/          implementation packages (not importable externally)
-├── deploy/            systemd unit + Linux install/uninstall scripts
+├── deploy/            systemd unit, Linux install/uninstall scripts, Prometheus/Grafana examples
 ├── docs/              DESIGN, CHANGELOG, BUGS, ROADMAP, and CL.md (index)
 │   └── cls/           one file per CL (CL-01.md … CL-NN.md)
 ├── .github/           CI workflows, dependabot, CODEOWNERS, PR & issue templates

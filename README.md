@@ -40,7 +40,8 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
 - **Resilient upstream forwarding.** Tries upstreams in order over UDP, falls back to TCP on truncation, and skips recently-failed resolvers until they recover.
 - **Local reverse DNS.** Answers PTR queries for the RFC 6303 private ranges (`10/8`, `172.16/12`, `192.168/16`, and IPv6 ULA and link-local) locally, so internal LAN addressing never leaks to the upstream resolver. On by default. Disable it with `local_ptr: false`.
 - **Dual query log.** A plain-text file for `grep` and `tail`, plus a SQLite database for historical queries.
-- **Admin web UI.** Live stats, top blocked domains, per-source blocklist health, recent query log, whitelist management, and a "why is this blocked?" domain check. Auto-refreshes every 3 seconds.
+- **Query-log privacy.** Choose how the client IP is stored: keep it, drop it, or mask it to a subnet (`query_privacy`). Optional `client_names` labels map an IP or subnet to a friendly device name in the log and the dashboard.
+- **Admin web UI.** Live stats, a queries-over-time graph (total, blocked, cached, and failed), top blocked domains, top clients, per-source blocklist health, and a searchable recent query log with domain, client, status, and outcome filters. Also whitelist management and a "why is this blocked?" domain check. The dashboard refreshes automatically.
 - **REST API.** All UI data is available as JSON, ready for scripting and future integrations.
 - **Observability.** Serves Prometheus metrics at `/metrics` (query, cache, blocklist, upstream-failure, and Go-runtime health) and liveness and readiness probes at `/healthz` and `/readyz`, with no external metrics library. Ready-made Grafana dashboard and Prometheus scrape/alert examples ship under `deploy/`.
 - **Configurable sinkhole mode.** Returns `0.0.0.0` (the default, a silent failure) or `NXDOMAIN`.

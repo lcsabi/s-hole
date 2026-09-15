@@ -15,6 +15,12 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   changes between refreshes. (CL 71)
 
 ### Added
+- **Prometheus and Grafana examples.** The `deploy/` directory now ships
+  `prometheus.yml` (an example scrape config), `prometheus-alerts.yml` (example
+  alert rules for resolver down, empty block set, stale source, query-log drops,
+  forward and upstream failures, and goroutine growth), and `grafana-dashboard.json` (an
+  importable dashboard for the `shole_*` metrics). They are optional and do not
+  replace the built-in dashboard. No dependency and no binary change. (CL 79)
 - **Go runtime gauges on `/metrics`.** Three new gauges expose process health for
   leak and heap-growth watching: `shole_goroutines` (the goroutine-leak signal,
   since s-hole runs one goroutine per in-flight query), `shole_memory_alloc_bytes`,

@@ -40,9 +40,10 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
 - **Resilient upstream forwarding.** Tries upstreams in order over UDP, falls back to TCP on truncation, and skips recently-failed resolvers until they recover.
 - **Local reverse DNS.** Answers PTR queries for the RFC 6303 private ranges (`10/8`, `172.16/12`, `192.168/16`, and IPv6 ULA and link-local) locally, so internal LAN addressing never leaks to the upstream resolver. On by default. Disable it with `local_ptr: false`.
 - **Dual query log.** A plain-text file for `grep` and `tail`, plus a SQLite database for historical queries.
-- **Admin web UI.** Live stats, top blocked domains, per-source blocklist health, recent query log, whitelist management, and a "why is this blocked?" domain check. Auto-refreshes every 3 seconds.
+- **Query-log privacy.** Choose how the client IP is stored: keep it, drop it, or mask it to a subnet (`query_privacy`). Optional `client_names` labels map an IP or subnet to a friendly device name in the log and the dashboard.
+- **Admin web UI.** Live stats, a queries-over-time graph (total, blocked, cached, and failed), top blocked domains, top clients, per-source blocklist health, and a searchable recent query log with domain, client, status, and outcome filters. Also whitelist management and a "why is this blocked?" domain check. The dashboard refreshes automatically.
 - **REST API.** All UI data is available as JSON, ready for scripting and future integrations.
-- **Observability.** Serves Prometheus metrics at `/metrics` (query, cache, blocklist, upstream-failure, and Go-runtime health) and liveness and readiness probes at `/healthz` and `/readyz`, with no external metrics library.
+- **Observability.** Serves Prometheus metrics at `/metrics` (query, cache, blocklist, upstream-failure, and Go-runtime health) and liveness and readiness probes at `/healthz` and `/readyz`, with no external metrics library. Ready-made Grafana dashboard and Prometheus scrape/alert examples ship under `deploy/`.
 - **Configurable sinkhole mode.** Returns `0.0.0.0` (the default, a silent failure) or `NXDOMAIN`.
 - **Cross-platform.** A single binary for Windows, Linux x86-64, Linux arm64 (Pi 4/5), and Linux armv7 (Pi 2/3).
 - **Windows Service.** Installs as an auto-start system service with one command.
@@ -503,6 +504,27 @@ install` registers the event source and `-service uninstall` removes it. The
 per-query `ALLOW`/`BLOCK` log is separate: set `log_file` to keep it, since
 stdout is discarded under the service.
 
+### Monitoring (Prometheus + Grafana)
+
+s-hole serves Prometheus metrics at `/metrics`, and the built-in dashboard covers
+the day-to-day view with no extra software. If you already run Prometheus and
+Grafana, the `deploy/` directory has ready-made assets to plug s-hole into that
+stack:
+
+- `deploy/prometheus.yml`: an example scrape config for the s-hole target.
+- `deploy/prometheus-alerts.yml`: example alert rules (resolver down, empty block
+  set, stale source, dropped query-log rows, forward and upstream failures,
+  goroutine growth).
+- `deploy/grafana-dashboard.json`: a dashboard for the `shole_*` metrics. Import it
+  in Grafana (Dashboards > New > Import) and pick your Prometheus data source.
+
+These are optional. They do not replace the built-in dashboard.
+
+The default `api_listen` binds `127.0.0.1`, so Prometheus must run on the same
+host. To scrape from another host, set `api_listen: "0.0.0.0:8080"` and use the
+LAN IP as the target. Do not expose `/metrics` to the public internet: the admin
+API is unauthenticated.
+
 ---
 
 ## Building from Source
@@ -538,12 +560,12 @@ $env:GOOS=""; $env:GOARCH=""
 
 **In the code:**
 
-- **A lock-free stats hot path with a proven concurrency invariant.** Per-query counters update without locks; `Snapshot` must read every counter a query touches *after* `total` *before* it reads `total`, or a dashboard ratio can momentarily exceed 100%. I hit that exact race on three different counters, then encoded a standing load-order invariant plus a race-tested regression per counter so a fourth can't slip in. ([`internal/stats`](internal/stats))
+- **A lock-free stats hot path with a proven concurrency invariant.** Per-query counters update without locks; `Snapshot` must read every counter a query touches *after* `total` *before* it reads `total`, or a dashboard ratio can momentarily exceed 100%. I hit that exact race on multiple counters, then encoded a standing load-order invariant plus a race-tested regression per counter so the next one can't slip in. ([`internal/stats`](internal/stats))
 - **Suffix-match subdomain blocking** that walks a name's parent labels in `O(labels)` with zero per-query allocation, closing the subdomain-rotation hole that exact-match blockers leave open. ([`blocklist.Store.IsBlocked`](internal/blocklist/store.go))
 - **Resilient upstream forwarding.** UDP with automatic TCP fallback on truncation, plus a health tracker that skips recently-failed resolvers and retries them only if every other upstream also failed.
 - **RFC 6303 local PTR answering.** Private-range reverse queries are answered locally instead of leaking internal LAN addressing to the upstream resolver.
 - **Deliberate non-decisions.** Case-insensitive caching was rejected because it would break dns-0x20 downstream resolvers; admin authentication was rejected in favour of a documented localhost-only scope. Knowing what *not* to build is recorded in [`docs/ROADMAP.md`](docs/ROADMAP.md).
-- **A tiny dependency graph and pure-Go SQLite.** No CGO, so cross-compiling for four targets stays a one-liner and the binary is fully static.
+- **A tiny dependency graph and pure-Go SQLite.** No CGO, so cross-compiling for every release target stays a one-liner and the binary is fully static.
 
 **In the process,** built with the discipline of a long-lived, multi-maintainer codebase rather than a one-shot script:
 
@@ -551,7 +573,7 @@ $env:GOOS=""; $env:GOARCH=""
 - **Every change is a small, self-contained change-list** with motivation, files touched, and testing notes ([`docs/cls/`](docs/cls)).
 - **A bug tracker with priorities and structured root-cause/fix records** ([`docs/BUGS.md`](docs/BUGS.md)), including entries deliberately marked *Won't Fix (by design)*.
 - **Documentation drift is treated as a bug.** Code and docs are updated in the same change.
-- **CI gate on every push**: `gofmt`, `go vet`, `golangci-lint`, race-enabled tests, `govulncheck`, and a four-target cross-compile. The core `internal/` packages meet 85–100% coverage targets (see the [targets under Development](#development)).
+- **CI gate on every push**: `gofmt`, `go vet`, `golangci-lint`, race-enabled tests, `govulncheck`, and a cross-compile of every release target. The core `internal/` packages meet the coverage targets (see the [targets under Development](#development)).
 
 ---
 
@@ -602,7 +624,7 @@ $env:GOOS=""; $env:GOARCH=""
 .
 ├── cmd/s-hole/        application entry point (main package)
 ├── internal/          implementation packages (not importable externally)
-├── deploy/            systemd unit + Linux install/uninstall scripts
+├── deploy/            systemd unit, Linux install/uninstall scripts, Prometheus/Grafana examples
 ├── docs/              DESIGN, CHANGELOG, BUGS, ROADMAP, and CL.md (index)
 │   └── cls/           one file per CL (CL-01.md … CL-NN.md)
 ├── .github/           CI workflows, dependabot, CODEOWNERS, PR & issue templates
@@ -634,7 +656,7 @@ All implementation packages live under `internal/` so they cannot be imported by
 
 ### Dependencies
 
-The "afternoon's reading" claim extends to the dependency graph: four direct modules linked into the binary, chosen where hand-rolling would be a source of subtle bugs and skipped everywhere else. (A fifth direct module, `go.uber.org/goleak`, is test-only. It runs the suite under a goroutine-leak check and is never compiled into the shipped binary.)
+The "afternoon's reading" claim extends to the dependency graph: a small set of direct modules linked into the binary, listed below, chosen where hand-rolling would be a source of subtle bugs and skipped everywhere else. (`go.uber.org/goleak` is a test-only direct module. It runs the suite under a goroutine-leak check and is never compiled into the shipped binary.)
 
 | Module | Why it's a dependency |
 |---|---|
@@ -676,8 +698,8 @@ Coverage targets (checked in review, not a strict CI gate; run
 The `cmd/s-hole` bootstrap and the platform-specific `internal/service` glue sit
 below these targets: the uncovered region is the `main()` wiring and the
 Windows-only SCM and Event Log glue, which need a running binary or Windows and
-are exercised by manual smoke tests, not unit tests. Module-wide coverage tracks
-around 80 %.
+are exercised by manual smoke tests, not unit tests. Run `go test -cover ./...`
+for the current numbers.
 
 The binary reports its build identity at any time:
 

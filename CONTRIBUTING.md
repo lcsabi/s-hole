@@ -176,7 +176,7 @@ and the router-setup banner. Then, in a second terminal:
 ## Cutting a release
 
 Releases are tag-triggered. Push a `vMAJOR.MINOR.PATCH` tag and
-`.github/workflows/release.yml` builds the four targets, attaches a per-target
+`.github/workflows/release.yml` builds every release target, attaches a per-target
 archive plus `SHA256SUMS` to a GitHub Release (notes drawn from the matching
 `[X.Y.Z]` CHANGELOG section), and pushes a multi-arch
 `ghcr.io/lcsabi/s-hole` image. The version is the tag name, so `s-hole
@@ -192,7 +192,7 @@ The procedure:
    push origin vX.Y.Z-rc1`. A tag with a `-` suffix is published as a GitHub
    pre-release and does not move the Docker `:latest`, so a mistake costs
    nothing.
-3. **Verify the rc.** Confirm the four archives and `SHA256SUMS` are attached,
+3. **Verify the rc.** Confirm the per-target archives and `SHA256SUMS` are attached,
    `sha256sum -c SHA256SUMS` passes on a downloaded archive, a downloaded binary
    reports the tag under `-version`, `docker pull
    ghcr.io/lcsabi/s-hole:X.Y.Z-rc1` runs and reports the same version, and the
@@ -274,9 +274,9 @@ strictly, but the per-package targets are:
 - `internal/api`, `internal/blocklist`, `internal/dnsserver`,
   `internal/querylog`: ≥ 85 %
 
-The `cmd/s-hole` package sits around 42 % because the rest is the
-`main()` bootstrap and SCM glue that aren't unit-testable. Module-wide
-coverage tracks around 80 %.
+The `cmd/s-hole` package runs below these targets because the rest is
+the `main()` bootstrap and SCM glue that aren't unit-testable. Run
+`go test -cover ./...` for the current numbers.
 
 Run `go test -cover ./...` locally to see the current state before
 sending a PR; if your change drops a number, please either add the

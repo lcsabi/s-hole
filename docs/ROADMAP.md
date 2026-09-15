@@ -39,7 +39,7 @@ rails.
 | 23 | Query-log search / filter | Medium | done (CL 74) |
 | 24 | Query-log export (CSV / JSON) | Medium | not started |
 | 25 | Regex / pattern blocking | High | not started |
-| 26 | Grafana dashboard + Prometheus scrape/alert examples | Low | not started |
+| 26 | Grafana dashboard + Prometheus scrape/alert examples | Low | done (CL 79) |
 | 27 | Install/uninstall robustness hardening (preflight, health check, shellcheck) | Medium | done (CL 66) |
 | 28 | Validate the upstreams at config time (format check + single-upstream note) | Low | not started |
 | 29 | "Cached" line on the query-volume graph (record cache-hit per query) | Medium | done (CL 76) |
@@ -53,8 +53,8 @@ dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
 #24 all read, so #21 must land first. The order below is the recommended
 implementation order, not the item-number order.
 
-Items 26, 29, 30, and 31 are the observability group. Recommended order: #29,
-then #31, then #26 last. #29 landed (CL 76): it introduced the per-query `Record`
+Items 26, 29, 30, and 31 are the observability group, now all done. Order landed:
+#29, #31, #30, then #26 last. #29 landed (CL 76): it introduced the per-query `Record`
 struct (in `querylog`) and the first idempotent `ALTER TABLE ... ADD COLUMN`
 migration (via the `ensureColumn` helper) in their simplest form (one
 already-counted boolean, no new metric), so it was the lowest-risk vehicle for
@@ -68,7 +68,9 @@ future per-rcode breakdown and the two fields separate an unresolved query
 metrics exist, or the dashboard is revised on every new metric. #30 landed (CL 78):
 it added the Go runtime gauges (`shole_goroutines` and two heap gauges) from the
 sampled `runtime/metrics` API, so the leak canary and heap-growth signals now exist
-for #26 to draw. With #30 done, #26 is the last remaining item in the group.
+for #26 to draw. #26 landed (CL 79): it shipped the three `deploy/` assets
+(`prometheus.yml`, `prometheus-alerts.yml`, `grafana-dashboard.json`) drawing the
+complete surface, which closed the group.
 Related: #24 (export) reads the log schema, so land it after #29 and #31 to
 export the new columns from the start; #28 pairs with #31 (the same
 silent-upstream-misconfig class, from the config side).
@@ -97,7 +99,7 @@ item stays open until a Raspberry Pi is available.
 
 ## 2. Tag `v0.1.0` + release workflow (done, CL 43 and CL 44)
 
-CI already cross-compiled all four targets and threw the binaries away.
+CI already cross-compiled every release target and threw the binaries away.
 **Shipped in CL 43:** `.github/workflows/release.yml` triggers on a `v*`
 tag push and builds the matrix with the version-injecting ldflags (the
 tag name is the version, so no `dev` placeholder). It attaches a
@@ -815,7 +817,15 @@ Rated High: a user-visible filtering win for the cases exact and suffix matching
 miss. Narrower reach than CL 30, since most real traffic is already caught by
 suffix blocking.
 
-## 26. Grafana dashboard + Prometheus examples
+## 26. Grafana dashboard + Prometheus examples (done, CL 79)
+
+**Shipped in CL 79:** three assets under `deploy/`. `grafana-dashboard.json` (an
+importable dashboard, schemaVersion 39, fed by a datasource template variable),
+`prometheus.yml` (a scrape config for the s-hole target, with a `rule_files`
+entry), and `prometheus-alerts.yml` (seven example alert rules: resolver down,
+empty block set, stale source, query-log drops, forward-failure rate, per-upstream
+transport failures, and the #30 goroutine-leak canary). A README "Monitoring"
+subsection under Deployment points at them. No code and no new dependency.
 
 s-hole already exposes `/metrics` in Prometheus format, so the hard part is done.
 What is missing is a ready-made way to use it. Ship the assets that turn the
@@ -842,14 +852,19 @@ Ship:
 Build this last so the dashboard and alerts can include any metric added by the
 earlier items.
 
-Design decisions to settle in the CL:
+Design decisions settled in the CL:
 
-- **Dashboard scope.** Which panels ship by default, kept to the metrics that
-  already exist so the JSON does not reference absent series.
-- **Where the assets live.** Under `deploy/` next to the install scripts, and
-  whether the README gains a short "monitoring" section pointing at them.
-- **Version pinning.** Which Grafana schema version the JSON targets, since the
-  import format changes across major versions.
+- **Dashboard scope: existing metrics only.** Every panel and rule references a
+  `shole_*` name that `internal/api/metrics.go` emits today, cross-checked before
+  merge. The #19 pause gauge is not shipped, so nothing references it.
+- **Assets under `deploy/`, plus a README "Monitoring" subsection.** They sit next
+  to the install scripts, and the README Deployment section points at them and
+  states they do not replace the built-in dashboard.
+- **Grafana schema version 39 (Grafana >= 10).** A recent, widely-importable
+  schema using only long-stable panel types.
+- **Portable assets only, no runnable stack.** No docker-compose or provisioning
+  bundle: that would add non-repo infrastructure and duplicate the Docker deploy
+  story. The files import into an operator's own Prometheus and Grafana.
 
 Rated Low: a distribution and documentation win that makes the existing metrics
 immediately usable. It adds nothing to the binary.

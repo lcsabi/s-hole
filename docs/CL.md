@@ -92,6 +92,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 76](cls/CL-76.md) | "Cached" line on the query-volume graph: record cache-hit per query (ROADMAP #29) |
 | [CL 77](cls/CL-77.md) | Failed-query visibility: per-query outcome on the graph, filter, and /metrics (ROADMAP #31) |
 | [CL 78](cls/CL-78.md) | Go runtime gauges on /metrics: shole_goroutines and heap gauges from runtime/metrics (ROADMAP #30) |
+| [CL 79](cls/CL-79.md) | Grafana dashboard + Prometheus scrape/alert examples under deploy/ (ROADMAP #26) |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

@@ -43,7 +43,7 @@ rails.
 | 27 | Install/uninstall robustness hardening (preflight, health check, shellcheck) | Medium | done (CL 66) |
 | 28 | Validate the upstreams at config time (format check + single-upstream note) | Low | not started |
 | 29 | "Cached" line on the query-volume graph (record cache-hit per query) | Medium | done (CL 76) |
-| 30 | Go runtime gauges (goroutines, heap) in `/metrics` | Medium | not started |
+| 30 | Go runtime gauges (goroutines, heap) in `/metrics` | Medium | done (CL 78) |
 | 31 | Failed-query visibility (per-query outcome: graph, filter, `/metrics`) | Medium | done (CL 77) |
 | 32 | Streaming byte-parse: insert blocklist domains directly into the block set | Medium | not started |
 | 33 | Cache packed wire bytes: drop the per-hit `dns.Msg` copy | Medium | not started |
@@ -65,8 +65,10 @@ the single `Outcome` enum first sketched here, because the rcode is richer for a
 future per-rcode breakdown and the two fields separate an unresolved query
 (s-hole synthesized the SERVFAIL) from a relayed upstream failure. #26
 (Grafana and Prometheus examples) draws the metric surface, so it comes after the
-metrics exist, or the dashboard is revised on every new metric. #30 (runtime
-gauges) is independent of the log work and can land any time, but before #26.
+metrics exist, or the dashboard is revised on every new metric. #30 landed (CL 78):
+it added the Go runtime gauges (`shole_goroutines` and two heap gauges) from the
+sampled `runtime/metrics` API, so the leak canary and heap-growth signals now exist
+for #26 to draw. With #30 done, #26 is the last remaining item in the group.
 Related: #24 (export) reads the log schema, so land it after #29 and #31 to
 export the new columns from the start; #28 pairs with #31 (the same
 silent-upstream-misconfig class, from the config side).
@@ -1094,19 +1096,33 @@ Rated Medium: an observability win that completes the per-query-outcome story on
 the graph. It changes no filtering behavior. It is a write-path and schema change,
 not a UI-only tweak, so it is more involved than #20 was.
 
-## 30. Go runtime gauges in `/metrics`
+## 30. Go runtime gauges in `/metrics` (done, CL 78)
+
+**Shipped in CL 78:** three gauges on `/metrics`, read from the sampled
+`runtime/metrics` API in `handleMetrics`. `shole_goroutines` (the leak canary,
+from `/sched/goroutines:goroutines`), `shole_memory_alloc_bytes`
+(`/memory/classes/heap/objects:bytes`, equals
+`MemStats.HeapAlloc`), and `shole_memory_heap_inuse_bytes` (that class plus
+`/memory/classes/heap/unused:bytes`, equals `MemStats.HeapInuse`). No new
+dependency, no config change, no hot-path cost (read at scrape time only). The GC
+gauge was deferred as the optional extra below notes.
 
 s-hole exposes counters on `/metrics` but no view of its own runtime. Add a few
 Go runtime gauges to the existing endpoint so an operator can see the process
 leaking before it falls over:
 
-- `shole_goroutines` from `runtime.NumGoroutine()`. This is the best leak signal
-  for this codebase. miekg/dns spawns one goroutine per query, so a count that
-  climbs and never settles means a handler path is not returning (the goleak
+- `shole_goroutines` from `/sched/goroutines:goroutines`. This is the best leak
+  signal for this codebase. miekg/dns spawns one goroutine per query, so a count
+  that climbs and never settles means a handler path is not returning (the goleak
   tests guard the same property in CI).
-- `shole_memory_heap_inuse_bytes` and `shole_memory_alloc_bytes` from
-  `runtime.ReadMemStats`, for heap growth over time.
+- `shole_memory_heap_inuse_bytes` and `shole_memory_alloc_bytes` from the
+  `runtime/metrics` heap classes, for heap growth over time.
 - Optional: a GC pause gauge, if the heap gauges alone do not tell the story.
+  (Deferred; see the settled decisions below.)
+
+(The bullets above are the original proposal; the CL settled `runtime.NumGoroutine`
+vs the sampled `/sched/goroutines:goroutines` and `ReadMemStats` vs
+`runtime/metrics` in favor of the sampled API. See the settled decisions below.)
 
 This is the measured, in-identity version of a "resource watchdog." A watchdog
 that periodically logs its own usage was weighed and rejected. It duplicates the
@@ -1133,18 +1149,24 @@ from `runtime/metrics` instead. A small test can assert the handler makes a sing
 stats read per request so a later edit does not turn a scrape into several
 stop-the-world pauses.
 
-Design decisions to settle in the CL:
+Design decisions settled in the CL:
 
-- **Metric names.** `client_golang`'s default Go collector uses `go_goroutines`,
-  `go_memstats_heap_inuse_bytes`, and `go_gc_duration_seconds`. Mirroring those
-  names lets a stock Grafana Go-runtime panel work unchanged; the `shole_` prefix
-  keeps every series under one namespace. Pick one convention and document it.
-- **`ReadMemStats` vs `runtime/metrics`.** The newer sampled API avoids the
-  stop-the-world cost and is the better default if the added reading is worth the
-  slightly less familiar call.
+- **Metric names: the `shole_` prefix.** `client_golang`'s default Go collector
+  uses `go_goroutines`, `go_memstats_heap_inuse_bytes`, and `go_gc_duration_seconds`.
+  Mirroring those names would let a stock Grafana Go-runtime panel work unchanged,
+  but s-hole ships its own dashboard (#26), so the single `shole_` namespace across
+  every series is worth more than that.
+- **`runtime/metrics`, not `ReadMemStats`.** The sampled API avoids the
+  stop-the-world pause (the runtime maintains the values; `Read` copies them). The
+  read is on the scrape path, not the query path, so a pause would not touch DNS
+  latency, but the sampled API removes it entirely. The cost is the less obvious
+  class-name mapping, documented in the code and the DESIGN Metrics reference table.
 - **No access gate.** Unlike pprof, which is opt-in by design, these gauges leak
   nothing sensitive, so they ride the existing `/metrics` endpoint with no new
   flag.
+- **GC-pause gauge deferred.** The optional GC gauge below was left out of the
+  first cut; the goroutine and heap gauges cover the leak and growth signals, and a
+  GC gauge can be added later without a breaking change.
 
 Feeds #26: the Grafana dashboard and alert rules would draw these gauges (a
 goroutine-growth alert is a natural leak canary). Distinct from #29, which is a

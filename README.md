@@ -42,7 +42,7 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
 - **Dual query log.** A plain-text file for `grep` and `tail`, plus a SQLite database for historical queries.
 - **Admin web UI.** Live stats, top blocked domains, per-source blocklist health, recent query log, whitelist management, and a "why is this blocked?" domain check. Auto-refreshes every 3 seconds.
 - **REST API.** All UI data is available as JSON, ready for scripting and future integrations.
-- **Observability.** Serves Prometheus metrics at `/metrics` and liveness and readiness probes at `/healthz` and `/readyz`, with no external metrics library.
+- **Observability.** Serves Prometheus metrics at `/metrics` (query, cache, blocklist, upstream-failure, and Go-runtime health) and liveness and readiness probes at `/healthz` and `/readyz`, with no external metrics library.
 - **Configurable sinkhole mode.** Returns `0.0.0.0` (the default, a silent failure) or `NXDOMAIN`.
 - **Cross-platform.** A single binary for Windows, Linux x86-64, Linux arm64 (Pi 4/5), and Linux armv7 (Pi 2/3).
 - **Windows Service.** Installs as an auto-start system service with one command.
@@ -260,7 +260,7 @@ The admin web UI is served at **`http://127.0.0.1:8080`** by default. This is lo
 | `POST` | `/api/reload` | Trigger an immediate blocklist refresh. De-duplicated via a single-flight mutex; returns `"reload already in progress"` if one is already running |
 | `GET`  | `/healthz` | Liveness probe. Always 200 OK while the HTTP server is responsive |
 | `GET`  | `/readyz` | Readiness probe. 200 OK once the blocklist has loaded at least one entry, 503 otherwise |
-| `GET`  | `/metrics` | Prometheus text exposition: `shole_queries_total`, `shole_blocked_total`, `shole_local_ptr_total`, `shole_cache_hits_total`, `shole_forward_failures_total`, `shole_upstream_errors_total`, `shole_upstream_transport_failures_total{upstream}`, `shole_cache_misses_total`, `shole_cache_size`, `shole_cache_dropped_total`, `shole_blocklist_size`, `shole_blocklist_source_size`, `shole_blocklist_source_stale`, `shole_whitelist_size`, `shole_query_log_dropped_total` |
+| `GET`  | `/metrics` | Prometheus text exposition of the `shole_*` series: query, cache, blocklist, upstream-failure, and Go-runtime metrics. See the [Metrics reference](docs/DESIGN.md#metrics-reference) for the full list. |
 | `GET`  | `/debug/pprof/*` | Standard Go pprof endpoints. Registered **only** when `enable_pprof: true` is set in config (or `S_HOLE_ENABLE_PPROF=1`). Pair with `api_listen: "127.0.0.1:8080"`. |
 
 Runtime whitelist changes take effect immediately but do not persist across restarts. To make a whitelist entry permanent, add it to `config.yaml`.

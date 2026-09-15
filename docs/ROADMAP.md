@@ -99,7 +99,7 @@ item stays open until a Raspberry Pi is available.
 
 ## 2. Tag `v0.1.0` + release workflow (done, CL 43 and CL 44)
 
-CI already cross-compiled all four targets and threw the binaries away.
+CI already cross-compiled every release target and threw the binaries away.
 **Shipped in CL 43:** `.github/workflows/release.yml` triggers on a `v*`
 tag push and builds the matrix with the version-injecting ldflags (the
 tag name is the version, so no `dev` placeholder). It attaches a

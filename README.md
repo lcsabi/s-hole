@@ -559,12 +559,12 @@ $env:GOOS=""; $env:GOARCH=""
 
 **In the code:**
 
-- **A lock-free stats hot path with a proven concurrency invariant.** Per-query counters update without locks; `Snapshot` must read every counter a query touches *after* `total` *before* it reads `total`, or a dashboard ratio can momentarily exceed 100%. I hit that exact race on three different counters, then encoded a standing load-order invariant plus a race-tested regression per counter so a fourth can't slip in. ([`internal/stats`](internal/stats))
+- **A lock-free stats hot path with a proven concurrency invariant.** Per-query counters update without locks; `Snapshot` must read every counter a query touches *after* `total` *before* it reads `total`, or a dashboard ratio can momentarily exceed 100%. I hit that exact race on multiple counters, then encoded a standing load-order invariant plus a race-tested regression per counter so the next one can't slip in. ([`internal/stats`](internal/stats))
 - **Suffix-match subdomain blocking** that walks a name's parent labels in `O(labels)` with zero per-query allocation, closing the subdomain-rotation hole that exact-match blockers leave open. ([`blocklist.Store.IsBlocked`](internal/blocklist/store.go))
 - **Resilient upstream forwarding.** UDP with automatic TCP fallback on truncation, plus a health tracker that skips recently-failed resolvers and retries them only if every other upstream also failed.
 - **RFC 6303 local PTR answering.** Private-range reverse queries are answered locally instead of leaking internal LAN addressing to the upstream resolver.
 - **Deliberate non-decisions.** Case-insensitive caching was rejected because it would break dns-0x20 downstream resolvers; admin authentication was rejected in favour of a documented localhost-only scope. Knowing what *not* to build is recorded in [`docs/ROADMAP.md`](docs/ROADMAP.md).
-- **A tiny dependency graph and pure-Go SQLite.** No CGO, so cross-compiling for four targets stays a one-liner and the binary is fully static.
+- **A tiny dependency graph and pure-Go SQLite.** No CGO, so cross-compiling for every release target stays a one-liner and the binary is fully static.
 
 **In the process,** built with the discipline of a long-lived, multi-maintainer codebase rather than a one-shot script:
 
@@ -572,7 +572,7 @@ $env:GOOS=""; $env:GOARCH=""
 - **Every change is a small, self-contained change-list** with motivation, files touched, and testing notes ([`docs/cls/`](docs/cls)).
 - **A bug tracker with priorities and structured root-cause/fix records** ([`docs/BUGS.md`](docs/BUGS.md)), including entries deliberately marked *Won't Fix (by design)*.
 - **Documentation drift is treated as a bug.** Code and docs are updated in the same change.
-- **CI gate on every push**: `gofmt`, `go vet`, `golangci-lint`, race-enabled tests, `govulncheck`, and a four-target cross-compile. The core `internal/` packages meet 85–100% coverage targets (see the [targets under Development](#development)).
+- **CI gate on every push**: `gofmt`, `go vet`, `golangci-lint`, race-enabled tests, `govulncheck`, and a cross-compile of every release target. The core `internal/` packages meet the coverage targets (see the [targets under Development](#development)).
 
 ---
 
@@ -655,7 +655,7 @@ All implementation packages live under `internal/` so they cannot be imported by
 
 ### Dependencies
 
-The "afternoon's reading" claim extends to the dependency graph: four direct modules linked into the binary, chosen where hand-rolling would be a source of subtle bugs and skipped everywhere else. (A fifth direct module, `go.uber.org/goleak`, is test-only. It runs the suite under a goroutine-leak check and is never compiled into the shipped binary.)
+The "afternoon's reading" claim extends to the dependency graph: a small set of direct modules linked into the binary, listed below, chosen where hand-rolling would be a source of subtle bugs and skipped everywhere else. (`go.uber.org/goleak` is a test-only direct module. It runs the suite under a goroutine-leak check and is never compiled into the shipped binary.)
 
 | Module | Why it's a dependency |
 |---|---|
@@ -697,8 +697,8 @@ Coverage targets (checked in review, not a strict CI gate; run
 The `cmd/s-hole` bootstrap and the platform-specific `internal/service` glue sit
 below these targets: the uncovered region is the `main()` wiring and the
 Windows-only SCM and Event Log glue, which need a running binary or Windows and
-are exercised by manual smoke tests, not unit tests. Module-wide coverage tracks
-around 80 %.
+are exercised by manual smoke tests, not unit tests. Run `go test -cover ./...`
+for the current numbers.
 
 The binary reports its build identity at any time:
 

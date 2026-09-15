@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"runtime/metrics"
 	"strings"
 )
 
@@ -146,5 +147,70 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "# HELP shole_query_log_dropped_total Query log entries dropped because the writer queue was full.")
 		fmt.Fprintln(w, "# TYPE shole_query_log_dropped_total counter")
 		fmt.Fprintf(w, "shole_query_log_dropped_total %d\n", s.db.Dropped())
+	}
+
+	s.writeRuntimeGauges(w)
+}
+
+// runtime/metrics sample names for the Go runtime gauges. See writeRuntimeGauges
+// for the mapping to the shole_ gauge names.
+const (
+	metricGoroutines  = "/sched/goroutines:goroutines"
+	metricHeapObjects = "/memory/classes/heap/objects:bytes"
+	metricHeapUnused  = "/memory/classes/heap/unused:bytes"
+)
+
+// writeRuntimeGauges emits the Go runtime gauges (CL 78). They let an external
+// monitor see the process leaking before it falls over: s-hole spawns one
+// goroutine per query, so a shole_goroutines count that climbs and never settles
+// means a handler path is not returning (the goleak tests guard the same property
+// in CI). The gauges are read here, at scrape time, never on the query path.
+//
+// We read the sampled runtime/metrics API instead of runtime.ReadMemStats so a
+// scrape never triggers a stop-the-world pause: the runtime maintains these
+// values continuously and Read only copies them. The shole_ prefix keeps every
+// series under one namespace; the runtime/metrics source path for each gauge is:
+//
+//	shole_goroutines               /sched/goroutines:goroutines
+//	shole_memory_alloc_bytes       /memory/classes/heap/objects:bytes (== MemStats.HeapAlloc)
+//	shole_memory_heap_inuse_bytes  /memory/classes/heap/objects:bytes + /memory/classes/heap/unused:bytes
+//	                               (== MemStats.HeapInuse: in-use span bytes, i.e.
+//	                               allocated objects plus span fragmentation)
+//
+// The three samples are read in one Read call, never one per gauge, so a scrape
+// costs a single sampled read. A sample whose Kind is not KindUint64 (a name a
+// future Go release dropped) is skipped rather than emitted as a garbage value.
+func (s *Server) writeRuntimeGauges(w http.ResponseWriter) {
+	samples := []metrics.Sample{
+		{Name: metricGoroutines},
+		{Name: metricHeapObjects},
+		{Name: metricHeapUnused},
+	}
+	s.readRuntimeMetrics(samples)
+
+	vals := make(map[string]uint64, len(samples))
+	for _, sm := range samples {
+		if sm.Value.Kind() == metrics.KindUint64 {
+			vals[sm.Name] = sm.Value.Uint64()
+		}
+	}
+	_, haveGoroutines := vals[metricGoroutines]
+	_, haveObjects := vals[metricHeapObjects]
+	_, haveUnused := vals[metricHeapUnused]
+
+	if haveGoroutines {
+		fmt.Fprintln(w, "# HELP shole_goroutines Current number of goroutines.")
+		fmt.Fprintln(w, "# TYPE shole_goroutines gauge")
+		fmt.Fprintf(w, "shole_goroutines %d\n", vals[metricGoroutines])
+	}
+	if haveObjects {
+		fmt.Fprintln(w, "# HELP shole_memory_alloc_bytes Bytes of allocated heap objects (live and not-yet-freed).")
+		fmt.Fprintln(w, "# TYPE shole_memory_alloc_bytes gauge")
+		fmt.Fprintf(w, "shole_memory_alloc_bytes %d\n", vals[metricHeapObjects])
+	}
+	if haveObjects && haveUnused {
+		fmt.Fprintln(w, "# HELP shole_memory_heap_inuse_bytes Bytes in in-use heap spans (allocated objects plus span fragmentation).")
+		fmt.Fprintln(w, "# TYPE shole_memory_heap_inuse_bytes gauge")
+		fmt.Fprintf(w, "shole_memory_heap_inuse_bytes %d\n", vals[metricHeapObjects]+vals[metricHeapUnused])
 	}
 }

@@ -22,7 +22,7 @@
 //	POST   /api/reload           trigger blocklist refresh (single-flight)
 //	GET    /healthz              liveness probe (always 200 when running)
 //	GET    /readyz               readiness probe (200 once blocklist > 0)
-//	GET    /metrics              Prometheus text exposition (queries, blocked, local_ptr, cache, failures, blocklist)
+//	GET    /metrics              Prometheus text exposition (queries, blocked, local_ptr, cache, failures, blocklist, runtime gauges)
 //	GET    /debug/pprof/*        net/http/pprof handlers (/symbol also POST); opt-in via EnablePprof
 //	GET    /                     embedded SPA from internal/api/static/
 package api
@@ -36,6 +36,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime/metrics"
 	"sort"
 	"strconv"
 	"strings"
@@ -101,6 +102,13 @@ type Server struct {
 	// the metric off (the api package does not import dnsserver, so main bridges
 	// the two).
 	upstreamTransportFailures func() map[string]uint64
+	// readRuntimeMetrics reads the Go runtime gauges (shole_goroutines and the
+	// heap gauges) for /metrics. It defaults to runtime/metrics.Read in New;
+	// tests reassign it to a deterministic, call-counting fake so they can assert
+	// the exact gauge values and that handleMetrics reads once per scrape (never
+	// per gauge). Only tests write it, and the api package runs its tests
+	// sequentially, so the swap is race-free.
+	readRuntimeMetrics func([]metrics.Sample)
 }
 
 // New constructs a Server. db and dnsCache may be nil to disable the
@@ -108,7 +116,14 @@ type Server struct {
 // single-flight blocklist refresh closure owned by cmd/s-hole/main.go; see the
 // reloadFn field for the contract.
 func New(counter *stats.Counter, db *querylog.DBLogger, store *blocklist.Store, dnsCache CacheStatser, reloadFn func() bool) *Server {
-	return &Server{counter: counter, db: db, store: store, dnsCache: dnsCache, reloadFn: reloadFn}
+	return &Server{
+		counter:            counter,
+		db:                 db,
+		store:              store,
+		dnsCache:           dnsCache,
+		reloadFn:           reloadFn,
+		readRuntimeMetrics: metrics.Read,
+	}
 }
 
 // EnablePprof toggles whether the server registers the net/http/pprof

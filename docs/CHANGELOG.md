@@ -15,6 +15,12 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   changes between refreshes. (CL 71)
 
 ### Added
+- **Go runtime gauges on `/metrics`.** Three new gauges expose process health for
+  leak and heap-growth watching: `shole_goroutines` (the goroutine-leak signal,
+  since s-hole runs one goroutine per in-flight query), `shole_memory_alloc_bytes`,
+  and `shole_memory_heap_inuse_bytes`. They are read from the sampled
+  `runtime/metrics` API once per scrape, so a scrape adds no stop-the-world pause
+  and the query path is untouched. No new dependency and no config change. (CL 78)
 - **Failed-query visibility.** s-hole now records a per-query outcome and shows
   failures in three places: the query-volume graph gains two lines, unresolved
   (s-hole could not answer, so it returned SERVFAIL) and upstream error (a live

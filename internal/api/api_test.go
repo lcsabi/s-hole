@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"runtime/metrics"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1005,6 +1007,99 @@ func TestMetricsEndpoint_OmitsUpstreamTransportFailuresWhenUnset(t *testing.T) {
 	if strings.Contains(string(body), "shole_upstream_transport_failures_total") {
 		t.Errorf("upstream_transport_failures metric present without accessor:\n%s", body)
 	}
+}
+
+func TestMetricsEndpoint_IncludesRuntimeGauges(t *testing.T) {
+	// The Go runtime gauges (CL 78) are read once per scrape from runtime/metrics.
+	// metrics.Value has no test constructor, so the fake delegates to the real
+	// Read (giving genuine KindUint64 values) and counts calls. That lets the test
+	// assert the single-read guard and the emission logic against real data.
+	store := blocklist.NewStore()
+	s := New(stats.New(), nil, store, nil, func() bool { return true })
+	var reads int
+	s.readRuntimeMetrics = func(samples []metrics.Sample) {
+		reads++
+		metrics.Read(samples)
+	}
+	srv := httptest.NewServer(s.handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	want := []string{
+		"# TYPE shole_goroutines gauge",
+		"# TYPE shole_memory_alloc_bytes gauge",
+		"# TYPE shole_memory_heap_inuse_bytes gauge",
+	}
+	for _, w := range want {
+		if !strings.Contains(string(body), w) {
+			t.Errorf("metrics body missing %q\nfull body:\n%s", w, body)
+		}
+	}
+	if reads != 1 {
+		t.Errorf("readRuntimeMetrics called %d times, want exactly 1 per scrape", reads)
+	}
+
+	// Validate against the real values: at least one goroutine is running, and
+	// heap-inuse (objects + unused) is never below alloc (objects), which checks
+	// the two-class sum.
+	if g := parseMetricValue(t, string(body), "shole_goroutines"); g <= 0 {
+		t.Errorf("shole_goroutines = %d, want > 0", g)
+	}
+	alloc := parseMetricValue(t, string(body), "shole_memory_alloc_bytes")
+	inuse := parseMetricValue(t, string(body), "shole_memory_heap_inuse_bytes")
+	if inuse < alloc {
+		t.Errorf("shole_memory_heap_inuse_bytes (%d) < shole_memory_alloc_bytes (%d), want >=", inuse, alloc)
+	}
+}
+
+func TestMetricsEndpoint_OmitsRuntimeGaugesWhenUnavailable(t *testing.T) {
+	// A runtime/metrics name a future Go release drops comes back as KindBad. The
+	// fake leaves every sample unfilled (zero Value, KindBad), so the handler must
+	// emit none of the runtime gauges rather than a garbage value.
+	store := blocklist.NewStore()
+	s := New(stats.New(), nil, store, nil, func() bool { return true })
+	s.readRuntimeMetrics = func([]metrics.Sample) {} // fill nothing
+	srv := httptest.NewServer(s.handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	for _, name := range []string{"shole_goroutines", "shole_memory_alloc_bytes", "shole_memory_heap_inuse_bytes"} {
+		if strings.Contains(string(body), name) {
+			t.Errorf("runtime gauge %q present when its sample was KindBad:\n%s", name, body)
+		}
+	}
+}
+
+// parseMetricValue returns the integer value of a single (unlabeled) Prometheus
+// sample line "name <int>", failing the test if the metric is absent or the
+// value does not parse. It skips the "# HELP"/"# TYPE" lines, which do not start
+// with the bare metric name followed by a space.
+func parseMetricValue(t *testing.T, body, name string) int64 {
+	t.Helper()
+	for _, line := range strings.Split(body, "\n") {
+		rest, ok := strings.CutPrefix(line, name+" ")
+		if !ok {
+			continue
+		}
+		v, err := strconv.ParseInt(strings.TrimSpace(rest), 10, 64)
+		if err != nil {
+			t.Fatalf("parse %s value %q: %v", name, rest, err)
+		}
+		return v
+	}
+	t.Fatalf("metric %q not found in body:\n%s", name, body)
+	return 0
 }
 
 func TestStatsAndMetrics_IncludePerSourceHealth(t *testing.T) {

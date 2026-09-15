@@ -42,7 +42,7 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
 - **Dual query log.** A plain-text file for `grep` and `tail`, plus a SQLite database for historical queries.
 - **Admin web UI.** Live stats, top blocked domains, per-source blocklist health, recent query log, whitelist management, and a "why is this blocked?" domain check. Auto-refreshes every 3 seconds.
 - **REST API.** All UI data is available as JSON, ready for scripting and future integrations.
-- **Observability.** Serves Prometheus metrics at `/metrics` (query, cache, blocklist, upstream-failure, and Go-runtime health) and liveness and readiness probes at `/healthz` and `/readyz`, with no external metrics library.
+- **Observability.** Serves Prometheus metrics at `/metrics` (query, cache, blocklist, upstream-failure, and Go-runtime health) and liveness and readiness probes at `/healthz` and `/readyz`, with no external metrics library. Ready-made Grafana dashboard and Prometheus scrape/alert examples ship under `deploy/`.
 - **Configurable sinkhole mode.** Returns `0.0.0.0` (the default, a silent failure) or `NXDOMAIN`.
 - **Cross-platform.** A single binary for Windows, Linux x86-64, Linux arm64 (Pi 4/5), and Linux armv7 (Pi 2/3).
 - **Windows Service.** Installs as an auto-start system service with one command.

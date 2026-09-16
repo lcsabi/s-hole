@@ -1376,6 +1376,23 @@ slices and redundant parse strings this item removes. The target is to cut reloa
 churn from ~74 MB toward the ~23 MB retained floor at 319k domains, roughly a
 55-60% reduction, with the same proportional drop in the peak.
 
+### Observed in practice (2026-09-16)
+
+Manual reloads of a 325k-domain list on the CL 79 Grafana dashboard confirm the
+peak the baseline predicts. Each reload spikes `shole_memory_alloc_bytes` and
+`shole_memory_heap_inuse_bytes` to about twice the idle heap, because the old map
+and the freshly built map are both live until the atomic swap. After the swap,
+`shole_memory_alloc_bytes` (live objects) returns to its pre-reload baseline, so a
+reload leaks nothing. This matches the flat retained `HeapAlloc` in the table
+above. `shole_memory_heap_inuse_bytes` settles at a higher plateau than at startup
+and does not return to the startup value. The gap is heap-span fragmentation
+(`/memory/classes/heap/unused`): Go's non-moving GC does not compact live objects,
+and the scavenger returns only fully free spans, so the span pool grown for the
+peak is retained for reuse. The plateau is bounded (it does not climb across
+repeated reloads), so it is a runtime memory effect, not a leak. Streaming domains
+straight into the destination map (this item) removes the second live copy, so it
+shrinks both the spike and the retained span pool.
+
 Design decisions to settle in the CL:
 
 - **Parse seam.** `parseHostsFormat(r io.Reader) ([]string, error)` becomes an

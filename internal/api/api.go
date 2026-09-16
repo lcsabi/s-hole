@@ -353,9 +353,12 @@ type queryRow struct {
 // domain is a substring, client an exact match on the stored (masked) value,
 // blocked accepts "true" or "false", and outcome accepts "unresolved" or
 // "upstream-error" to narrow to that failure kind (any other value leaves the
-// status/outcome unfiltered). Every field is optional; an empty filter matches
-// every row. The dashboard status control sends either blocked or outcome, not
-// both, but the two are independent filters here.
+// status/outcome unfiltered). The upstream-error kind also accepts the
+// underscore spelling "upstream_error", which is the value each row reports in
+// its "outcome" field, so a caller can filter by the value it read back. Every
+// field is optional; an empty filter matches every row. The dashboard status
+// control sends either blocked or outcome, not both, but the two are
+// independent filters here.
 func parseQueryFilter(r *http.Request) querylog.QueryFilter {
 	q := r.URL.Query()
 	f := querylog.QueryFilter{
@@ -371,8 +374,13 @@ func parseQueryFilter(r *http.Request) querylog.QueryFilter {
 		f.Blocked = &b
 	}
 	switch q.Get("outcome") {
-	case "unresolved", "upstream-error":
-		f.Outcome = q.Get("outcome")
+	case "unresolved":
+		f.Outcome = "unresolved"
+	case "upstream-error", "upstream_error":
+		// The query token uses a hyphen; the row's "outcome" field uses an
+		// underscore. Accept both and normalize to the token Search expects,
+		// so a value read from a row filters instead of silently matching all.
+		f.Outcome = "upstream-error"
 	}
 	return f
 }

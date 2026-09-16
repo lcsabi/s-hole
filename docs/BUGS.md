@@ -1791,3 +1791,47 @@ tie, and neither path is on the DNS hot path (both run on the dashboard poll).
 Tests: `TestCounter_TopDomainsTieOrderStable` (ties ordered by name and identical
 across repeated snapshots) and `TestDBLogger_TopBlockedTieOrder` (equal-count
 blocked domains returned in domain order).
+
+## b/057 — api: /api/queries outcome filter rejects the spelling it reports
+
+**Priority:** P3
+**Component:** api
+**Status:** Fixed in CL 80
+**Filed:** 2026-09-16
+
+### Description
+
+`GET /api/queries` reports each row's outcome in an `outcome` field, where a
+relayed upstream failure reads as `upstream_error` (underscore). The `?outcome=`
+filter accepted only `upstream-error` (hyphen). A client that filtered by the
+value it read back from a row (`?outcome=upstream_error`) matched nothing in the
+switch, so the filter stayed empty and the endpoint returned every row, with no
+error. The single-word `unresolved` matched in both spellings, which hid the
+split.
+
+The dashboard was unaffected: it sends the hyphen token for filtering and reads
+the underscore token for the per-row badge, each self-consistent. The trap fell
+on a programmatic API consumer only.
+
+Found by a `/code-review` pass over the CL 70-79 range (standards axis).
+
+### Root Cause
+
+The concept carries two spellings that each stay consistent on their own side:
+the row label and the `Bucket` JSON tag use `upstream_error`, while the query
+token, `parseQueryFilter`, and `DBLogger.Search` use `upstream-error`. The two
+were never reconciled at the read boundary, and `parseQueryFilter` has no
+default case, so an unrecognized `outcome` value is silently ignored rather than
+rejected (the same lenient parse the `blocked` filter uses).
+
+### Fix
+
+`parseQueryFilter` (`internal/api/api.go`) now accepts `upstream_error` as well
+and normalizes it to the `upstream-error` token that `Search` expects, so a
+value read from a row filters correctly. The canonical query token stays the
+hyphen form, and an unknown value still leaves the filter unset (unchanged, and
+consistent with the `blocked` filter). The row label and stored JSON contract
+are untouched.
+
+Tests: `TestParseQueryFilter` gains an `outcome=upstream_error` case asserting
+the underscore form normalizes to `upstream-error`.

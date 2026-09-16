@@ -632,6 +632,9 @@ func TestParseQueryFilter(t *testing.T) {
 		{"blocked=garbage", "", "", nil, ""},
 		{"outcome=unresolved", "", "", nil, "unresolved"},
 		{"outcome=upstream-error", "", "", nil, "upstream-error"},
+		// The underscore spelling is what a row reports in its "outcome"
+		// field; a caller must be able to filter by the value it read back.
+		{"outcome=upstream_error", "", "", nil, "upstream-error"},
 		{"outcome=garbage", "", "", nil, ""},
 		{"domain=ex&client=1.2.3.4&blocked=true", "ex", "1.2.3.4", &tru, ""},
 	}

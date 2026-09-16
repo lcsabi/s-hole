@@ -379,6 +379,33 @@
       border-color: var(--accent);
     }
 
+    /* Export links in the Recent Queries header. They download the current
+       filter as CSV or JSON. Disabled (greyed, not clickable) when query
+       logging is off, so an empty download is not offered. */
+    .export-links {
+      display: inline-flex;
+      gap: 6px;
+    }
+
+    .export-link {
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 4px 9px;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    .export-link:hover {
+      border-color: var(--accent);
+    }
+
+    .export-link.disabled {
+      opacity: 0.45;
+      pointer-events: none;
+    }
+
     /* The active-filter row under the Recent Queries header. Tinted with the
        accent color (not red, which means "blocked" here) so an active filter
        reads as an intentional state, not an error. */
@@ -661,6 +688,10 @@
         <select id="qf-client" class="filter-select" title="Filter by client" hidden>
           <option value="">All clients</option>
         </select>
+        <span class="export-links">
+          <a id="export-csv" class="export-link" download>Export CSV</a>
+          <a id="export-json" class="export-link" download>Export JSON</a>
+        </span>
         <button type="button" class="collapse-btn" data-collapse="queries-table"
           aria-controls="queries-table" aria-expanded="true" title="Collapse"
           onclick="togglePanel('queries-table')">▾</button>
@@ -777,9 +808,44 @@
       return '/api/queries?' + p.toString();
     }
 
+    // Build the export URL for the current filter. It mirrors queriesURL's filter
+    // params but drops ?limit= (export streams the whole filtered log) and adds
+    // ?format=. So a filtered export is exactly the filtered view in bulk.
+    function exportURL(format) {
+      const p = new URLSearchParams();
+      if (queryFilter.domain) p.set('domain', queryFilter.domain);
+      if (queryFilter.client) p.set('client', queryFilter.client);
+      if (queryFilter.status === 'true' || queryFilter.status === 'false') p.set('blocked', queryFilter.status);
+      else if (queryFilter.status !== 'all') p.set('outcome', queryFilter.status);
+      p.set('format', format);
+      return '/api/queries/export?' + p.toString();
+    }
+
+    // Point the export links at the current filter, and grey them when query
+    // logging is off or none (nothing to export). The logging mode is only known
+    // once /api/history has answered; until then the links stay enabled rather
+    // than falsely greying a working export.
+    function updateExportControls() {
+      const off = historyLoggingKnown && (historyLogging === 'off' || historyLogging === 'none');
+      for (const format of ['csv', 'json']) {
+        const a = $('export-' + format);
+        if (!a) continue;
+        a.classList.toggle('disabled', off);
+        a.setAttribute('aria-disabled', off ? 'true' : 'false');
+        if (off) {
+          a.removeAttribute('href');
+          a.title = 'Query logging is disabled; nothing to export';
+        } else {
+          a.href = exportURL(format);
+          a.title = 'Download the current filter as ' + format.toUpperCase();
+        }
+      }
+    }
+
     // Show the active-filter row and describe the current filter in words. Kept
     // visible whenever a filter is set, so a restored filter is never a mystery.
     function renderFilterBar() {
+      updateExportControls();
       const active = queryFilterActive();
       $('qf-bar').hidden = !active;
       if (!active) return;
@@ -897,6 +963,9 @@
     // why the graph can differ from the stat cards,
     // which count every query from the in-memory counter regardless of logging.
     let historyLogging = 'off';
+    // False until the first /api/history response, so the export links do not
+    // grey themselves off the 'off' default before the real mode is known.
+    let historyLoggingKnown = false;
 
     // hexA turns a #rrggbb color (read from the theme CSS variables) into an
     // rgba() string, matching how the rest of the sheet writes translucent fills.
@@ -914,6 +983,8 @@
         const data = await fetch(`/api/history?window=${historyWindow}&bucket=1h`).then(r => r.json());
         historySeries = data.series || [];
         historyLogging = data.logging || 'off';
+        historyLoggingKnown = true;
+        updateExportControls();
         drawHistory();
       } catch (e) { console.error('history fetch failed:', e); }
     }

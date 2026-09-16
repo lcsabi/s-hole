@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -712,6 +713,274 @@ func TestQueriesEndpoint_Filtered(t *testing.T) {
 		if n := get(tc.query); n != tc.want {
 			t.Errorf("GET ?%s returned %d rows, want %d", tc.query, n, tc.want)
 		}
+	}
+}
+
+// exportTestDB seeds a real DBLogger with a fixed set of rows for the export
+// tests and returns a Server in front of it.
+func exportTestDB(t *testing.T) (*Server, *httptest.Server, *querylog.DBLogger) {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "q.db")
+	db, err := querylog.NewDBLogger(dbPath, "all", 50*time.Millisecond, 0)
+	if err != nil {
+		t.Fatalf("NewDBLogger: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	db.Log(querylog.Record{ClientIP: "192.168.1.42", Domain: "ads.example.com.", Blocked: true, Synthesized: true})
+	db.Log(querylog.Record{ClientIP: "192.168.1.42", Domain: "google.com."})
+	db.Log(querylog.Record{ClientIP: "10.0.0.9", Domain: "tracker.net.", Blocked: true, Synthesized: true})
+	db.Log(querylog.Record{ClientIP: "10.0.0.9", Domain: "dead.com.", Rcode: 2, Synthesized: true})
+	waitForRows(t, db, 4)
+
+	s := New(stats.New(), db, blocklist.NewStore(), nil, func() bool { return true })
+	srv := httptest.NewServer(s.handler())
+	t.Cleanup(srv.Close)
+	return s, srv, db
+}
+
+func TestQueriesExport_CSV(t *testing.T) {
+	s, srv, _ := exportTestDB(t)
+	s.SetClientNames(map[string]string{"192.168.1.42": "kids-ipad"})
+
+	resp, err := http.Get(srv.URL + "/api/queries/export")
+	if err != nil {
+		t.Fatalf("GET export: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if ct := resp.Header.Get("Content-Type"); ct != "text/csv; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/csv; charset=utf-8", ct)
+	}
+	if cd := resp.Header.Get("Content-Disposition"); !strings.Contains(cd, "attachment; filename=") || !strings.HasSuffix(cd, `.csv"`) {
+		t.Errorf("Content-Disposition = %q, want a .csv attachment", cd)
+	}
+	if p := resp.Header.Get("X-Shole-Query-Privacy"); p != "raw" {
+		t.Errorf("X-Shole-Query-Privacy = %q, want raw", p)
+	}
+	if l := resp.Header.Get("X-Shole-Query-Logging"); l != "all" {
+		t.Errorf("X-Shole-Query-Logging = %q, want all", l)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	records, err := csv.NewReader(bytes.NewReader(body)).ReadAll()
+	if err != nil {
+		t.Fatalf("parse CSV: %v", err)
+	}
+	if len(records) != 5 { // header + 4 rows
+		t.Fatalf("CSV has %d records, want 5 (header + 4)", len(records))
+	}
+	wantHeader := []string{"ts", "client_ip", "label", "domain", "blocked", "outcome", "rcode", "synthesized"}
+	for i, h := range wantHeader {
+		if records[0][i] != h {
+			t.Errorf("header[%d] = %q, want %q", i, records[0][i], h)
+		}
+	}
+	// Newest-first: the last-logged row (dead.com, unresolved) is first.
+	if records[1][3] != "dead.com." || records[1][5] != "unresolved" {
+		t.Errorf("first data row = %v, want dead.com./unresolved", records[1])
+	}
+	// The label column resolves for a named client and is empty otherwise.
+	var sawLabel bool
+	for _, r := range records[1:] {
+		if r[1] == "192.168.1.42" && r[2] != "kids-ipad" {
+			t.Errorf("row for 192.168.1.42 has label %q, want kids-ipad", r[2])
+		}
+		if r[2] == "kids-ipad" {
+			sawLabel = true
+		}
+	}
+	if !sawLabel {
+		t.Error("no row carried the resolved client label")
+	}
+}
+
+func TestQueriesExport_CSVFormulaInjection(t *testing.T) {
+	// A client can query a name that starts with a spreadsheet formula trigger.
+	// The exporter must neutralize it so opening the CSV cannot execute a formula.
+	dbPath := filepath.Join(t.TempDir(), "q.db")
+	db, err := querylog.NewDBLogger(dbPath, "all", 50*time.Millisecond, 0)
+	if err != nil {
+		t.Fatalf("NewDBLogger: %v", err)
+	}
+	defer db.Close()
+	db.Log(querylog.Record{ClientIP: "1.1.1.1", Domain: "=cmd|'/c calc'!A1."})
+	waitForRows(t, db, 1)
+
+	s := New(stats.New(), db, blocklist.NewStore(), nil, func() bool { return true })
+	srv := httptest.NewServer(s.handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/api/queries/export")
+	if err != nil {
+		t.Fatalf("GET export: %v", err)
+	}
+	defer resp.Body.Close()
+	records, err := csv.NewReader(resp.Body).ReadAll()
+	if err != nil {
+		t.Fatalf("parse CSV: %v", err)
+	}
+	domain := records[1][3]
+	if !strings.HasPrefix(domain, "'") {
+		t.Errorf("domain field %q was not neutralized (want a leading quote)", domain)
+	}
+}
+
+func TestQueriesExport_JSON(t *testing.T) {
+	_, srv, _ := exportTestDB(t)
+
+	resp, err := http.Get(srv.URL + "/api/queries/export?format=json")
+	if err != nil {
+		t.Fatalf("GET export: %v", err)
+	}
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+
+	var env struct {
+		QueryPrivacy string `json:"query_privacy"`
+		ExportedAt   string `json:"exported_at"`
+		Logging      string `json:"logging"`
+		Filter       struct {
+			Domain string `json:"domain"`
+		} `json:"filter"`
+		Queries []struct {
+			Domain  string `json:"domain"`
+			Outcome string `json:"outcome"`
+		} `json:"queries"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	if env.QueryPrivacy != "raw" || env.Logging != "all" {
+		t.Errorf("envelope privacy=%q logging=%q, want raw/all", env.QueryPrivacy, env.Logging)
+	}
+	if env.ExportedAt == "" {
+		t.Error("envelope exported_at is empty")
+	}
+	if len(env.Queries) != 4 {
+		t.Fatalf("envelope has %d queries, want 4", len(env.Queries))
+	}
+	if env.Queries[0].Domain != "dead.com." || env.Queries[0].Outcome != "unresolved" {
+		t.Errorf("first query = %+v, want dead.com./unresolved", env.Queries[0])
+	}
+}
+
+func TestQueriesExport_FilterReuseAndEnvelopeEcho(t *testing.T) {
+	_, srv, _ := exportTestDB(t)
+
+	// The filter narrows the export exactly as it narrows /api/queries, and the
+	// JSON envelope echoes the applied filter.
+	resp, err := http.Get(srv.URL + "/api/queries/export?format=json&blocked=true")
+	if err != nil {
+		t.Fatalf("GET export: %v", err)
+	}
+	defer resp.Body.Close()
+	var env struct {
+		Filter struct {
+			Blocked *bool `json:"blocked"`
+		} `json:"filter"`
+		Queries []json.RawMessage `json:"queries"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(env.Queries) != 2 {
+		t.Errorf("blocked=true export returned %d rows, want 2", len(env.Queries))
+	}
+	if env.Filter.Blocked == nil || *env.Filter.Blocked != true {
+		t.Errorf("envelope filter.blocked = %v, want true", env.Filter.Blocked)
+	}
+}
+
+func TestQueriesExport_BadFormat(t *testing.T) {
+	_, srv, _ := exportTestDB(t)
+	resp, err := http.Get(srv.URL + "/api/queries/export?format=xml")
+	if err != nil {
+		t.Fatalf("GET export: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for an unknown format", resp.StatusCode)
+	}
+}
+
+func TestQueriesExport_DBDisabled(t *testing.T) {
+	// With query logging off (db == nil) the export degrades to a valid empty
+	// file, not an error, matching /api/queries.
+	_, srv := newTestServer(t, nil)
+
+	// CSV: header row only.
+	resp, err := http.Get(srv.URL + "/api/queries/export")
+	if err != nil {
+		t.Fatalf("GET csv export: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("csv status = %d, want 200", resp.StatusCode)
+	}
+	records, err := csv.NewReader(resp.Body).ReadAll()
+	if err != nil {
+		t.Fatalf("parse CSV: %v", err)
+	}
+	if len(records) != 1 {
+		t.Errorf("db-off CSV has %d records, want 1 (header only)", len(records))
+	}
+	if l := resp.Header.Get("X-Shole-Query-Logging"); l != "off" {
+		t.Errorf("X-Shole-Query-Logging = %q, want off", l)
+	}
+
+	// JSON: a valid envelope with an empty queries array.
+	resp2, err := http.Get(srv.URL + "/api/queries/export?format=json")
+	if err != nil {
+		t.Fatalf("GET json export: %v", err)
+	}
+	defer resp2.Body.Close()
+	var env struct {
+		Logging string            `json:"logging"`
+		Queries []json.RawMessage `json:"queries"`
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if env.Logging != "off" || len(env.Queries) != 0 {
+		t.Errorf("db-off JSON: logging=%q queries=%d, want off/0", env.Logging, len(env.Queries))
+	}
+}
+
+func TestQueriesExport_PrivacyEchoedInFilename(t *testing.T) {
+	s, srv, _ := exportTestDB(t)
+	s.SetQueryPrivacy("subnet")
+	resp, err := http.Get(srv.URL + "/api/queries/export")
+	if err != nil {
+		t.Fatalf("GET export: %v", err)
+	}
+	defer resp.Body.Close()
+	if p := resp.Header.Get("X-Shole-Query-Privacy"); p != "subnet" {
+		t.Errorf("X-Shole-Query-Privacy = %q, want subnet", p)
+	}
+	if cd := resp.Header.Get("Content-Disposition"); !strings.Contains(cd, "subnet") {
+		t.Errorf("Content-Disposition = %q, want the privacy mode in the filename", cd)
+	}
+}
+
+func TestQueriesExport_ConcurrencyGuard(t *testing.T) {
+	// Past maxConcurrentExports in-flight streams the endpoint returns 429 rather
+	// than queueing, so parallel scans cannot pin the single query-log connection.
+	s, _ := newTestServer(t, nil)
+	// Fill the semaphore so the next call is refused.
+	for i := 0; i < maxConcurrentExports; i++ {
+		s.exportSem <- struct{}{}
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/queries/export", nil)
+	s.handleQueriesExport(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("status = %d, want 429 when the export semaphore is full", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Error("429 response missing Retry-After header")
 	}
 }
 

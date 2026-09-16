@@ -1,0 +1,69 @@
+# Example Prometheus alert rules for s-hole. Load them with the rule_files entry
+# in prometheus.yml. The thresholds are starting points. Tune them for your query
+# volume and your upstreams.
+
+groups:
+  - name: s-hole
+    rules:
+      - alert: SHoleDown
+        expr: up{job="s-hole"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "s-hole is not responding to scrapes"
+          description: "Prometheus cannot scrape s-hole (job s-hole) for 2 minutes. The resolver or its admin listener may be down."
+
+      - alert: BlocklistEmpty
+        expr: shole_blocklist_size == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "s-hole block set is empty"
+          description: "shole_blocklist_size has been 0 for 5 minutes. No source loaded, so s-hole is filtering nothing."
+
+      - alert: BlocklistSourceStale
+        expr: shole_blocklist_source_stale == 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A blocklist source is serving stale data"
+          description: "Source {{ $labels.url }} has served stale or no data for 15 minutes. A fetch failed and s-hole fell back to its on-disk cache, or the source never loaded."
+
+      - alert: HighQueryLogDropRate
+        expr: rate(shole_query_log_dropped_total[5m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "s-hole is dropping query-log rows"
+          description: "The query-log writer queue is full. db_flush_interval may be too long for the query volume, or the database is too slow to drain the queue."
+
+      - alert: HighForwardFailureRate
+        expr: rate(shole_forward_failures_total[5m]) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "s-hole cannot resolve many queries"
+          description: "s-hole is synthesizing SERVFAIL for more than 0.2 queries/s over 5 minutes. Every upstream is failing to answer. Check upstream reachability and the upstreams config."
+
+      - alert: UpstreamTransportFailing
+        expr: rate(shole_upstream_transport_failures_total[5m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "An upstream resolver is failing at the transport level"
+          description: "Upstream {{ $labels.upstream }} has non-zero transport failures (timeouts or refused connections) over 10 minutes. It may be unreachable or rate-limiting."
+
+      - alert: GoroutineLeak
+        expr: shole_goroutines - (shole_goroutines offset 1h) > 100
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "s-hole goroutine count is growing"
+          description: "shole_goroutines has grown by more than 100 over the last hour and stayed high for 30 minutes. s-hole runs one goroutine per in-flight query, so a count that climbs and never settles points to a handler path that is not returning."

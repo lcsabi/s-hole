@@ -379,3 +379,31 @@ func TestUpstreamTracker_SuccessClearsCooldown(t *testing.T) {
 		t.Error("recordSuccess did not clear the cooldown")
 	}
 }
+
+// TransportFailureCounts feeds the shole_upstream_transport_failures_total
+// metric, so the count must be cumulative and a later success must not reset
+// it (recordSuccess clears only the cooldown). Pin both, since a refactor of
+// recordSuccess/recordFailure could break the no-reset property with the rest
+// of CI still green.
+func TestUpstreamTracker_TransportFailureCountsAccumulate(t *testing.T) {
+	tr := newUpstreamTracker()
+	now := time.Now()
+
+	tr.recordFailure("up:53", now)
+	tr.recordFailure("up:53", now)
+	if got := tr.TransportFailureCounts()["up:53"]; got != 2 {
+		t.Fatalf("after two failures, count = %d, want 2", got)
+	}
+
+	tr.recordSuccess("up:53")
+	if got := tr.TransportFailureCounts()["up:53"]; got != 2 {
+		t.Errorf("recordSuccess reset the cumulative count to %d, want 2", got)
+	}
+
+	// A second upstream is counted independently.
+	tr.recordFailure("other:53", now)
+	counts := tr.TransportFailureCounts()
+	if counts["up:53"] != 2 || counts["other:53"] != 1 {
+		t.Errorf("per-upstream counts = %v, want up:53=2 other:53=1", counts)
+	}
+}

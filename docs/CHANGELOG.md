@@ -9,6 +9,10 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 ## [Unreleased]
 
 ### Fixed
+- **`GET /api/queries?outcome=` now accepts the same spelling it reports.** Each
+  row reports its outcome as `upstream_error`, but the filter accepted only
+  `upstream-error`, so filtering by the value read back from a row silently
+  returned every row. The filter now accepts both spellings. (CL 80, b/057)
 - **The "Top Blocked Domains" and "Top Clients" lists no longer reorder
   equal-count entries on every refresh.** Domains with the same block count now
   keep a fixed order (by name). As a result, the "Since start" list no longer

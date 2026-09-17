@@ -48,6 +48,8 @@ rails.
 | 32 | Streaming byte-parse: insert blocklist domains directly into the block set | Medium | not started |
 | 33 | Cache packed wire bytes: drop the per-hit `dns.Msg` copy | Medium | not started |
 | 34 | General admin-API rate limiting (defense-in-depth) | Low | not started |
+| 35 | DNSSEC validation of upstream answers | Medium | not started |
+| 36 | Serve DNS over TLS / HTTPS to LAN clients (DoT/DoH server) | Medium | not started |
 
 Items 19-26 came out of a 2026-08-24 feature-ideas session. Items 21-24 are a
 dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
@@ -75,6 +77,11 @@ complete surface, which closed the group.
 Related: #24 (export) landed (CL 81). It reads the log schema, so it shipped after
 #29 and #31 and exports the outcome columns from the start. #28 pairs with #31
 (the same silent-upstream-misconfig class, from the config side).
+
+Items 35-36 came out of a 2026-09-18 portfolio-planning session. They are
+independent of each other. #36 (encrypted serving) shares no code with #5 (DoH
+upstream): #5 is the forwarding side (s-hole as a DoH client), #36 is the serving
+side (s-hole as a DoT/DoH server).
 
 ## 1. Deploy to real hardware
 
@@ -1526,6 +1533,122 @@ Design points to settle if picked up:
 Weigh it only for deployments that expose `api_listen` beyond localhost. This is
 **not** auth, which stays a settled non-goal; it is rate limiting as
 defense-in-depth. Rated Low while the default bind stays localhost.
+
+## 35. DNSSEC validation of upstream answers
+
+s-hole forwards every upstream answer verbatim and trusts it. It sets no
+validation policy and reads no authentication state, so a forged or tampered
+answer on the path to the upstream reaches the LAN as genuine. A validating
+resolver checks the DNSSEC chain (DS to DNSKEY to RRSIG over the answer RRset) and
+refuses an answer that fails, returning SERVFAIL in place of a lie.
+
+Scope the value honestly. Most home upstreams (1.1.1.1, 8.8.8.8, Quad9) already
+validate, and once #5 (DoH upstream) or a DoT client encrypts the upstream hop,
+tampering on that hop is already hard. So s-hole's own validation is defense
+against a lying or compromised upstream, and against plain-UDP interception, not a
+universal win. It is the change that lets s-hole stop trusting the upstream.
+
+There are two levels, smallest first:
+
+- **AD-bit visibility, with an optional `require_ad` policy.** The cheap cut. Set
+  the DO bit on the outgoing query (EDNS0), read the AD (Authenticated Data) bit
+  the validating upstream sets, and surface it (query log, `/api/check`, a
+  metric). With a `require_ad` config flag, synthesize SERVFAIL for an answer that
+  arrives without AD when it should be signed. This still trusts the upstream's
+  validation, but it makes the result visible and enforceable. It needs no crypto
+  and no dependency.
+- **Local validation (full DNSSEC).** s-hole builds and checks the chain itself,
+  so it trusts no upstream. This is the real depth. It needs RRSIG verification
+  (RSA, ECDSA, Ed25519), DNSKEY-to-DS chaining from the root trust anchor, and
+  NSEC/NSEC3 for authenticated denial of existence. miekg/dns exposes the record
+  types and a signature-verify helper (`RRSIG.Verify`), so standard-library crypto
+  may be enough. The trust-anchor handling, the chain walk, and NSEC3 are a lot of
+  code and a real audit surface.
+
+Design decisions to settle in the CL:
+
+- **Ship AD-visibility first, or go straight to local validation.** The AD cut
+  delivers value in a small CL and builds the metric and log surface that local
+  validation reuses. Recommend splitting the two.
+- **Trust anchor.** Where the root KSK comes from and how it updates: a pinned
+  anchor refreshed on release (simple and auditable), or RFC 5011 automated
+  rollover (correct long-term, more machinery). Start pinned.
+- **Failure mode.** A validation failure returns SERVFAIL, never a sinkhole
+  answer, so a broken chain stays distinct from a blocked domain. Record how it
+  counts in stats (a new outcome next to the #31 unresolved and upstream-error
+  split) and whether it gets its own metric (`shole_dnssec_failures_total`).
+- **Cache interaction.** A validated positive answer caches as it does today. A
+  validation failure must not cache as a normal answer. Decide whether the cache
+  stores the validated state with the entry, so a later cache hit does not imply a
+  check it never ran.
+- **Dependency stance.** If local validation needs a DNSSEC or crypto dependency
+  beyond miekg/dns and the standard library, weigh it against the
+  dependency-minimalism identity in the CL, and prefer the `crypto/*` path.
+- **Hot-path cost.** Signature verification is real CPU per answer. It runs on the
+  forward path (a cache miss), which the upstream round-trip already dominates, so
+  the marginal cost is bounded. Add a benchmark companion so the miss path cannot
+  regress unseen.
+
+Rated Medium: a security and trust win whose reach is bounded by upstreams that
+already validate. The AD-visibility cut is a modest CL; full local validation is a
+large one and the stronger portfolio signal. It changes no filtering behavior.
+
+## 36. Serve DNS over TLS / HTTPS to LAN clients (DoT/DoH server)
+
+s-hole listens on plain UDP and TCP port 53 only. A client that wants an encrypted
+channel to s-hole cannot get one. This blocks one common, concrete case: Android
+"Private DNS" mode requires DoT and refuses a plain resolver, so an Android device
+with Private DNS on cannot use s-hole at all today. A DoT listener (and an optional
+DoH endpoint) lets these clients reach s-hole over TLS.
+
+This is the serving side, and it is distinct from #5 (DoH upstream), which is the
+forwarding side. The two share no code: #5 makes s-hole a DoH client to its
+upstream; this makes s-hole a DoT/DoH server to LAN clients. Either can land
+without the other.
+
+The listeners slot in beside the existing ones and reuse the same handler:
+
+- **DoT (RFC 7858):** a TLS listener on port 853 that wraps the same
+  DNS-over-TCP framing s-hole already serves. miekg/dns runs a TLS server
+  (`dns.Server` with `Net: "tcp-tls"` and a `*tls.Config`), so the handler does
+  not change. The work is the listener, the TLS config, and certificate loading.
+- **DoH (RFC 8484):** an HTTP endpoint (`/dns-query`) that reads the wire-format
+  query from the POST body or the `dns` GET parameter, calls the same handler, and
+  writes the wire-format response. It reuses `net/http`, already in the graph.
+
+Design decisions to settle in the CL:
+
+- **Certificate management.** DoT and DoH both need a TLS certificate, and on a LAN
+  this is the hard part. A public CA cannot issue for a private name or IP, so the
+  options are a self-signed certificate the operator installs on clients, or a
+  certificate the operator supplies (`tls_cert` and `tls_key` config paths). No
+  ACME automation: it needs a public name and reachability, against the LAN scope.
+  Prefer operator-supplied paths, and fail with a clear message when a listener is
+  enabled but the paths are missing.
+- **Opt-in, off by default.** Each encrypted listener is off unless configured (a
+  `dot_listen` or `doh_listen` address, empty by default), so the conservative
+  default surface does not change and a plain install needs no certificate.
+- **Ports and privileges.** Port 853 is privileged like 53, so it reuses the
+  `CAP_NET_BIND_SERVICE` setup the deploy already handles. Keep the DoH endpoint
+  off the unauthenticated admin server, so a DoH listener does not widen the admin
+  surface.
+- **Reuse the handler and its invariants.** The encrypted paths call the same
+  `ServeDNS`, so the blocklist, cache, stats, query log, and the CL 72 masking
+  choke point apply unchanged. Confirm `clientAddr` reads the right source address
+  for a TLS or HTTP connection, and decide how, or whether, to trust a
+  forwarded-for header for DoH behind a proxy.
+- **Timeouts and connection limits.** The DoH endpoint reuses the slowloris
+  timeouts and the body cap. The DoT listener needs an idle timeout and a bounded
+  connection count, so held-open TLS connections cannot exhaust descriptors. This
+  connection cap is the natural shed point for the overload concern raised in the
+  2026-09-18 session.
+- **Metrics.** Count queries per transport (plain, DoT, DoH) so `/metrics` shows
+  the split.
+
+Rated Medium: a user-visible capability that lets encrypted-DNS clients (notably
+Android Private DNS) use s-hole at all, on a trusted LAN where the encryption is
+defense-in-depth. It changes no filtering behavior. The certificate story is the
+real cost, not the protocol code.
 
 ## Pending decisions
 

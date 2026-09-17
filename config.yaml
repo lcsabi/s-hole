@@ -3,6 +3,10 @@
 # Use "0.0.0.0:53" for IPv4 only, or a specific address to bind one interface.
 listen: ":53"
 
+# Upstream resolvers, tried in order. Each entry must be host:port; a bare
+# address such as "1.1.1.1" (no ":53") is dropped with a warning at startup.
+# If every entry is malformed, startup fails (nothing could forward). A single
+# upstream is valid but logs a note, because it leaves no fallback if it fails.
 upstreams:
   - "1.1.1.1:53"
   - "8.8.8.8:53"

@@ -87,6 +87,12 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   the browser. (CL 70)
 
 ### Changed
+- **Upstreams are validated at startup.** Each `upstreams` entry must be
+  `host:port`. A malformed entry (for example a bare `1.1.1.1` with no `:53`) is
+  dropped with a warning, a config where every entry is malformed now fails to
+  start (and fails `-check-config`) instead of returning SERVFAIL per query, and
+  a single configured upstream logs a note that there is no forwarding fallback.
+  (CL 82)
 - **Building from source now needs Go 1.26 or later** (was 1.25). The
   `golang.org/x/sys` 0.48.0 dependency requires it. This affects source builds
   only; the release binaries and the Docker image are unchanged. (CL 75)

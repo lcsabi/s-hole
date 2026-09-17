@@ -153,6 +153,16 @@ func Load(path string) (*Config, error) {
 	for _, k := range badKeys {
 		logger.Warn("ignoring client_names entry with invalid key", "key", k)
 	}
+	// Drop upstreams that are not host:port with a WARN, so a fat-finger such
+	// as a bare "1.1.1.1" (no ":53") does not become a failed dial on every
+	// query. applyDefaults already ran, so a genuinely absent list holds the
+	// two valid defaults here; an empty list after this filter means every
+	// configured upstream was malformed, which Validate rejects as fatal.
+	var droppedUp []string
+	cfg.Upstreams, droppedUp = filterUpstreams(cfg.Upstreams)
+	for _, u := range droppedUp {
+		logger.Warn("ignoring malformed upstream (want host:port, e.g. 1.1.1.1:53)", "upstream", u)
+	}
 	return cfg, nil
 }
 
@@ -198,6 +208,28 @@ func filterWhitelist(entries []string) (valid, dropped []string) {
 		} else {
 			dropped = append(dropped, d)
 		}
+	}
+	return valid, dropped
+}
+
+// filterUpstreams splits upstreams into those that have host:port shape and
+// those that do not, preserving order. The gate is net.SplitHostPort with a
+// non-empty host and port, so a bare "1.1.1.1" (no port), ":53" (no host), and
+// "1.1.1.1:" (no port) are all rejected. It is a shape check, not a
+// reachability check: a well-formed but dead or typo'd address stays a runtime
+// concern that the upstream cooldown tracker already handles. It resolves no
+// name and dials nothing, so it adds no network call. Load drops the invalid
+// entries (with a WARN) instead of forwarding to them, so one bad address does
+// not add a failed dial per query; if every entry is dropped, Validate turns
+// the now-empty list into a fatal startup error. This mirrors filterWhitelist.
+func filterUpstreams(upstreams []string) (valid, dropped []string) {
+	for _, u := range upstreams {
+		host, port, err := net.SplitHostPort(u)
+		if err != nil || host == "" || port == "" {
+			dropped = append(dropped, u)
+			continue
+		}
+		valid = append(valid, u)
 	}
 	return valid, dropped
 }
@@ -348,7 +380,14 @@ func (c *Config) applyDefaults() {
 	}
 }
 
-// Validate checks enumerated fields and returns an error on invalid values.
+// Validate checks enumerated fields and the upstream list, and returns an
+// error on invalid values. Load has already dropped malformed upstreams (with
+// a WARN), so an empty list here means every configured upstream was malformed;
+// that is fatal, because a config that cannot forward at all should fail
+// -check-config and startup the way a bad block_mode does. A single valid
+// upstream is allowed but logs an INFO note, since it leaves no forwarding
+// fallback (a deliberate single local resolver is a valid setup, so the note
+// is informational, never fatal).
 func (c *Config) Validate() error {
 	switch c.BlockMode {
 	case "zero", "nxdomain":
@@ -364,6 +403,12 @@ func (c *Config) Validate() error {
 	case "raw", "drop", "subnet":
 	default:
 		return fmt.Errorf("query_privacy %q: must be \"raw\", \"drop\", or \"subnet\"", c.QueryPrivacy)
+	}
+	switch len(c.Upstreams) {
+	case 0:
+		return errors.New("no usable upstream: every configured upstream was malformed (want host:port, e.g. 1.1.1.1:53)")
+	case 1:
+		logger.Info("single upstream configured; no forwarding fallback if it fails", "upstream", c.Upstreams[0])
 	}
 	return nil
 }
@@ -434,8 +479,9 @@ func (c *Config) parsedDurations() (refresh, stats, dbFlush time.Duration, err e
 	return refresh, stats, dbFlush, nil
 }
 
-// LoadAndValidate loads the config at path, validates its enumerated fields,
-// and parses the three duration fields, returning the parsed durations. It is
+// LoadAndValidate loads the config at path, validates its enumerated fields
+// and upstream list, and parses the three duration fields, returning the parsed
+// durations. It is
 // the single startup sequence main runs, so a `-check-config` dry-run and the
 // running service accept and reject exactly the same configs; there is no
 // second copy of the sequence to drift.

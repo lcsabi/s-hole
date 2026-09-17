@@ -19,6 +19,15 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   changes between refreshes. (CL 71)
 
 ### Added
+- **Query-log export.** `GET /api/queries/export` streams the query log for
+  download in CSV (default) or JSON (`?format=json`). It reuses the
+  `/api/queries` filters, so a filtered export is the filtered view in bulk, and
+  it is uncapped unless `?limit=N` is set. The Recent Queries panel gained Export
+  CSV and Export JSON links that download the current filter; they grey out when
+  query logging is off or set to `none`. The active `query_privacy` mode rides on
+  a response header and a JSON envelope field. CSV fields are escaped against
+  spreadsheet formula injection. Concurrent exports are bounded, returning 429
+  past the limit. No new dependency. (CL 81, ROADMAP #24)
 - **Prometheus and Grafana examples.** The `deploy/` directory now ships
   `prometheus.yml` (an example scrape config), `prometheus-alerts.yml` (example
   alert rules for resolver down, empty block set, stale source, query-log drops,

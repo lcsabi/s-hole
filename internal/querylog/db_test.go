@@ -3,6 +3,7 @@ package querylog
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -205,6 +206,112 @@ func TestDBLogger_Search(t *testing.T) {
 	}
 	if len(recent) != len(all) {
 		t.Errorf("Recent returned %d rows, Search{} returned %d; want equal", len(recent), len(all))
+	}
+}
+
+func TestDBLogger_Export(t *testing.T) {
+	// Export streams the same rows Search returns (it shares the where() builder),
+	// newest-first, but uncapped by default and via a per-row callback. Seed rows
+	// directly for determinism, the same approach as Search/History.
+	db, _ := newDB(t, "all")
+	defer db.Close()
+
+	seed := func(client, domain string, blocked int) {
+		t.Helper()
+		if _, err := db.db.Exec(
+			"INSERT INTO queries(ts,client_ip,domain,blocked) VALUES(?,?,?,?)",
+			time.Now().Format(time.RFC3339), client, domain, blocked); err != nil {
+			t.Fatalf("seed insert: %v", err)
+		}
+	}
+	seed("1.1.1.1", "ads.example.com.", 1)
+	seed("2.2.2.2", "google.com.", 0)
+	seed("2.2.2.2", "tracker.net.", 1)
+	seed("3.3.3.3", "photos.example.com.", 0)
+
+	ctx := context.Background()
+	collect := func(f QueryFilter, n int) []QueryRow {
+		t.Helper()
+		var got []QueryRow
+		if err := db.Export(ctx, f, n, func(r QueryRow) error {
+			got = append(got, r)
+			return nil
+		}); err != nil {
+			t.Fatalf("Export: %v", err)
+		}
+		return got
+	}
+
+	// Uncapped export returns every row, and its filter matches Search.
+	all := collect(QueryFilter{}, 0)
+	if len(all) != 4 {
+		t.Fatalf("Export{} returned %d rows, want 4", len(all))
+	}
+	search, err := db.Search(ctx, QueryFilter{}, 100)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	for i := range all {
+		if all[i] != search[i] {
+			t.Errorf("row %d: Export = %+v, Search = %+v; want identical order and values", i, all[i], search[i])
+		}
+	}
+
+	// A filter narrows the export the same way it narrows Search.
+	if got := collect(QueryFilter{Domain: "example"}, 0); len(got) != 2 {
+		t.Errorf("Export(domain=example) returned %d rows, want 2", len(got))
+	}
+	tru := true
+	if got := collect(QueryFilter{Blocked: &tru}, 0); len(got) != 2 {
+		t.Errorf("Export(blocked=true) returned %d rows, want 2", len(got))
+	}
+
+	// n > 0 bounds the stream to the newest n rows.
+	if got := collect(QueryFilter{}, 2); len(got) != 2 {
+		t.Errorf("Export with limit 2 returned %d rows, want 2", len(got))
+	}
+}
+
+func TestDBLogger_ExportYieldErrorStops(t *testing.T) {
+	// A yield error (the HTTP handler's write failure) stops the stream and is
+	// returned to the caller, so a broken client connection aborts the scan.
+	db, _ := newDB(t, "all")
+	defer db.Close()
+	for i := 0; i < 5; i++ {
+		if _, err := db.db.Exec(
+			"INSERT INTO queries(ts,client_ip,domain,blocked) VALUES(?,?,?,0)",
+			time.Now().Format(time.RFC3339), "1.1.1.1", "x.com."); err != nil {
+			t.Fatalf("seed insert: %v", err)
+		}
+	}
+
+	sentinel := errors.New("write failed")
+	seen := 0
+	err := db.Export(context.Background(), QueryFilter{}, 0, func(QueryRow) error {
+		seen++
+		return sentinel
+	})
+	if err != sentinel {
+		t.Errorf("Export error = %v, want %v", err, sentinel)
+	}
+	if seen != 1 {
+		t.Errorf("yield called %d times, want 1 (stops on first error)", seen)
+	}
+}
+
+func TestDBLogger_ExportContextCanceled(t *testing.T) {
+	// A canceled context aborts the query rather than streaming rows.
+	db, _ := newDB(t, "all")
+	defer db.Close()
+	if _, err := db.db.Exec(
+		"INSERT INTO queries(ts,client_ip,domain,blocked) VALUES(?,?,?,0)",
+		time.Now().Format(time.RFC3339), "1.1.1.1", "x.com."); err != nil {
+		t.Fatalf("seed insert: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := db.Export(ctx, QueryFilter{}, 0, func(QueryRow) error { return nil }); err == nil {
+		t.Error("Export with canceled context returned nil error, want cancellation error")
 	}
 }
 

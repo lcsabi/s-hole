@@ -37,7 +37,7 @@ rails.
 | 21 | Query-log privacy modes (write-time client anonymization) | Medium | done (CL 72) |
 | 22 | Client name attribution in the log and dashboard | Medium | done (CL 73) |
 | 23 | Query-log search / filter | Medium | done (CL 74) |
-| 24 | Query-log export (CSV / JSON) | Medium | not started |
+| 24 | Query-log export (CSV / JSON) | Medium | done (CL 81) |
 | 25 | Regex / pattern blocking | High | not started |
 | 26 | Grafana dashboard + Prometheus scrape/alert examples | Low | done (CL 79) |
 | 27 | Install/uninstall robustness hardening (preflight, health check, shellcheck) | Medium | done (CL 66) |
@@ -47,6 +47,9 @@ rails.
 | 31 | Failed-query visibility (per-query outcome: graph, filter, `/metrics`) | Medium | done (CL 77) |
 | 32 | Streaming byte-parse: insert blocklist domains directly into the block set | Medium | not started |
 | 33 | Cache packed wire bytes: drop the per-hit `dns.Msg` copy | Medium | not started |
+| 34 | General admin-API rate limiting (defense-in-depth) | Low | not started |
+| 35 | DNSSEC validation of upstream answers | Medium | not started |
+| 36 | Serve DNS over TLS / HTTPS to LAN clients (DoT/DoH server) | Medium | not started |
 
 Items 19-26 came out of a 2026-08-24 feature-ideas session. Items 21-24 are a
 dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
@@ -71,9 +74,14 @@ sampled `runtime/metrics` API, so the leak canary and heap-growth signals now ex
 for #26 to draw. #26 landed (CL 79): it shipped the three `deploy/` assets
 (`prometheus.yml`, `prometheus-alerts.yml`, `grafana-dashboard.json`) drawing the
 complete surface, which closed the group.
-Related: #24 (export) reads the log schema, so land it after #29 and #31 to
-export the new columns from the start; #28 pairs with #31 (the same
-silent-upstream-misconfig class, from the config side).
+Related: #24 (export) landed (CL 81). It reads the log schema, so it shipped after
+#29 and #31 and exports the outcome columns from the start. #28 pairs with #31
+(the same silent-upstream-misconfig class, from the config side).
+
+Items 35-36 came out of a 2026-09-18 portfolio-planning session. They are
+independent of each other. #36 (encrypted serving) shares no code with #5 (DoH
+upstream): #5 is the forwarding side (s-hole as a DoH client), #36 is the serving
+side (s-hole as a DoT/DoH server).
 
 ## 1. Deploy to real hardware
 
@@ -763,29 +771,42 @@ Design decisions settled in the CL:
 
 Rated Medium: a usability and observability win. It changes no filtering behavior.
 
-## 24. Query-log export (CSV / JSON)
+## 24. Query-log export (CSV / JSON) (done, CL 81)
 
-Data portability. An operator who wants to analyze history in another tool has no
-bulk path out today. Add an export that streams the log.
+Data portability. An operator who wants to analyze history in another tool had no
+bulk path out: the recent-query view caps at 1000 rows and the flat `log_file` is
+a local, unstructured, unfiltered text stream that needs shell access.
 
-`GET /api/queries/export` streams the stored rows, reusing the #23 filter
-parameters so a filtered export is the filtered query in bulk. Because #21 masks
-at write time, export cannot leak more than search: there is no richer copy of the
-client for the bulk endpoint to expose. This item is also the forcing function
-that validates #21's placement. If masking were ever done at read time, an export
-of the raw DB would silently undo the privacy setting.
+**Shipped in CL 81:** `GET /api/queries/export` streams the stored rows in CSV
+(default) or JSON (`?format=json`), reusing the #23 filter parameters so a
+filtered export is the filtered query in bulk. It is uncapped unless `?limit=N` is
+set (the table is bounded by `query_db_retention_days`). The Recent Queries panel
+gained Export CSV and Export JSON links that download the current filter and grey
+out when logging is off. Because #21 masks the client at write time, the export
+cannot leak more than search does, which was the forcing function that validated
+the #21 placement: a read-time mask would let a bulk dump undo the privacy
+setting.
 
-Design decisions to settle in the CL:
+Design decisions settled in the CL:
 
-- **Format and streaming.** CSV and JSON, streamed row by row so a large log does
-  not build a full response in memory.
-- **Privacy stamp.** Record the active `query_privacy` level in the export
-  metadata (a CSV comment header or a JSON envelope field) so a masked value reads
-  as intentional, not a bug.
-- **Resolved names.** Whether the export includes the #22 label column. It may, and
-  stays safe precisely because the label resolves from the masked stored value.
-- **Timeout interaction.** The 64 KiB body cap is a request limit and does not
-  apply, but confirm the slowloris write timeouts suit a long streamed response.
+- **Streaming, row by row.** `DBLogger.Export` shares the #23 `where()` builder
+  with `Search` and yields one row at a time, so a large export holds flat memory.
+- **CSV stamp in the response header, not a comment line.** The CSV body stays
+  strictly parseable; the active `query_privacy` mode rides on
+  `X-Shole-Query-Privacy` and in the download filename. JSON carries it as an
+  envelope field (`query_privacy`, plus `exported_at`, `logging`, and the echoed
+  `filter`).
+- **Resolved names included.** Each row carries the #22 client label, resolved
+  from the masked stored value, so it stays within the active privacy mode.
+- **Write-timeout and DoS interaction.** The 64 KiB body cap is a request limit
+  and does not apply. The 30s slowloris write timeout is rolled forward per row
+  via `http.ResponseController`, so a long healthy export completes while a stalled
+  client still trips it. Each export holds the single query-log connection (b/038)
+  for its scan, so a concurrency guard bounds in-flight exports (a 429 past the
+  limit); general API rate limiting is deferred to #34.
+- **CSV formula injection.** A client-influenced field (the queried domain) that
+  starts with a spreadsheet formula trigger is neutralized so opening the CSV
+  cannot execute a formula.
 
 Rated Medium: a data-portability win. It changes no filtering behavior.
 
@@ -1500,6 +1521,146 @@ complexity.
 Rated Medium: a hot-path efficiency win on the busiest allowed path, with no change
 to filtering behavior or the cache's external contract, weighed against real added
 complexity in the cache and the DNS write path.
+
+## 34. General admin-API rate limiting
+
+The admin API is unauthenticated by design (LAN-trust, a settled non-goal for
+auth). Today its only abuse defenses are the localhost-default bind, the slowloris
+timeouts, the 64 KiB body cap, and the `?limit=` clamp; there is no request-rate
+throttle. CL 81 added an export-only concurrency guard for the one endpoint whose
+cost is unbounded, but a broad limiter across every route is a separate decision.
+It would touch every handler and would add a dependency (`golang.org/x/time/rate`)
+or a hand-rolled token bucket, which cuts against the dependency-minimalism and the
+"auditable in an afternoon" identity.
+
+Design points to settle if picked up:
+
+- **Scope.** Per-client (keyed on the source IP) or a global cap, and which routes
+  are exempt (the dashboard polls `/api/stats` and friends every few seconds, so a
+  naive global limit would throttle the UI itself).
+- **Where it lives.** A single middleware in front of the mux, so no handler
+  carries its own logic.
+- **Response.** `429` with `Retry-After`, matching the export guard.
+
+Weigh it only for deployments that expose `api_listen` beyond localhost. This is
+**not** auth, which stays a settled non-goal; it is rate limiting as
+defense-in-depth. Rated Low while the default bind stays localhost.
+
+## 35. DNSSEC validation of upstream answers
+
+s-hole forwards every upstream answer verbatim and trusts it. It sets no
+validation policy and reads no authentication state, so a forged or tampered
+answer on the path to the upstream reaches the LAN as genuine. A validating
+resolver checks the DNSSEC chain (DS to DNSKEY to RRSIG over the answer RRset) and
+refuses an answer that fails, returning SERVFAIL in place of a lie.
+
+Scope the value honestly. Most home upstreams (1.1.1.1, 8.8.8.8, Quad9) already
+validate, and once #5 (DoH upstream) or a DoT client encrypts the upstream hop,
+tampering on that hop is already hard. So s-hole's own validation is defense
+against a lying or compromised upstream, and against plain-UDP interception, not a
+universal win. It is the change that lets s-hole stop trusting the upstream.
+
+There are two levels, smallest first:
+
+- **AD-bit visibility, with an optional `require_ad` policy.** The cheap cut. Set
+  the DO bit on the outgoing query (EDNS0), read the AD (Authenticated Data) bit
+  the validating upstream sets, and surface it (query log, `/api/check`, a
+  metric). With a `require_ad` config flag, synthesize SERVFAIL for an answer that
+  arrives without AD when it should be signed. This still trusts the upstream's
+  validation, but it makes the result visible and enforceable. It needs no crypto
+  and no dependency.
+- **Local validation (full DNSSEC).** s-hole builds and checks the chain itself,
+  so it trusts no upstream. This is the real depth. It needs RRSIG verification
+  (RSA, ECDSA, Ed25519), DNSKEY-to-DS chaining from the root trust anchor, and
+  NSEC/NSEC3 for authenticated denial of existence. miekg/dns exposes the record
+  types and a signature-verify helper (`RRSIG.Verify`), so standard-library crypto
+  may be enough. The trust-anchor handling, the chain walk, and NSEC3 are a lot of
+  code and a real audit surface.
+
+Design decisions to settle in the CL:
+
+- **Ship AD-visibility first, or go straight to local validation.** The AD cut
+  delivers value in a small CL and builds the metric and log surface that local
+  validation reuses. Recommend splitting the two.
+- **Trust anchor.** Where the root KSK comes from and how it updates: a pinned
+  anchor refreshed on release (simple and auditable), or RFC 5011 automated
+  rollover (correct long-term, more machinery). Start pinned.
+- **Failure mode.** A validation failure returns SERVFAIL, never a sinkhole
+  answer, so a broken chain stays distinct from a blocked domain. Record how it
+  counts in stats (a new outcome next to the #31 unresolved and upstream-error
+  split) and whether it gets its own metric (`shole_dnssec_failures_total`).
+- **Cache interaction.** A validated positive answer caches as it does today. A
+  validation failure must not cache as a normal answer. Decide whether the cache
+  stores the validated state with the entry, so a later cache hit does not imply a
+  check it never ran.
+- **Dependency stance.** If local validation needs a DNSSEC or crypto dependency
+  beyond miekg/dns and the standard library, weigh it against the
+  dependency-minimalism identity in the CL, and prefer the `crypto/*` path.
+- **Hot-path cost.** Signature verification is real CPU per answer. It runs on the
+  forward path (a cache miss), which the upstream round-trip already dominates, so
+  the marginal cost is bounded. Add a benchmark companion so the miss path cannot
+  regress unseen.
+
+Rated Medium: a security and trust win whose reach is bounded by upstreams that
+already validate. The AD-visibility cut is a modest CL; full local validation is a
+large one and the stronger portfolio signal. It changes no filtering behavior.
+
+## 36. Serve DNS over TLS / HTTPS to LAN clients (DoT/DoH server)
+
+s-hole listens on plain UDP and TCP port 53 only. A client that wants an encrypted
+channel to s-hole cannot get one. This blocks one common, concrete case: Android
+"Private DNS" mode requires DoT and refuses a plain resolver, so an Android device
+with Private DNS on cannot use s-hole at all today. A DoT listener (and an optional
+DoH endpoint) lets these clients reach s-hole over TLS.
+
+This is the serving side, and it is distinct from #5 (DoH upstream), which is the
+forwarding side. The two share no code: #5 makes s-hole a DoH client to its
+upstream; this makes s-hole a DoT/DoH server to LAN clients. Either can land
+without the other.
+
+The listeners slot in beside the existing ones and reuse the same handler:
+
+- **DoT (RFC 7858):** a TLS listener on port 853 that wraps the same
+  DNS-over-TCP framing s-hole already serves. miekg/dns runs a TLS server
+  (`dns.Server` with `Net: "tcp-tls"` and a `*tls.Config`), so the handler does
+  not change. The work is the listener, the TLS config, and certificate loading.
+- **DoH (RFC 8484):** an HTTP endpoint (`/dns-query`) that reads the wire-format
+  query from the POST body or the `dns` GET parameter, calls the same handler, and
+  writes the wire-format response. It reuses `net/http`, already in the graph.
+
+Design decisions to settle in the CL:
+
+- **Certificate management.** DoT and DoH both need a TLS certificate, and on a LAN
+  this is the hard part. A public CA cannot issue for a private name or IP, so the
+  options are a self-signed certificate the operator installs on clients, or a
+  certificate the operator supplies (`tls_cert` and `tls_key` config paths). No
+  ACME automation: it needs a public name and reachability, against the LAN scope.
+  Prefer operator-supplied paths, and fail with a clear message when a listener is
+  enabled but the paths are missing.
+- **Opt-in, off by default.** Each encrypted listener is off unless configured (a
+  `dot_listen` or `doh_listen` address, empty by default), so the conservative
+  default surface does not change and a plain install needs no certificate.
+- **Ports and privileges.** Port 853 is privileged like 53, so it reuses the
+  `CAP_NET_BIND_SERVICE` setup the deploy already handles. Keep the DoH endpoint
+  off the unauthenticated admin server, so a DoH listener does not widen the admin
+  surface.
+- **Reuse the handler and its invariants.** The encrypted paths call the same
+  `ServeDNS`, so the blocklist, cache, stats, query log, and the CL 72 masking
+  choke point apply unchanged. Confirm `clientAddr` reads the right source address
+  for a TLS or HTTP connection, and decide how, or whether, to trust a
+  forwarded-for header for DoH behind a proxy.
+- **Timeouts and connection limits.** The DoH endpoint reuses the slowloris
+  timeouts and the body cap. The DoT listener needs an idle timeout and a bounded
+  connection count, so held-open TLS connections cannot exhaust descriptors. This
+  connection cap is the natural shed point for the overload concern raised in the
+  2026-09-18 session.
+- **Metrics.** Count queries per transport (plain, DoT, DoH) so `/metrics` shows
+  the split.
+
+Rated Medium: a user-visible capability that lets encrypted-DNS clients (notably
+Android Private DNS) use s-hole at all, on a trusted LAN where the encryption is
+defense-in-depth. It changes no filtering behavior. The certificate story is the
+real cost, not the protocol code.
 
 ## Pending decisions
 

@@ -14,6 +14,7 @@
 //	GET    /api/stats            JSON Snapshot
 //	GET    /api/check            block decision for ?domain=NAME (diagnostic; no stats/log side effects)
 //	GET    /api/queries          recent rows from SQLite (?limit=N, default 50, max 1000; filter ?domain= substring, ?client= exact, ?blocked=true/false, ?outcome=unresolved/upstream-error)
+//	GET    /api/queries/export   stream the filtered query log (?format=csv|json, default csv; same filters as /api/queries; optional ?limit=N, else all)
 //	GET    /api/top-blocked      all-time most-blocked domains from SQLite (?limit=N, default 50, max 1000)
 //	GET    /api/history          per-bucket query volume from SQLite (?window=24h&bucket=1h; bucket count capped at 1000)
 //	GET    /api/whitelist        runtime whitelist (sorted)
@@ -30,8 +31,11 @@ package api
 import (
 	"context"
 	"embed"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -109,7 +113,20 @@ type Server struct {
 	// per gauge). Only tests write it, and the api package runs its tests
 	// sequentially, so the swap is race-free.
 	readRuntimeMetrics func([]metrics.Sample)
+	// exportSem bounds concurrent /api/queries/export streams. Each export holds
+	// the single query-log connection (b/038) for its whole scan, so unbounded
+	// parallel exports on the unauthenticated LAN port could starve the async
+	// writer. A buffered channel used as a semaphore caps in-flight exports;
+	// excess requests get 429 rather than queueing. It does not throttle the
+	// cheap JSON endpoints the dashboard polls. General API rate limiting is a
+	// separate, broader decision (ROADMAP #34).
+	exportSem chan struct{}
 }
+
+// maxConcurrentExports caps simultaneous /api/queries/export streams. Two lets a
+// second operator export while one runs, without letting many parallel scans pin
+// the single query-log connection.
+const maxConcurrentExports = 2
 
 // New constructs a Server. db and dnsCache may be nil to disable the
 // corresponding metric/endpoint surfaces. reloadFn must be the
@@ -123,6 +140,7 @@ func New(counter *stats.Counter, db *querylog.DBLogger, store *blocklist.Store, 
 		dnsCache:           dnsCache,
 		reloadFn:           reloadFn,
 		readRuntimeMetrics: metrics.Read,
+		exportSem:          make(chan struct{}, maxConcurrentExports),
 	}
 }
 
@@ -227,6 +245,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /api/stats", s.handleStats)
 	mux.HandleFunc("GET /api/check", s.handleCheck)
 	mux.HandleFunc("GET /api/queries", s.handleQueries)
+	mux.HandleFunc("GET /api/queries/export", s.handleQueriesExport)
 	mux.HandleFunc("GET /api/top-blocked", s.handleTopBlocked)
 	mux.HandleFunc("GET /api/history", s.handleHistory)
 	mux.HandleFunc("GET /api/whitelist", s.handleWhitelistList)
@@ -409,6 +428,203 @@ func (s *Server) handleQueries(w http.ResponseWriter, r *http.Request) {
 		out[i] = queryRow{QueryRow: row, Label: s.labeler.label(row.ClientIP), Outcome: row.Outcome()}
 	}
 	writeJSON(w, response{Queries: out})
+}
+
+// exportFilter echoes the active filter into the JSON export envelope so a saved
+// file is self-describing. It mirrors querylog.QueryFilter with JSON tags; a
+// nil Blocked and empty strings are omitted.
+type exportFilter struct {
+	Domain  string `json:"domain,omitempty"`
+	Client  string `json:"client,omitempty"`
+	Blocked *bool  `json:"blocked,omitempty"`
+	Outcome string `json:"outcome,omitempty"`
+}
+
+// handleQueriesExport streams the filtered query log for download in CSV
+// (default) or JSON. It reuses the /api/queries filters (parseQueryFilter), so a
+// filtered export is the filtered query in bulk, and streams row by row so a
+// large log holds flat memory. The rows are the same masked columns /api/queries
+// serves (CL 72 masks the client at write time), so the export cannot leak more
+// than the recent-query view. Unlike /api/queries it is uncapped by default
+// (?limit= is optional); the table is bounded by query_db_retention_days.
+//
+// The active query_privacy mode and log_queries mode ride on response headers
+// (and, for JSON, envelope fields), so a masked or empty value reads as
+// intentional. When query logging is off (s.db == nil) it returns a valid empty
+// export (a header-only CSV or an empty queries array), matching the
+// degrade-not-fail contract of /api/queries.
+func (s *Server) handleQueriesExport(w http.ResponseWriter, r *http.Request) {
+	format := r.URL.Query().Get("format")
+	if format == "" {
+		format = "csv"
+	}
+	if format != "csv" && format != "json" {
+		http.Error(w, `invalid format: expected "csv" or "json"`, http.StatusBadRequest)
+		return
+	}
+
+	// Bound concurrent exports so parallel scans cannot pin the single query-log
+	// connection (b/038). A non-blocking acquire returns 429 instead of queueing.
+	select {
+	case s.exportSem <- struct{}{}:
+		defer func() { <-s.exportSem }()
+	default:
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "too many concurrent exports in progress", http.StatusTooManyRequests)
+		return
+	}
+
+	filter := parseQueryFilter(r)
+	limit := 0 // 0 = stream all matching rows; ?limit= bounds to the newest N
+	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 {
+		limit = n
+	}
+
+	privacy := s.queryPrivacy
+	if privacy == "" {
+		privacy = "raw"
+	}
+	logging := "off"
+	if s.db != nil {
+		logging = s.db.LogQueries()
+	}
+
+	ts := time.Now().UTC().Format("20060102T150405Z")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="s-hole-queries-%s-%s.%s"`, privacy, ts, format))
+	w.Header().Set("X-Shole-Query-Privacy", privacy)
+	w.Header().Set("X-Shole-Query-Logging", logging)
+
+	if format == "json" {
+		s.exportJSON(w, r, filter, limit, privacy, logging)
+		return
+	}
+	s.exportCSV(w, r, filter, limit)
+}
+
+// exportCSVColumns is the fixed CSV header, emitted every export so a downstream
+// parser sees one schema regardless of whether client_names is configured.
+var exportCSVColumns = []string{"ts", "client_ip", "label", "domain", "blocked", "outcome", "rcode", "synthesized"}
+
+// exportCSV writes the filtered rows as CSV: the fixed header, then one row per
+// query. Each field is passed through csvSanitize so a client-influenced value
+// (the queried domain) cannot inject a spreadsheet formula. Because headers are
+// already sent, a mid-stream error is logged and leaves a truncated file, which
+// is the failure signal.
+func (s *Server) exportCSV(w http.ResponseWriter, r *http.Request, f querylog.QueryFilter, limit int) {
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	rc := http.NewResponseController(w)
+	cw := csv.NewWriter(w)
+	_ = cw.Write(exportCSVColumns)
+
+	if s.db != nil {
+		_ = rc.SetWriteDeadline(time.Now().Add(writeTimeout))
+		err := s.db.Export(r.Context(), f, limit, func(row querylog.QueryRow) error {
+			rec := []string{
+				row.TS,
+				csvSanitize(row.ClientIP),
+				csvSanitize(s.labeler.label(row.ClientIP)),
+				csvSanitize(row.Domain),
+				strconv.FormatBool(row.Blocked),
+				row.Outcome(),
+				strconv.Itoa(row.Rcode),
+				strconv.FormatBool(row.Synthesized),
+			}
+			if err := cw.Write(rec); err != nil {
+				return err
+			}
+			// Roll the write deadline forward on each row so a long but healthy
+			// export is not cut off at writeTimeout, while a stalled client still
+			// trips the deadline on its next blocking write (slowloris guard).
+			_ = rc.SetWriteDeadline(time.Now().Add(writeTimeout))
+			return nil
+		})
+		if err != nil {
+			logger.Warn("query export failed", "format", "csv", "err", err)
+		}
+	}
+	cw.Flush()
+	if err := cw.Error(); err != nil {
+		logger.Warn("query export flush failed", "format", "csv", "err", err)
+	}
+}
+
+// exportJSON writes a streamed envelope: the metadata (query_privacy, exported_at,
+// logging mode, and the echoed filter) first, then the queries array streamed row
+// by row. On a mid-stream error the array is left unterminated (no closing "]}"),
+// so a consumer sees an invalid document rather than a silently short one.
+func (s *Server) exportJSON(w http.ResponseWriter, r *http.Request, f querylog.QueryFilter, limit int, privacy, logging string) {
+	w.Header().Set("Content-Type", "application/json")
+	rc := http.NewResponseController(w)
+
+	meta := struct {
+		QueryPrivacy string       `json:"query_privacy"`
+		ExportedAt   string       `json:"exported_at"`
+		Logging      string       `json:"logging"`
+		Filter       exportFilter `json:"filter"`
+	}{
+		QueryPrivacy: privacy,
+		ExportedAt:   time.Now().UTC().Format(time.RFC3339),
+		Logging:      logging,
+		Filter:       exportFilter{Domain: f.Domain, Client: f.Client, Blocked: f.Blocked, Outcome: f.Outcome},
+	}
+	head, err := json.Marshal(meta)
+	if err != nil {
+		// meta is plain strings and a bool pointer; marshalling cannot realistically
+		// fail. Nothing is written yet, so a 500 is still valid here.
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	// Splice the streamed array into the envelope: drop the meta object's closing
+	// '}', open the queries array, and re-close after the last row.
+	if _, err := w.Write(append(head[:len(head)-1], []byte(`,"queries":[`)...)); err != nil {
+		logger.Warn("query export failed", "format", "json", "err", err)
+		return
+	}
+
+	first := true
+	if s.db != nil {
+		_ = rc.SetWriteDeadline(time.Now().Add(writeTimeout))
+		err := s.db.Export(r.Context(), f, limit, func(row querylog.QueryRow) error {
+			b, err := json.Marshal(queryRow{QueryRow: row, Label: s.labeler.label(row.ClientIP), Outcome: row.Outcome()})
+			if err != nil {
+				return err
+			}
+			if !first {
+				if _, err := w.Write([]byte{','}); err != nil {
+					return err
+				}
+			}
+			first = false
+			if _, err := w.Write(b); err != nil {
+				return err
+			}
+			_ = rc.SetWriteDeadline(time.Now().Add(writeTimeout))
+			return nil
+		})
+		if err != nil {
+			logger.Warn("query export failed", "format", "json", "err", err)
+			return // leave the JSON unterminated as the failure signal
+		}
+	}
+	if _, err := io.WriteString(w, "]}"); err != nil {
+		logger.Warn("query export failed", "format", "json", "err", err)
+	}
+}
+
+// csvSanitize defends a spreadsheet that opens the export from CSV formula
+// injection. A field a client can influence (notably the queried domain) may
+// begin with a formula trigger; prefix such a field with a single quote so
+// Excel/Sheets treat it as text. Covers the OWASP set (= + - @) plus tab and CR,
+// which can also start a formula.
+func csvSanitize(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	}
+	return s
 }
 
 // handleTopBlocked serves the all-time most-blocked domains from the SQLite

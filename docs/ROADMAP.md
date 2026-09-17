@@ -37,7 +37,7 @@ rails.
 | 21 | Query-log privacy modes (write-time client anonymization) | Medium | done (CL 72) |
 | 22 | Client name attribution in the log and dashboard | Medium | done (CL 73) |
 | 23 | Query-log search / filter | Medium | done (CL 74) |
-| 24 | Query-log export (CSV / JSON) | Medium | not started |
+| 24 | Query-log export (CSV / JSON) | Medium | done (CL 81) |
 | 25 | Regex / pattern blocking | High | not started |
 | 26 | Grafana dashboard + Prometheus scrape/alert examples | Low | done (CL 79) |
 | 27 | Install/uninstall robustness hardening (preflight, health check, shellcheck) | Medium | done (CL 66) |
@@ -47,6 +47,7 @@ rails.
 | 31 | Failed-query visibility (per-query outcome: graph, filter, `/metrics`) | Medium | done (CL 77) |
 | 32 | Streaming byte-parse: insert blocklist domains directly into the block set | Medium | not started |
 | 33 | Cache packed wire bytes: drop the per-hit `dns.Msg` copy | Medium | not started |
+| 34 | General admin-API rate limiting (defense-in-depth) | Low | not started |
 
 Items 19-26 came out of a 2026-08-24 feature-ideas session. Items 21-24 are a
 dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
@@ -71,9 +72,9 @@ sampled `runtime/metrics` API, so the leak canary and heap-growth signals now ex
 for #26 to draw. #26 landed (CL 79): it shipped the three `deploy/` assets
 (`prometheus.yml`, `prometheus-alerts.yml`, `grafana-dashboard.json`) drawing the
 complete surface, which closed the group.
-Related: #24 (export) reads the log schema, so land it after #29 and #31 to
-export the new columns from the start; #28 pairs with #31 (the same
-silent-upstream-misconfig class, from the config side).
+Related: #24 (export) landed (CL 81). It reads the log schema, so it shipped after
+#29 and #31 and exports the outcome columns from the start. #28 pairs with #31
+(the same silent-upstream-misconfig class, from the config side).
 
 ## 1. Deploy to real hardware
 
@@ -763,29 +764,42 @@ Design decisions settled in the CL:
 
 Rated Medium: a usability and observability win. It changes no filtering behavior.
 
-## 24. Query-log export (CSV / JSON)
+## 24. Query-log export (CSV / JSON) (done, CL 81)
 
-Data portability. An operator who wants to analyze history in another tool has no
-bulk path out today. Add an export that streams the log.
+Data portability. An operator who wants to analyze history in another tool had no
+bulk path out: the recent-query view caps at 1000 rows and the flat `log_file` is
+a local, unstructured, unfiltered text stream that needs shell access.
 
-`GET /api/queries/export` streams the stored rows, reusing the #23 filter
-parameters so a filtered export is the filtered query in bulk. Because #21 masks
-at write time, export cannot leak more than search: there is no richer copy of the
-client for the bulk endpoint to expose. This item is also the forcing function
-that validates #21's placement. If masking were ever done at read time, an export
-of the raw DB would silently undo the privacy setting.
+**Shipped in CL 81:** `GET /api/queries/export` streams the stored rows in CSV
+(default) or JSON (`?format=json`), reusing the #23 filter parameters so a
+filtered export is the filtered query in bulk. It is uncapped unless `?limit=N` is
+set (the table is bounded by `query_db_retention_days`). The Recent Queries panel
+gained Export CSV and Export JSON links that download the current filter and grey
+out when logging is off. Because #21 masks the client at write time, the export
+cannot leak more than search does, which was the forcing function that validated
+the #21 placement: a read-time mask would let a bulk dump undo the privacy
+setting.
 
-Design decisions to settle in the CL:
+Design decisions settled in the CL:
 
-- **Format and streaming.** CSV and JSON, streamed row by row so a large log does
-  not build a full response in memory.
-- **Privacy stamp.** Record the active `query_privacy` level in the export
-  metadata (a CSV comment header or a JSON envelope field) so a masked value reads
-  as intentional, not a bug.
-- **Resolved names.** Whether the export includes the #22 label column. It may, and
-  stays safe precisely because the label resolves from the masked stored value.
-- **Timeout interaction.** The 64 KiB body cap is a request limit and does not
-  apply, but confirm the slowloris write timeouts suit a long streamed response.
+- **Streaming, row by row.** `DBLogger.Export` shares the #23 `where()` builder
+  with `Search` and yields one row at a time, so a large export holds flat memory.
+- **CSV stamp in the response header, not a comment line.** The CSV body stays
+  strictly parseable; the active `query_privacy` mode rides on
+  `X-Shole-Query-Privacy` and in the download filename. JSON carries it as an
+  envelope field (`query_privacy`, plus `exported_at`, `logging`, and the echoed
+  `filter`).
+- **Resolved names included.** Each row carries the #22 client label, resolved
+  from the masked stored value, so it stays within the active privacy mode.
+- **Write-timeout and DoS interaction.** The 64 KiB body cap is a request limit
+  and does not apply. The 30s slowloris write timeout is rolled forward per row
+  via `http.ResponseController`, so a long healthy export completes while a stalled
+  client still trips it. Each export holds the single query-log connection (b/038)
+  for its scan, so a concurrency guard bounds in-flight exports (a 429 past the
+  limit); general API rate limiting is deferred to #34.
+- **CSV formula injection.** A client-influenced field (the queried domain) that
+  starts with a spreadsheet formula trigger is neutralized so opening the CSV
+  cannot execute a formula.
 
 Rated Medium: a data-portability win. It changes no filtering behavior.
 
@@ -1488,6 +1502,30 @@ complexity.
 Rated Medium: a hot-path efficiency win on the busiest allowed path, with no change
 to filtering behavior or the cache's external contract, weighed against real added
 complexity in the cache and the DNS write path.
+
+## 34. General admin-API rate limiting
+
+The admin API is unauthenticated by design (LAN-trust, a settled non-goal for
+auth). Today its only abuse defenses are the localhost-default bind, the slowloris
+timeouts, the 64 KiB body cap, and the `?limit=` clamp; there is no request-rate
+throttle. CL 81 added an export-only concurrency guard for the one endpoint whose
+cost is unbounded, but a broad limiter across every route is a separate decision.
+It would touch every handler and would add a dependency (`golang.org/x/time/rate`)
+or a hand-rolled token bucket, which cuts against the dependency-minimalism and the
+"auditable in an afternoon" identity.
+
+Design points to settle if picked up:
+
+- **Scope.** Per-client (keyed on the source IP) or a global cap, and which routes
+  are exempt (the dashboard polls `/api/stats` and friends every few seconds, so a
+  naive global limit would throttle the UI itself).
+- **Where it lives.** A single middleware in front of the mux, so no handler
+  carries its own logic.
+- **Response.** `429` with `Retry-After`, matching the export guard.
+
+Weigh it only for deployments that expose `api_listen` beyond localhost. This is
+**not** auth, which stays a settled non-goal; it is rate limiting as
+defense-in-depth. Rated Low while the default bind stays localhost.
 
 ## Pending decisions
 

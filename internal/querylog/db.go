@@ -383,6 +383,48 @@ type QueryFilter struct {
 	Outcome string // "" matches any; "unresolved" or "upstream-error" narrows to that failure
 }
 
+// where builds the dynamic WHERE clause (without the leading "WHERE") and the
+// bound argument list from the non-empty filter fields. Search and Export share
+// it so the two reads cannot drift, the way Recent shares Search's builder. Every
+// value is bound as a parameter, so no caller input reaches the SQL text. The
+// returned clause is empty when the filter is the zero value.
+func (f QueryFilter) where() (clause string, args []any) {
+	var conds []string
+	if f.Domain != "" {
+		// Domains are stored lowercase, so lowercasing the term makes the match
+		// case-insensitive. Escape the LIKE metacharacters so a typed % or _ is a
+		// literal, not a wildcard.
+		conds = append(conds, "domain LIKE ? ESCAPE '\\'")
+		args = append(args, "%"+escapeLike(strings.ToLower(f.Domain))+"%")
+	}
+	if f.Client != "" {
+		conds = append(conds, "client_ip = ?")
+		args = append(args, f.Client)
+	}
+	if f.Blocked != nil {
+		conds = append(conds, "blocked = ?")
+		args = append(args, b2i(*f.Blocked))
+	}
+	// The failure rule (synthesized + rcode) matches Record.Unresolved /
+	// Record.UpstreamError and the History CASE sums; keep the three in step.
+	switch f.Outcome {
+	case "unresolved":
+		conds = append(conds, "synthesized = 1 AND rcode = ?")
+		args = append(args, rcodeServerFailure)
+	case "upstream-error":
+		conds = append(conds, "synthesized = 0 AND rcode IN (?, ?)")
+		args = append(args, rcodeServerFailure, rcodeRefused)
+	}
+	if len(conds) > 0 {
+		clause = " WHERE " + strings.Join(conds, " AND ")
+	}
+	return clause, args
+}
+
+// selectColumns is the column list every recent-query read returns, shared by
+// Search and Export so the row shape and scanRows stay in one place.
+const selectColumns = "SELECT ts, client_ip, domain, blocked, rcode, synthesized FROM queries"
+
 // Search returns the last n queries that match f, ordered newest-first. ctx is
 // honored as a query deadline; HTTP handlers pass r.Context() so an aborted
 // client connection unblocks the database query.
@@ -392,47 +434,54 @@ type QueryFilter struct {
 // LIKE, which cannot use idx_queries_domain; at home scale the retention-bounded
 // table and the LIMIT keep the scan cheap (see the no-index note in CL 74).
 func (d *DBLogger) Search(ctx context.Context, f QueryFilter, n int) ([]QueryRow, error) {
-	var where []string
-	var args []any
-	if f.Domain != "" {
-		// Domains are stored lowercase, so lowercasing the term makes the match
-		// case-insensitive. Escape the LIKE metacharacters so a typed % or _ is a
-		// literal, not a wildcard.
-		where = append(where, "domain LIKE ? ESCAPE '\\'")
-		args = append(args, "%"+escapeLike(strings.ToLower(f.Domain))+"%")
-	}
-	if f.Client != "" {
-		where = append(where, "client_ip = ?")
-		args = append(args, f.Client)
-	}
-	if f.Blocked != nil {
-		where = append(where, "blocked = ?")
-		args = append(args, b2i(*f.Blocked))
-	}
-	// The failure rule (synthesized + rcode) matches Record.Unresolved /
-	// Record.UpstreamError and the History CASE sums; keep the three in step.
-	switch f.Outcome {
-	case "unresolved":
-		where = append(where, "synthesized = 1 AND rcode = ?")
-		args = append(args, rcodeServerFailure)
-	case "upstream-error":
-		where = append(where, "synthesized = 0 AND rcode IN (?, ?)")
-		args = append(args, rcodeServerFailure, rcodeRefused)
-	}
-
-	q := "SELECT ts, client_ip, domain, blocked, rcode, synthesized FROM queries"
-	if len(where) > 0 {
-		q += " WHERE " + strings.Join(where, " AND ")
-	}
-	q += " ORDER BY id DESC LIMIT ?"
+	clause, args := f.where()
 	args = append(args, n)
-
-	rows, err := d.db.QueryContext(ctx, q, args...)
+	rows, err := d.db.QueryContext(ctx, selectColumns+clause+" ORDER BY id DESC LIMIT ?", args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	return scanRows(rows)
+}
+
+// Export streams every row that matches f, newest-first, to yield one row at a
+// time instead of materialising a slice, so a large export holds flat memory
+// regardless of table size. It is the bulk companion to Search and reuses the
+// same where() builder, so a filtered export is the filtered query without the
+// LIMIT cap. When n > 0 it bounds the stream to the newest n rows; n <= 0 streams
+// the whole filtered log (bounded in practice by query_db_retention_days).
+//
+// ctx is honored as a query deadline. yield is called once per row in order; if
+// it returns an error, Export stops and returns that error (the HTTP handler uses
+// this to abort on a write failure). Because it holds the single write connection
+// (b/038) for the whole scan, a very large export can briefly block the async
+// writer and prune; at home scale over the retention window this is immaterial,
+// and a sustained drop shows in shole_query_log_dropped_total.
+func (d *DBLogger) Export(ctx context.Context, f QueryFilter, n int, yield func(QueryRow) error) error {
+	clause, args := f.where()
+	q := selectColumns + clause + " ORDER BY id DESC"
+	if n > 0 {
+		q += " LIMIT ?"
+		args = append(args, n)
+	}
+	rows, err := d.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r QueryRow
+		var blocked, synthesized int
+		if err := rows.Scan(&r.TS, &r.ClientIP, &r.Domain, &blocked, &r.Rcode, &synthesized); err != nil {
+			return err
+		}
+		r.Blocked = blocked == 1
+		r.Synthesized = synthesized == 1
+		if err := yield(r); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }
 
 // Recent returns the last n queries ordered newest-first. It is Search with an

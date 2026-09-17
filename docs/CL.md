@@ -94,6 +94,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 78](cls/CL-78.md) | Go runtime gauges on /metrics: shole_goroutines and heap gauges from runtime/metrics (ROADMAP #30) |
 | [CL 79](cls/CL-79.md) | Grafana dashboard + Prometheus scrape/alert examples under deploy/ (ROADMAP #26) |
 | [CL 80](cls/CL-80.md) | Code-review fixes: /api/queries outcome filter round-trip (b/057), log wording, upstream-failure test |
+| [CL 81](cls/CL-81.md) | Query-log export: streamed CSV/JSON at /api/queries/export, reusing the query filters (ROADMAP #24) |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

@@ -120,7 +120,14 @@ func TestValidate_AcceptsValidValues(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.blockMode+"_"+tc.logQueries+"_"+tc.queryPrivacy, func(t *testing.T) {
-			cfg := &Config{BlockMode: tc.blockMode, LogQueries: tc.logQueries, QueryPrivacy: tc.queryPrivacy}
+			// Two valid upstreams so the enum cases do not trip the empty-list
+			// fatal or the single-upstream INFO note; both are exercised below.
+			cfg := &Config{
+				BlockMode:    tc.blockMode,
+				LogQueries:   tc.logQueries,
+				QueryPrivacy: tc.queryPrivacy,
+				Upstreams:    []string{"1.1.1.1:53", "8.8.8.8:53"},
+			}
 			if err := cfg.Validate(); err != nil {
 				t.Errorf("Validate(%q, %q, %q) = %v, want nil", tc.blockMode, tc.logQueries, tc.queryPrivacy, err)
 			}
@@ -148,6 +155,30 @@ func TestValidate_RejectsBogusQueryPrivacy(t *testing.T) {
 	cfg := &Config{BlockMode: "zero", LogQueries: "all", QueryPrivacy: "anonymize"}
 	if err := cfg.Validate(); err == nil {
 		t.Error("Validate accepted bogus query_privacy")
+	}
+}
+
+func TestValidate_RejectsEmptyUpstreams(t *testing.T) {
+	// Load drops malformed upstreams, so an empty list reaching Validate means
+	// every configured upstream was malformed. A config that cannot forward at
+	// all is fatal, the same as a bad block_mode (ROADMAP #28).
+	cfg := &Config{BlockMode: "zero", LogQueries: "all", QueryPrivacy: "raw"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("Validate accepted a config with no usable upstream")
+	}
+}
+
+func TestValidate_SingleUpstreamIsValid(t *testing.T) {
+	// A single upstream is a valid setup (a deliberate local resolver). Validate
+	// logs an INFO note about the missing fallback but never fails (ROADMAP #28).
+	cfg := &Config{
+		BlockMode:    "zero",
+		LogQueries:   "all",
+		QueryPrivacy: "raw",
+		Upstreams:    []string{"127.0.0.1:53"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate with one upstream = %v, want nil", err)
 	}
 }
 
@@ -240,6 +271,44 @@ func TestLoad_DropsInvalidClientNames(t *testing.T) {
 	}
 }
 
+func TestFilterUpstreams(t *testing.T) {
+	// Upstreams must be host:port. A bare address (no port), a missing host,
+	// and a missing port are all dropped; order is preserved. This is a shape
+	// check only, so a syntactically valid but unreachable address is kept.
+	in := []string{"1.1.1.1:53", "1.1.1.1", "8.8.8.8:53", ":53", "1.1.1.1:", "[2001:4860:4860::8888]:53"}
+	valid, dropped := filterUpstreams(in)
+
+	wantValid := []string{"1.1.1.1:53", "8.8.8.8:53", "[2001:4860:4860::8888]:53"}
+	if !reflect.DeepEqual(valid, wantValid) {
+		t.Errorf("valid = %v, want %v", valid, wantValid)
+	}
+	wantDropped := []string{"1.1.1.1", ":53", "1.1.1.1:"}
+	if !reflect.DeepEqual(dropped, wantDropped) {
+		t.Errorf("dropped = %v, want %v", dropped, wantDropped)
+	}
+}
+
+func TestFilterUpstreams_Empty(t *testing.T) {
+	valid, dropped := filterUpstreams(nil)
+	if valid != nil || dropped != nil {
+		t.Errorf("filterUpstreams(nil) = (%v, %v), want (nil, nil)", valid, dropped)
+	}
+}
+
+func TestLoad_DropsMalformedUpstreams(t *testing.T) {
+	// A malformed entry is dropped (Load WARNs on it) and the valid ones remain,
+	// so one fat-finger does not take down a working config.
+	path := writeTemp(t, "upstreams:\n  - 1.1.1.1:53\n  - 8.8.8.8\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load = %v, want nil", err)
+	}
+	want := []string{"1.1.1.1:53"}
+	if !reflect.DeepEqual(cfg.Upstreams, want) {
+		t.Errorf("cfg.Upstreams = %v, want %v", cfg.Upstreams, want)
+	}
+}
+
 func TestParsedDurations(t *testing.T) {
 	cfg := &Config{
 		RefreshInterval: "1h",
@@ -319,6 +388,7 @@ func TestLoadAndValidate_RejectsEachStage(t *testing.T) {
 		{"load_bad_yaml", "block_mode: : :\n"},
 		{"validate_bad_block_mode", "block_mode: bogus\n"},
 		{"validate_bad_query_privacy", "query_privacy: anonymize\n"},
+		{"validate_all_malformed_upstreams", "upstreams:\n  - 1.1.1.1\n  - 8.8.8.8\n"},
 		{"duration_bad_refresh", "refresh_interval: soon\n"},
 		{"duration_nonpositive_refresh", "refresh_interval: 0s\n"},
 		{"duration_bad_stats", "stats_interval: soon\n"},

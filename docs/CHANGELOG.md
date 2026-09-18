@@ -8,6 +8,8 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-18
+
 ### Fixed
 - **`GET /api/queries?outcome=` now accepts the same spelling it reports.** Each
   row reports its outcome as `upstream_error`, but the filter accepted only

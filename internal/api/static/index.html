@@ -797,26 +797,31 @@
     const queryFilterActive = () =>
       !!queryFilter.domain || !!queryFilter.client || queryFilter.status !== 'all';
 
-    function queriesURL() {
-      const p = new URLSearchParams({ limit: '50' });
+    // Set the shared query-filter params (domain, client, and the exclusive
+    // status picker) on p. The recent-query view and the export both call it, so
+    // a filtered export stays exactly the filtered view in bulk: one change here
+    // moves both.
+    function applyFilterParams(p) {
       if (queryFilter.domain) p.set('domain', queryFilter.domain);
       if (queryFilter.client) p.set('client', queryFilter.client);
       // The status control is one exclusive picker over two server params:
       // blocked true/false, or a failure outcome.
       if (queryFilter.status === 'true' || queryFilter.status === 'false') p.set('blocked', queryFilter.status);
       else if (queryFilter.status !== 'all') p.set('outcome', queryFilter.status);
+    }
+
+    function queriesURL() {
+      const p = new URLSearchParams({ limit: '50' });
+      applyFilterParams(p);
       return '/api/queries?' + p.toString();
     }
 
-    // Build the export URL for the current filter. It mirrors queriesURL's filter
-    // params but drops ?limit= (export streams the whole filtered log) and adds
-    // ?format=. So a filtered export is exactly the filtered view in bulk.
+    // Build the export URL for the current filter. It shares queriesURL's filter
+    // params through applyFilterParams but drops ?limit= (export streams the whole
+    // filtered log) and adds ?format=.
     function exportURL(format) {
       const p = new URLSearchParams();
-      if (queryFilter.domain) p.set('domain', queryFilter.domain);
-      if (queryFilter.client) p.set('client', queryFilter.client);
-      if (queryFilter.status === 'true' || queryFilter.status === 'false') p.set('blocked', queryFilter.status);
-      else if (queryFilter.status !== 'all') p.set('outcome', queryFilter.status);
+      applyFilterParams(p);
       p.set('format', format);
       return '/api/queries/export?' + p.toString();
     }

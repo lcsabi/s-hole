@@ -41,7 +41,7 @@ rails.
 | 25 | Regex / pattern blocking | High | not started |
 | 26 | Grafana dashboard + Prometheus scrape/alert examples | Low | done (CL 79) |
 | 27 | Install/uninstall robustness hardening (preflight, health check, shellcheck) | Medium | done (CL 66) |
-| 28 | Validate the upstreams at config time (format check + single-upstream note) | Low | not started |
+| 28 | Validate the upstreams at config time (format check + single-upstream note) | Low | done (CL 82) |
 | 29 | "Cached" line on the query-volume graph (record cache-hit per query) | Medium | done (CL 76) |
 | 30 | Go runtime gauges (goroutines, heap) in `/metrics` | Medium | done (CL 78) |
 | 31 | Failed-query visibility (per-query outcome: graph, filter, `/metrics`) | Medium | done (CL 77) |
@@ -1009,7 +1009,19 @@ Rated Medium: a deploy-reliability win with no runtime behavior change. It turns
 silent install failures (a dead service, a port-53 conflict, swapped arguments)
 into loud, self-explaining ones, on the path the #1 hardware deploy depends on.
 
-## 28. Validate the upstreams at config time (format check + single-upstream note)
+## 28. Validate the upstreams at config time (format check + single-upstream note) (done, CL 82)
+
+**Shipped in CL 82:** both parts, split across the two config seams. `config.Load`
+drops any upstream that is not `host:port` with a WARN (a new `filterUpstreams`
+helper, gated on `net.SplitHostPort` plus non-empty host and port, mirroring
+`filterWhitelist`). `config.Validate` then fails fatally when the filtered list
+is empty (every configured upstream was malformed, so nothing can forward) and
+logs an INFO note when exactly one upstream remains (no forwarding fallback). The
+single-upstream note is INFO, not WARN, because a deliberate single local
+resolver is a valid setup that must not cry wolf on every startup. The check is
+shape-only: it resolves no name and dials nothing, so no active fallback
+detection was added (rejected here for the SSRF and LAN-topology-leak reasons
+below).
 
 A missing `upstreams:` list defaults cleanly to `1.1.1.1:53` and `8.8.8.8:53`
 (`applyDefaults`), but a malformed entry is accepted in silence. `Validate()`

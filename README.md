@@ -179,7 +179,7 @@ All configuration lives in `config.yaml`. Every field has a safe default. An emp
 | Field | Default | Description |
 |---|---|---|
 | `listen` | `:53` | Address and port for DNS queries (UDP + TCP). `:53` binds all interfaces, IPv4 + IPv6; use `0.0.0.0:53` for IPv4 only |
-| `upstreams` | `[1.1.1.1:53, 8.8.8.8:53]` | Upstream resolvers, tried in order |
+| `upstreams` | `[1.1.1.1:53, 8.8.8.8:53]` | Upstream resolvers, tried in order. Each must be `host:port`; a malformed entry is dropped with a warning at startup, and a config where every entry is malformed fails to start |
 | `blocklists` | StevenBlack + AdAway | List of URLs to download (hosts-file or plain-domain format) |
 | `whitelist` | `[]` | Domains that are never blocked, regardless of blocklist membership. Matched by suffix and wins at every level: a whitelisted domain exempts its whole subtree, even past a more specific blocked parent |
 | `refresh_interval` | `24h` | How often to re-download blocklists |

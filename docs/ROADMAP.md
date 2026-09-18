@@ -50,6 +50,7 @@ rails.
 | 34 | General admin-API rate limiting (defense-in-depth) | Low | not started |
 | 35 | DNSSEC validation of upstream answers | Medium | not started |
 | 36 | Serve DNS over TLS / HTTPS to LAN clients (DoT/DoH server) | Medium | not started |
+| 37 | Per-query latency histograms (service time + upstream) in `/metrics` | Medium | not started |
 
 Items 19-26 came out of a 2026-08-24 feature-ideas session. Items 21-24 are a
 dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
@@ -1661,6 +1662,79 @@ Rated Medium: a user-visible capability that lets encrypted-DNS clients (notably
 Android Private DNS) use s-hole at all, on a trusted LAN where the encryption is
 defense-in-depth. It changes no filtering behavior. The certificate story is the
 real cost, not the protocol code.
+
+## 37. Per-query latency histograms (service time and upstream) in `/metrics`
+
+The `shole_*` series count and gauge, but none of them times a query. So the
+metrics cannot answer the first operator question about a resolver: how fast is
+it, and how bad is the tail? Cache hit rate is a proxy for latency, not a
+measurement of it. The gap is a Prometheus histogram (the `_bucket`, `_sum`, and
+`_count` triple) that records per-query duration, read as `histogram_quantile()`
+for p50/p95/p99 in Grafana.
+
+Measure two spans, because they answer different questions and together they
+decompose a slow query:
+
+- **s-hole service time.** ServeDNS entry to reply written. This is s-hole's own
+  contribution to what the client waits. Partition it by outcome (blocked,
+  cache_hit, forwarded), since those paths differ by orders of magnitude: a
+  blocked or cached reply is microseconds of in-memory work, a forwarded reply is
+  network-bound. This is the server-side service latency, the standard resolver
+  metric.
+- **Upstream exchange time.** The duration of the forward call to the upstream
+  (and the TCP retry on a truncated answer). This isolates the upstream network
+  round-trip and the upstream's own processing from s-hole's overhead. Label it by
+  upstream, so a single slow or flaky resolver is visible next to a healthy one.
+
+The two together let an operator split a slow query. For a forwarded answer,
+service time is roughly s-hole's fixed overhead (the blocklist walk, the cache
+lookup and set, the wire encoding) plus the upstream time. That answers "the
+client waited 40 ms; 38 ms was the upstream and 2 ms was s-hole," which one number
+cannot.
+
+What this does not measure: the true client-to-s-hole round-trip. The LAN hop
+between the client and s-hole happens outside the process, so the server cannot
+see the client's send and receive timestamps. The service-time histogram is a
+lower bound on client-perceived latency, not the network hop itself. On a home LAN
+the hop is sub-millisecond, so service time tracks client-perceived latency
+closely, but the honest end-to-end number needs a client-side probe (a periodic
+`dig` timing run), not a server metric. Record this so "query duration" is not
+read as client round-trip.
+
+Proposed metrics (names follow the `_seconds` base-unit convention):
+
+- `shole_query_duration_seconds` (histogram), label `outcome` =
+  `blocked` | `cache_hit` | `forwarded`.
+- `shole_upstream_duration_seconds` (histogram), label `upstream`.
+
+Design decisions to settle in the CL:
+
+- **Hand-rolled, not a client library.** The `/metrics` exposition is hand-rolled
+  with no external metrics library, a stated identity. A histogram is where that
+  pressure is highest, so hand-roll it: fixed bucket boundaries as atomic counters,
+  plus `_sum` and `_count`, emitted with `le` and `+Inf` labels in the existing
+  text format. Weigh the extra exposition code against the no-new-dependency win in
+  the CL.
+- **Bucket boundaries from soak evidence, not a guess.** Bad buckets make a
+  histogram useless. Choose the boundaries from the real latency distribution the
+  #1 hardware soak produces (roughly sub-millisecond cache hits to a one-to-two-
+  second upstream tail). This is why the item is sequenced after #1.
+- **Cardinality.** Outcome (three values) for service time and upstream (a handful)
+  for the upstream histogram are both bounded. Do not label by domain or client,
+  which is unbounded. Decide whether a TCP retry on a truncated answer is one
+  forward span or two.
+- **Hot-path and concurrency discipline.** `time.Now` is vDSO-backed and cheap, so
+  the timing cost is negligible and the bucket increment is one atomic add. Follow
+  the `stats.Counter` load-order invariant, add a `-race` test per new counter, and
+  add a benchmark companion so the timed path cannot regress unseen.
+- **Metrics-only first.** Keep latency out of the query-log rows and the dashboard
+  panels in the first CL. Expose it on `/metrics` and let the shipped Grafana
+  dashboard add a quantile panel. A per-row latency column is a separate, larger
+  decision (a schema change and storage cost).
+
+Rated Medium: the observability gap most worth closing after the runtime gauges
+(#30) and the failed-query outcome split (#31), and evidence-driven once the #1
+soak runs. It changes no filtering behavior and adds no dependency.
 
 ## Pending decisions
 

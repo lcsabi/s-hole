@@ -85,7 +85,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	// disjoint events. Cardinality is bounded by the configured upstream count.
 	if s.upstreamTransportFailures != nil {
 		if failures := s.upstreamTransportFailures(); len(failures) > 0 {
-			fmt.Fprintln(w, "# HELP shole_upstream_transport_failures_total Per-upstream cumulative transport failures (timeouts, refused connections) seen by the forward cooldown tracker.")
+			fmt.Fprintln(w, "# HELP shole_upstream_transport_failures_total Per-upstream cumulative transport failures (no usable answer: a timeout, a refused connection, or for a DoH upstream a non-200 status or unparsable body) seen by the forward cooldown tracker.")
 			fmt.Fprintln(w, "# TYPE shole_upstream_transport_failures_total counter")
 			for addr, n := range failures {
 				fmt.Fprintf(w, "shole_upstream_transport_failures_total{upstream=\"%s\"} %d\n", escapeLabel(addr), n)

@@ -18,7 +18,7 @@ rails.
 | 2 | Tag `v0.1.0` + release workflow | High | done (CL 43, CL 44); v0.1.0 tagged 2026-08-24 |
 | 3 | Wildcard / subdomain blocking | High | done (CL 30) |
 | 4 | Wire up or delete `DBLogger.TopBlocked` | Medium | done (CL 33) |
-| 5 | DNS-over-HTTPS upstream support | Medium | not started |
+| 5 | DNS-over-HTTPS upstream support | Medium | done (CL 85) |
 | 6 | Hardening batch: goleak, govulncheck, empty-blocklist alarm | Medium | done (CL 29) |
 | 7 | Windows service logging (slog is lost under the SCM) | Low | done (CL 57) |
 | 8 | Benchmark companions for the hot path | Low | done (CL 32) |
@@ -173,7 +173,7 @@ tally, and the panel gained a "Since start / All time" toggle (default
 "Since start", so the `query_db`-off deployment is unchanged). The
 db-disabled path returns an empty list, matching `/api/queries`.
 
-## 5. DNS-over-HTTPS upstream support
+## 5. DNS-over-HTTPS upstream support (done, CL 85)
 
 DESIGN open question #1; the answer to ISPs that intercept plain
 port-53 traffic. Needs **zero new dependencies**: DoH is POSTing the
@@ -185,6 +185,46 @@ details: timeout semantics, connection reuse, bootstrap resolution of
 the DoH hostname itself. Impact is Medium rather than High because
 plain-DNS interception is an ISP-specific problem; many home LANs
 never hit it.
+
+**Shipped in CL 85:** a DoH branch in `exchange()` POSTs the packed query to an
+`https://` upstream (RFC 8484, `application/dns-message`) and unpacks the reply,
+with a reused package-level `http.Client` so the TLS connection stays warm
+across queries. DoH and plain entries share the one ordered `upstreams` list and
+are told apart by the `https://` prefix, so the two-sweep failover, the cooldown
+tracker, and the per-upstream `shole_upstream_transport_failures_total{upstream}`
+metric all work unchanged (they key off the upstream string). A non-200 status
+or an unparsable body is a transport failure, so the loop fails over to the next
+upstream. `filterUpstreams` in `internal/config` now validates a URL-shaped entry
+as a DoH endpoint instead of mis-reading it as a `host:port`.
+
+Design decisions settled in the CL:
+
+- **IP-literal DoH URLs only** for this first cut (`https://1.1.1.1/dns-query`).
+  The host must be an IP, so there is no DoH hostname to resolve and no risk of
+  the bootstrap lookup looping back into s-hole (often the LAN's own resolver).
+  TLS still verifies, because Cloudflare, Google, and Quad9 ship certificates
+  with IP SANs. A hostname DoH URL is rejected at config time.
+- **One mixed `upstreams` list**, not a separate `doh_upstreams` field, so the
+  failover chain stays a single ordered list and nothing downstream of the
+  string changes.
+- **Reuse the 3s per-attempt / 10s per-query budget.** The TLS tax is RTT-scale
+  (about one extra round-trip cold, and warm via keep-alive), well inside 3s; on
+  a link too slow for that, failover to the plain fallback is the right response.
+- **Validation stays shape-only** (`url.Parse` plus `net.ParseIP` on the host).
+  It dials nothing and resolves nothing, preserving the #28 property that config
+  validation cannot become an SSRF or LAN-scan primitive via the admin API.
+
+Deferred follow-ups (recorded, not built):
+
+- **Hostname DoH URLs with a bootstrap resolver.** Accept
+  `https://cloudflare-dns.com/dns-query` by resolving the DoH hostname through a
+  plain-DNS bootstrap (a fixed default or a `doh_bootstrap` config field) rather
+  than the system resolver, so it never loops back into s-hole. This also covers
+  a provider whose certificate lacks IP SANs, which the IP-literal form cannot
+  reach.
+- **A `doh_timeout` knob.** Promote `perUpstreamTimeout` into config if a real
+  deployment ever shows 3s is too tight for DoH. Nothing in this design blocks
+  it; it is a small additive change.
 
 ## 6. Hardening batch, one CL (done, CL 29)
 
@@ -1556,8 +1596,8 @@ resolver checks the DNSSEC chain (DS to DNSKEY to RRSIG over the answer RRset) a
 refuses an answer that fails, returning SERVFAIL in place of a lie.
 
 Scope the value honestly. Most home upstreams (1.1.1.1, 8.8.8.8, Quad9) already
-validate, and once #5 (DoH upstream) or a DoT client encrypts the upstream hop,
-tampering on that hop is already hard. So s-hole's own validation is defense
+validate, and now that #5 (DoH upstream) can encrypt the upstream hop, or once a
+DoT client does, tampering on that hop is already hard. So s-hole's own validation is defense
 against a lying or compromised upstream, and against plain-UDP interception, not a
 universal win. It is the change that lets s-hole stop trusting the upstream.
 

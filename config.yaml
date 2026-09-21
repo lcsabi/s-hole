@@ -3,10 +3,23 @@
 # Use "0.0.0.0:53" for IPv4 only, or a specific address to bind one interface.
 listen: ":53"
 
-# Upstream resolvers, tried in order. Each entry must be host:port; a bare
-# address such as "1.1.1.1" (no ":53") is dropped with a warning at startup.
-# If every entry is malformed, startup fails (nothing could forward). A single
-# upstream is valid but logs a note, because it leaves no fallback if it fails.
+# Upstream resolvers, tried in order. Each entry is either a plain host:port
+# resolver or a DNS-over-HTTPS (DoH) endpoint. A bare address such as "1.1.1.1"
+# (no ":53") is dropped with a warning at startup. If every entry is malformed,
+# startup fails (nothing could forward). A single upstream is valid but logs a
+# note, because it leaves no fallback if it fails.
+#
+# DoH encrypts the hop to the upstream (port 443), which defeats an ISP that
+# intercepts or logs plain port-53 traffic. A DoH entry must use an IP host, not
+# a hostname (s-hole is often the LAN's own resolver, so a hostname lookup could
+# loop back into s-hole). The IP is the same well-known resolver IP, and its
+# certificate covers that IP, so TLS still verifies. Ready-to-use endpoints:
+#   - "https://1.1.1.1/dns-query"   # Cloudflare DoH
+#   - "https://8.8.8.8/dns-query"   # Google DoH
+#   - "https://9.9.9.9/dns-query"   # Quad9 DoH
+# List a plain resolver after a DoH entry to keep a fallback if DoH fails. A DoH
+# URL with a hostname host is not supported yet, so use a provider that answers
+# on an IP.
 upstreams:
   - "1.1.1.1:53"
   - "8.8.8.8:53"

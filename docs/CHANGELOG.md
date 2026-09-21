@@ -8,6 +8,15 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 
 ## [Unreleased]
 
+### Added
+- **DNS-over-HTTPS (DoH) upstream forwarding.** An `upstreams` entry can now be a
+  DoH endpoint with an IP host, for example `https://1.1.1.1/dns-query` (also
+  `8.8.8.8`, `9.9.9.9`). s-hole POSTs the query to it over HTTPS (RFC 8484), so
+  the hop to the upstream is encrypted and an ISP that intercepts plain port-53
+  traffic no longer sees or rewrites it. DoH and plain entries share the one
+  ordered list and the same failover, so listing a plain resolver after a DoH
+  entry keeps a fallback. The DoH host must be an IP, not a hostname. (CL 85)
+
 ## [1.0.0] - 2026-09-18
 
 ### Fixed

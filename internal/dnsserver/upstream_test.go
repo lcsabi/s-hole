@@ -2,7 +2,10 @@ package dnsserver
 
 import (
 	"context"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -367,6 +370,181 @@ func TestForward_PackageLevelHonorsTracker(t *testing.T) {
 	}
 	if len(resp.Answer) != 1 {
 		t.Fatalf("response has %d answers, want 1", len(resp.Answer))
+	}
+}
+
+// startDoHUpstream runs an httptest TLS server with the given handler and swaps
+// the package dohClient to trust its certificate. The swap is safe because the
+// package runs its tests sequentially (no t.Parallel); cleanup restores the
+// original client, closes idle connections, and stops the server so the goleak
+// TestMain stays green. It returns the RFC 8484 endpoint URL and a query
+// counter.
+func startDoHUpstream(t *testing.T, h http.HandlerFunc) (endpoint string, hits *atomic.Int64) {
+	t.Helper()
+	hits = new(atomic.Int64)
+
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		h(w, r)
+	}))
+
+	old := dohClient
+	dohClient = ts.Client()
+	t.Cleanup(func() {
+		dohClient.CloseIdleConnections()
+		dohClient = old
+		ts.Close()
+	})
+
+	return ts.URL + "/dns-query", hits
+}
+
+// startMockDoHUpstream runs a DoH server that answers every A query with ip.
+func startMockDoHUpstream(t *testing.T, ip net.IP) (endpoint string, hits *atomic.Int64) {
+	t.Helper()
+	return startDoHUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var req dns.Msg
+		if err := req.Unpack(body); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		resp := new(dns.Msg)
+		resp.SetReply(&req)
+		if len(req.Question) > 0 && req.Question[0].Qtype == dns.TypeA {
+			resp.Answer = []dns.RR{
+				&dns.A{
+					Hdr: dns.RR_Header{
+						Name:   req.Question[0].Name,
+						Rrtype: dns.TypeA,
+						Class:  dns.ClassINET,
+						Ttl:    60,
+					},
+					A: ip,
+				},
+			}
+		}
+		packed, err := resp.Pack()
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", dohMediaType)
+		w.Write(packed)
+	})
+}
+
+func TestForward_DoHHappyPath(t *testing.T) {
+	endpoint, hits := startMockDoHUpstream(t, net.IPv4(9, 9, 9, 9))
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := forwardWith(ctx, req, []string{endpoint}, newUpstreamTracker())
+	if err != nil {
+		t.Fatalf("forwardWith: %v", err)
+	}
+	if hits.Load() != 1 {
+		t.Errorf("DoH server received %d queries, want 1", hits.Load())
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("response has %d answers, want 1", len(resp.Answer))
+	}
+	if a := resp.Answer[0].(*dns.A); !a.A.Equal(net.IPv4(9, 9, 9, 9)) {
+		t.Errorf("answer A = %v, want 9.9.9.9", a.A)
+	}
+}
+
+func TestForward_DoHNon200Fails(t *testing.T) {
+	// A non-200 status is a transport failure: exchange returns an error so
+	// forwardWith fails over, exactly as a UDP failure does.
+	endpoint, hits := startDoHUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if _, err := forwardWith(ctx, req, []string{endpoint}, newUpstreamTracker()); err == nil {
+		t.Error("expected error when the DoH server returns a non-200 status")
+	}
+	if hits.Load() != 1 {
+		t.Errorf("DoH server received %d queries, want 1", hits.Load())
+	}
+}
+
+func TestForward_DoHBadBodyFails(t *testing.T) {
+	// A 200 with a body that is not a valid DNS message must error, so a
+	// broken endpoint is treated as a failure and not relayed as an answer.
+	endpoint, _ := startDoHUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", dohMediaType)
+		w.Write([]byte{0x00}) // too short to unpack
+	})
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if _, err := forwardWith(ctx, req, []string{endpoint}, newUpstreamTracker()); err == nil {
+		t.Error("expected error when the DoH response body is not a DNS message")
+	}
+}
+
+func TestForward_DoHFailoverToPlain(t *testing.T) {
+	// A mixed list: the DoH entry fails, so forwardWith falls over to the plain
+	// resolver listed after it. This exercises the transport-agnostic loop end
+	// to end (DoH first, plain fallback), the recommended operator ordering.
+	dohEndpoint, dohHits := startDoHUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+	plain, plainHits := startMockUpstream(t, net.IPv4(8, 8, 8, 8))
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tracker := newUpstreamTracker()
+	resp, err := forwardWith(ctx, req, []string{dohEndpoint, plain}, tracker)
+	if err != nil {
+		t.Fatalf("forwardWith: %v", err)
+	}
+	if dohHits.Load() != 1 {
+		t.Errorf("DoH server got %d queries, want 1", dohHits.Load())
+	}
+	if plainHits.Load() != 1 {
+		t.Errorf("plain upstream got %d queries, want 1", plainHits.Load())
+	}
+	if a := resp.Answer[0].(*dns.A); !a.A.Equal(net.IPv4(8, 8, 8, 8)) {
+		t.Errorf("answer A = %v, want 8.8.8.8", a.A)
+	}
+	// The failed DoH upstream, keyed by its URL string, is now in cooldown.
+	if !tracker.shouldSkip(dohEndpoint, time.Now()) {
+		t.Error("failed DoH upstream was not recorded in the cooldown tracker")
+	}
+}
+
+func TestExchangeDoH_ContextCanceled(t *testing.T) {
+	// A canceled context must surface as an error from the DoH exchange (the
+	// per-query deadline and handler-exit cancellation reach the HTTP request).
+	endpoint, _ := startMockDoHUpstream(t, net.IPv4(1, 1, 1, 1))
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := exchangeDoH(ctx, req, endpoint); err == nil {
+		t.Error("expected an error from a canceled DoH exchange")
 	}
 }
 

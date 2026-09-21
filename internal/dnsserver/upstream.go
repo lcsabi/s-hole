@@ -1,8 +1,12 @@
 package dnsserver
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -157,7 +161,8 @@ func forwardWith(ctx context.Context, req *dns.Msg, upstreams []string, tracker 
 	return nil, fmt.Errorf("all upstreams failed for %s", req.Question[0].Name)
 }
 
-// exchange performs one UDP exchange with upstream, retrying once over
+// exchange dispatches an "https://" upstream to exchangeDoH (DNS-over-HTTPS).
+// Otherwise it performs one UDP exchange with upstream, retrying once over
 // TCP when the reply comes back truncated (TC bit set). Without the
 // retry, the truncated answer would be relayed verbatim, and because
 // queries arriving over TCP are also forwarded over UDP, the client's
@@ -177,7 +182,34 @@ var (
 	tcpClient = &dns.Client{Net: "tcp", Timeout: perUpstreamTimeout}
 )
 
+// dohClient carries DNS-over-HTTPS upstream queries (RFC 8484). It is reused
+// across queries like udpClient/tcpClient, so its connection pool keeps a DoH
+// upstream's TLS connection alive: only the first query after startup or a long
+// idle gap pays the handshake, the rest reuse the warm connection. The
+// per-attempt deadline rides on the request context (like the UDP/TCP path), so
+// no Client.Timeout is set. Tests swap this var to trust an httptest TLS server.
+var dohClient = &http.Client{
+	Transport: &http.Transport{
+		ForceAttemptHTTP2:   true,
+		MaxIdleConnsPerHost: 2,
+		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: perUpstreamTimeout,
+	},
+}
+
+// maxDoHResponse caps a DoH response body read. dns.MaxMsgSize (65535) is the
+// DNS-over-TCP message ceiling, so no legitimate answer exceeds it; the cap
+// stops a hostile or broken endpoint from streaming an unbounded body.
+const maxDoHResponse = dns.MaxMsgSize
+
+// dohMediaType is the RFC 8484 content type for a wire-format DNS message.
+const dohMediaType = "application/dns-message"
+
 func exchange(ctx context.Context, req *dns.Msg, upstream string) (*dns.Msg, error) {
+	if strings.HasPrefix(upstream, "https://") {
+		return exchangeDoH(ctx, req, upstream)
+	}
+
 	attemptCtx, cancel := context.WithTimeout(ctx, perUpstreamTimeout)
 	resp, _, err := udpClient.ExchangeContext(attemptCtx, req, upstream)
 	cancel()
@@ -192,4 +224,48 @@ func exchange(ctx context.Context, req *dns.Msg, upstream string) (*dns.Msg, err
 		return resp, nil
 	}
 	return full, nil
+}
+
+// exchangeDoH POSTs the wire-format query to a DoH endpoint and unpacks the
+// wire-format reply (RFC 8484). It needs no TC/TCP retry: an HTTP body is never
+// DNS-truncated. A non-200 status, a transport error, or an unparsable body all
+// return an error, so forwardWith records a transport failure and fails over to
+// the next upstream, exactly as a UDP failure does. The query ID is left as
+// sent; a compliant server echoes it.
+func exchangeDoH(ctx context.Context, req *dns.Msg, upstream string) (*dns.Msg, error) {
+	packed, err := req.Pack()
+	if err != nil {
+		return nil, fmt.Errorf("packing DoH query: %w", err)
+	}
+
+	attemptCtx, cancel := context.WithTimeout(ctx, perUpstreamTimeout)
+	defer cancel()
+
+	httpReq, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, upstream, bytes.NewReader(packed))
+	if err != nil {
+		return nil, fmt.Errorf("building DoH request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", dohMediaType)
+	httpReq.Header.Set("Accept", dohMediaType)
+
+	httpResp, err := dohClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("DoH request to %s: %w", upstream, err)
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("DoH request to %s: status %d", upstream, httpResp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(httpResp.Body, maxDoHResponse))
+	if err != nil {
+		return nil, fmt.Errorf("reading DoH response from %s: %w", upstream, err)
+	}
+
+	var out dns.Msg
+	if err := out.Unpack(body); err != nil {
+		return nil, fmt.Errorf("unpacking DoH response from %s: %w", upstream, err)
+	}
+	return &out, nil
 }

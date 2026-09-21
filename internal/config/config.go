@@ -20,6 +20,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -153,15 +154,15 @@ func Load(path string) (*Config, error) {
 	for _, k := range badKeys {
 		logger.Warn("ignoring client_names entry with invalid key", "key", k)
 	}
-	// Drop upstreams that are not host:port with a WARN, so a fat-finger such
-	// as a bare "1.1.1.1" (no ":53") does not become a failed dial on every
-	// query. applyDefaults already ran, so a genuinely absent list holds the
-	// two valid defaults here; an empty list after this filter means every
-	// configured upstream was malformed, which Validate rejects as fatal.
+	// Drop malformed upstreams with a WARN, so a fat-finger such as a bare
+	// "1.1.1.1" (no ":53") does not become a failed dial on every query.
+	// applyDefaults already ran, so a genuinely absent list holds the two valid
+	// defaults here; an empty list after this filter means every configured
+	// upstream was malformed, which Validate rejects as fatal.
 	var droppedUp []string
 	cfg.Upstreams, droppedUp = filterUpstreams(cfg.Upstreams)
 	for _, u := range droppedUp {
-		logger.Warn("ignoring malformed upstream (want host:port, e.g. 1.1.1.1:53)", "upstream", u)
+		logger.Warn("ignoring malformed upstream (want host:port such as 1.1.1.1:53, or a DoH URL with an IP host such as https://1.1.1.1/dns-query)", "upstream", u)
 	}
 	return cfg, nil
 }
@@ -212,18 +213,33 @@ func filterWhitelist(entries []string) (valid, dropped []string) {
 	return valid, dropped
 }
 
-// filterUpstreams splits upstreams into those that have host:port shape and
-// those that do not, preserving order. The gate is net.SplitHostPort with a
-// non-empty host and port, so a bare "1.1.1.1" (no port), ":53" (no host), and
-// "1.1.1.1:" (no port) are all rejected. It is a shape check, not a
-// reachability check: a well-formed but dead or typo'd address stays a runtime
-// concern that the upstream cooldown tracker already handles. It resolves no
-// name and dials nothing, so it adds no network call. Load drops the invalid
-// entries (with a WARN) instead of forwarding to them, so one bad address does
-// not add a failed dial per query; if every entry is dropped, Validate turns
-// the now-empty list into a fatal startup error. This mirrors filterWhitelist.
+// filterUpstreams splits upstreams into valid and invalid, preserving order. It
+// accepts two shapes: a plain "host:port" resolver (checked with
+// net.SplitHostPort and a non-empty host and port, so a bare "1.1.1.1" (no
+// port), ":53" (no host), and "1.1.1.1:" (no port) are all rejected), and a
+// DoH endpoint URL "https://<IP>/dns-query" (checked by isValidDoHURL). It is a
+// shape check, not a reachability check: a well-formed but dead or typo'd
+// address stays a runtime concern that the upstream cooldown tracker already
+// handles. It resolves no name and dials nothing, so it adds no network call
+// and cannot be turned into an SSRF or LAN-scan primitive via the config path.
+// Load drops the invalid entries (with a WARN) instead of forwarding to them,
+// so one bad address does not add a failed dial per query; if every entry is
+// dropped, Validate turns the now-empty list into a fatal startup error. This
+// mirrors filterWhitelist.
 func filterUpstreams(upstreams []string) (valid, dropped []string) {
 	for _, u := range upstreams {
+		// A URL-shaped entry (any "scheme://") is validated as a DoH endpoint,
+		// so a plain-DNS host:port never contains "://". This also routes a
+		// non-https URL (e.g. "http://...") through isValidDoHURL, which rejects
+		// it, instead of letting net.SplitHostPort mis-read it as a host:port.
+		if strings.Contains(u, "://") {
+			if isValidDoHURL(u) {
+				valid = append(valid, u)
+			} else {
+				dropped = append(dropped, u)
+			}
+			continue
+		}
 		host, port, err := net.SplitHostPort(u)
 		if err != nil || host == "" || port == "" {
 			dropped = append(dropped, u)
@@ -232,6 +248,22 @@ func filterUpstreams(upstreams []string) (valid, dropped []string) {
 		valid = append(valid, u)
 	}
 	return valid, dropped
+}
+
+// isValidDoHURL reports whether u is a usable DoH upstream for this first cut:
+// an https URL whose host is an IP literal, e.g. "https://1.1.1.1/dns-query".
+// The IP requirement is deliberate. s-hole is often the box's own resolver, so
+// resolving a DoH hostname could loop back into s-hole; an IP host removes the
+// bootstrap lookup entirely, and the major providers (Cloudflare, Google,
+// Quad9) ship certificates with IP SANs so TLS still verifies. A hostname DoH
+// URL is rejected here (support for it needs a bootstrap resolver, a later CL).
+// Like the host:port check, this parses only and dials nothing.
+func isValidDoHURL(u string) bool {
+	parsed, err := url.Parse(u)
+	if err != nil || parsed.Scheme != "https" {
+		return false
+	}
+	return net.ParseIP(parsed.Hostname()) != nil
 }
 
 // applyEnvOverrides reads S_HOLE_* environment variables and overrides
@@ -406,7 +438,7 @@ func (c *Config) Validate() error {
 	}
 	switch len(c.Upstreams) {
 	case 0:
-		return errors.New("no usable upstream: every configured upstream was malformed (want host:port, e.g. 1.1.1.1:53)")
+		return errors.New("no usable upstream: every configured upstream was malformed (want host:port such as 1.1.1.1:53, or a DoH URL with an IP host such as https://1.1.1.1/dns-query)")
 	case 1:
 		logger.Info("single upstream configured; no forwarding fallback if it fails", "upstream", c.Upstreams[0])
 	}

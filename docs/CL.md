@@ -98,6 +98,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 82](cls/CL-82.md) | Validate upstreams at config time: drop malformed host:port entries, fatal when none forward, single-upstream note (ROADMAP #28) |
 | [CL 83](cls/CL-83.md) | Graduate the CHANGELOG to v1.0.0 |
 | [CL 84](cls/CL-84.md) | Dedup the dashboard query-filter params into one applyFilterParams helper (code-review follow-up) |
+| [CL 85](cls/CL-85.md) | DNS-over-HTTPS upstream forwarding (ROADMAP #5) |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

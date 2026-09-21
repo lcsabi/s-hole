@@ -57,7 +57,7 @@ groups:
           severity: warning
         annotations:
           summary: "An upstream resolver is failing at the transport level"
-          description: "Upstream {{ $labels.upstream }} has non-zero transport failures (timeouts or refused connections) over 10 minutes. It may be unreachable or rate-limiting."
+          description: "Upstream {{ $labels.upstream }} has non-zero transport failures (a timeout, a refused connection, or for a DoH upstream a non-200 status or unparsable body) over 10 minutes. It may be unreachable or rate-limiting."
 
       - alert: GoroutineLeak
         expr: shole_goroutines - (shole_goroutines offset 1h) > 100

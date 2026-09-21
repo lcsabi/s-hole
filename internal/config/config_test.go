@@ -295,6 +295,43 @@ func TestFilterUpstreams_Empty(t *testing.T) {
 	}
 }
 
+func TestFilterUpstreams_DoH(t *testing.T) {
+	// A DoH endpoint with an IP host is accepted and kept in the mixed list; a
+	// DoH URL with a hostname, a non-https scheme, or a malformed URL is
+	// dropped. Order (DoH first, plain fallback) is preserved.
+	in := []string{
+		"https://1.1.1.1/dns-query",                // IP host: accepted
+		"1.1.1.1:53",                               // plain fallback: accepted
+		"https://cloudflare-dns.com/dns-query",     // hostname host: dropped
+		"http://9.9.9.9/dns-query",                 // not https: dropped
+		"https://[2606:4700:4700::1111]/dns-query", // IPv6 host: accepted
+	}
+	valid, dropped := filterUpstreams(in)
+
+	wantValid := []string{"https://1.1.1.1/dns-query", "1.1.1.1:53", "https://[2606:4700:4700::1111]/dns-query"}
+	if !reflect.DeepEqual(valid, wantValid) {
+		t.Errorf("valid = %v, want %v", valid, wantValid)
+	}
+	wantDropped := []string{"https://cloudflare-dns.com/dns-query", "http://9.9.9.9/dns-query"}
+	if !reflect.DeepEqual(dropped, wantDropped) {
+		t.Errorf("dropped = %v, want %v", dropped, wantDropped)
+	}
+}
+
+func TestLoad_AcceptsDoHUpstream(t *testing.T) {
+	// A DoH IP-literal endpoint survives Load next to a plain fallback, so an
+	// operator can order "DoH first, plain fallback" in one list.
+	path := writeTemp(t, "upstreams:\n  - https://1.1.1.1/dns-query\n  - 1.1.1.1:53\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load = %v, want nil", err)
+	}
+	want := []string{"https://1.1.1.1/dns-query", "1.1.1.1:53"}
+	if !reflect.DeepEqual(cfg.Upstreams, want) {
+		t.Errorf("cfg.Upstreams = %v, want %v", cfg.Upstreams, want)
+	}
+}
+
 func TestLoad_DropsMalformedUpstreams(t *testing.T) {
 	// A malformed entry is dropped (Load WARNs on it) and the valid ones remain,
 	// so one fat-finger does not take down a working config.

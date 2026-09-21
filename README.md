@@ -37,7 +37,7 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
 - **Subdomain (suffix) blocking.** A blocked domain blocks its whole subtree, so `ads.example.com` also covers `x.ads.example.com`. Trackers cannot dodge a list entry by rotating subdomains.
 - **Community blocklists.** Downloads and auto-refreshes hosts-file or plain-domain lists from any URL.
 - **DNS response cache.** Serves repeat queries from memory. Typical cache hit rates of 40–70% reduce upstream load and latency.
-- **Resilient upstream forwarding.** Tries upstreams in order over UDP, falls back to TCP on truncation, and skips recently-failed resolvers until they recover.
+- **Resilient upstream forwarding.** Tries upstreams in order over UDP, falls back to TCP on truncation, and skips recently-failed resolvers until they recover. Forwards over DNS-over-HTTPS (DoH) when an upstream is an `https://` endpoint, to encrypt the upstream hop.
 - **Local reverse DNS.** Answers PTR queries for the RFC 6303 private ranges (`10/8`, `172.16/12`, `192.168/16`, and IPv6 ULA and link-local) locally, so internal LAN addressing never leaks to the upstream resolver. On by default. Disable it with `local_ptr: false`.
 - **Dual query log.** A plain-text file for `grep` and `tail`, plus a SQLite database for historical queries.
 - **Query-log privacy.** Choose how the client IP is stored: keep it, drop it, or mask it to a subnet (`query_privacy`). Optional `client_names` labels map an IP or subnet to a friendly device name in the log and the dashboard.
@@ -179,7 +179,7 @@ All configuration lives in `config.yaml`. Every field has a safe default. An emp
 | Field | Default | Description |
 |---|---|---|
 | `listen` | `:53` | Address and port for DNS queries (UDP + TCP). `:53` binds all interfaces, IPv4 + IPv6; use `0.0.0.0:53` for IPv4 only |
-| `upstreams` | `[1.1.1.1:53, 8.8.8.8:53]` | Upstream resolvers, tried in order. Each must be `host:port`; a malformed entry is dropped with a warning at startup, and a config where every entry is malformed fails to start |
+| `upstreams` | `[1.1.1.1:53, 8.8.8.8:53]` | Upstream resolvers, tried in order. Each is a plain `host:port` or a DNS-over-HTTPS (DoH) endpoint with an IP host (`https://1.1.1.1/dns-query`; also `8.8.8.8`, `9.9.9.9`). DoH encrypts the upstream hop, which defeats an ISP that intercepts plain port-53 traffic; list a plain resolver after a DoH entry to keep a fallback. A DoH host must be an IP, not a hostname (a hostname-only provider is not supported yet). A malformed entry is dropped with a warning at startup, and a config where every entry is malformed fails to start |
 | `blocklists` | StevenBlack + AdAway | List of URLs to download (hosts-file or plain-domain format) |
 | `whitelist` | `[]` | Domains that are never blocked, regardless of blocklist membership. Matched by suffix and wins at every level: a whitelisted domain exempts its whole subtree, even past a more specific blocked parent |
 | `refresh_interval` | `24h` | How often to re-download blocklists |

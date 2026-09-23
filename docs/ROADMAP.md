@@ -49,7 +49,7 @@ rails.
 | 33 | Cache packed wire bytes: drop the per-hit `dns.Msg` copy | Medium | not started |
 | 34 | General admin-API rate limiting (defense-in-depth) | Low | not started |
 | 35 | DNSSEC validation of upstream answers | Medium | not started |
-| 36 | Serve DNS over TLS / HTTPS to LAN clients (DoT/DoH server) | Medium | done (CL 86): DoT; DoH server deferred to #39 |
+| 36 | Serve DNS over TLS / HTTPS to LAN clients (DoT/DoH server) | Medium | done (CL 86): DoT; Android device test pending; DoH server deferred to #39 |
 | 37 | Per-query latency histograms (service time + upstream) in `/metrics` | Medium | not started |
 | 38 | Per-transport query counter (plain, DoT) in `/metrics` | Medium | not started |
 | 39 | Serve DoH to LAN clients (client-facing `/dns-query` endpoint) | Low | not started |
@@ -1717,6 +1717,18 @@ listener to miekg/dns as a third `dns.Server` (`Net: "tcp-tls"`) on the shared
 handler, so blocking, the cache, stats, the query log, and the CL 72 mask apply
 unchanged (`clientAddr` sees the `*net.TCPAddr` under the `tls.Conn`).
 `Server.Start` was generalized from two listeners to N with an exact drain.
+
+**Validation status: not yet tested with a real Android device.** CL 86 was
+tested with automated tests, `dig +tls`, and `openssl s_client` on a
+development machine, but not with an Android phone in Private DNS mode, which is
+the motivating case. The Android guidance in the README (strict mode, the
+publicly trusted certificate, the public A record, the off-LAN warning) comes
+from Android's documented behavior, not from a test run, and the README says so.
+The item stays open for that acceptance test, the same way #1 stays open for
+real hardware: point a phone's Private DNS at the hostname, confirm it resolves
+through s-hole (a blocked domain returns `0.0.0.0`), and record whether Android
+accepts a user-installed CA. Record the result here and correct the README if
+Android behaves differently.
 
 Design decisions settled in the CL:
 

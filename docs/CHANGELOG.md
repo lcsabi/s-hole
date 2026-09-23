@@ -15,7 +15,9 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   off by default. You supply the certificate: the README shows `mkcert`,
   `openssl`, and an ACME route. DoT queries get the same blocking, cache, and
   logging as plain ones. If the port is taken or the certificate does not load,
-  s-hole stops with an error instead of running without DoT. (CL 86)
+  s-hole stops with an error instead of running without DoT. The DoT path is
+  not yet tested with a real Android phone; the README marks the Android steps
+  as untested. (CL 86)
 - **Certificate renewal without a restart.** A reload (the dashboard button,
   `POST /api/reload`, `systemctl reload s-hole`, SIGHUP, or the periodic
   refresh) re-reads the DoT certificate and key. If the new files do not load,

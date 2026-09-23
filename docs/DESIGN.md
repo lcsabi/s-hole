@@ -31,7 +31,7 @@ s-hole ("sinkhole") is a minimal DNS sinkhole written in Go. It is designed to b
 
 ## Non-Goals
 
-- **Serving DNS over HTTPS (DoH) to LAN clients.** LAN clients reach s-hole over plain UDP and TCP on port 53 or, opt-in, over DNS over TLS on port 853 (CL 86; see the DNS Server section). A client-facing DoH endpoint is not built: between a client and its own LAN resolver nothing blocks port 853, so DoH would add no capability that DoT lacks (`docs/ROADMAP.md` #39). Encrypted *upstream* forwarding is a separate feature (DoH upstream, CL 85).
+- **Serving DNS over HTTPS (DoH) to LAN clients.** LAN clients reach s-hole over plain UDP and TCP on port 53 or, opt-in, over DNS over TLS on port 853 (CL 86; see the DNS Server section). A client-facing DoH endpoint is not built. On a LAN it opens no new network path, because nothing blocks port 853 between a client and its own resolver. It would reach clients that speak DoH but not DoT, such as Windows desktops and browsers, and waits for that demand (`docs/ROADMAP.md` #39). Encrypted *upstream* forwarding is a separate feature (DoH upstream, CL 85).
 - **Running on the router.** We assume the router is a commodity device that does not support arbitrary software. Network-wide coverage is achieved by pointing the router's DHCP DNS field at the host running s-hole.
 - **DNSSEC validation.** DNSSEC records are passed through transparently; we do not validate or strip them.
 - **Per-client policy.** All clients share the same blocklist and whitelist.

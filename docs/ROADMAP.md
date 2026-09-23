@@ -89,7 +89,8 @@ side (s-hole as a DoT/DoH server).
 Items 38-39 were split out of #36 when its DoT part landed (CL 86). #38 is the
 per-transport metric that #36 listed, deferred so the listener CL did not also
 change the `stats.Counter` invariants. #39 is the client-facing DoH endpoint,
-deferred because on a LAN it adds no capability that DoT lacks.
+deferred because its main use (Windows desktops and browsers, which speak DoH
+but not DoT) did not justify its surface in the first cut.
 
 ## 1. Deploy to real hardware
 
@@ -1772,17 +1773,25 @@ real hardware. Run it in this order, cheapest route first:
    publicly trusted certificate and a public A record to the LAN IP. This
    confirms that the domain is required.
 
+A desktop check belongs to the same test: on a Debian VM, run `systemd-resolved`
+against s-hole in opportunistic mode (expect DoT on port 853 with the untrusted
+self-signed certificate), then in strict mode (`DNSOverTLS=yes`: expect failure,
+then success after trusting the certificate). Record whether strict mode accepts
+the `CA:FALSE` self-signed certificate as a trust anchor, which would make mkcert
+optional for Linux desktops.
+
 In every case, confirm that queries resolve through s-hole (a blocked domain
 returns `0.0.0.0`), and check the off-LAN behavior. Record the results here and
 correct the README if Android behaves differently from its documentation.
 
 Design decisions settled in the CL:
 
-- **DoT only; the DoH server is deferred to #39.** Android Private DNS needs DoT,
-  and between a client and its own LAN resolver nothing blocks port 853. So a
-  client-facing DoH endpoint adds no LAN capability, for a large surface (an
-  `http.Server`, a `ResponseWriter` adapter, RFC 8484 GET and POST parsing, its
-  own shutdown drain).
+- **DoT only; the DoH server is deferred to #39.** Android Private DNS uses DoT,
+  and between a client and its own LAN resolver nothing blocks port 853, so DoH
+  opens no new network path. It would reach other clients (Windows desktops and
+  browsers speak DoH but not DoT), but for a large surface (an `http.Server`, a
+  `ResponseWriter` adapter, RFC 8484 GET and POST parsing, its own shutdown
+  drain), so it waits for demand.
 - **Operator-supplied certificate, no generation.** Only the operator knows the
   hostname clients use (the SAN) and can make clients trust the issuer; a public
   CA cannot issue for a private name. So s-hole loads the operator's files and
@@ -1919,19 +1928,28 @@ filtering behavior.
 ## 39. Serve DoH to LAN clients (client-facing endpoint)
 
 Split out of #36 and deliberately parked. A DoH endpoint (`/dns-query`, RFC 8484
-GET and POST) would let a client that speaks only DoH, such as a browser with a
-custom DoH URL, use s-hole over an encrypted channel. On a LAN this adds no
-capability that DoT (CL 86) lacks: DoH's advantage is that port 443 is hard to
-block, and nothing blocks port 853 between a client and its own resolver. It
-would also add real surface: an `http.Server` kept off the unauthenticated admin
+GET and POST) would let a client that speaks only DoH use s-hole over an
+encrypted channel. DoH's usual advantage, that port 443 is hard to block, does
+not matter on a LAN, where nothing blocks port 853. Its real gain is client
+reach:
+
+- **Windows desktops.** Windows 11's built-in encrypted DNS is DoH only (DoT
+  appeared only in Insider builds, as far as known), so a Windows desktop cannot
+  use s-hole's DoT (CL 86) without third-party software.
+- **Browsers.** Chrome and Firefox speak DoH only. A browser pointed at a custom
+  DoH URL could use s-hole; today it cannot.
+
+It would also add real surface: an `http.Server` kept off the unauthenticated admin
 server, a `dns.ResponseWriter` adapter, request parsing and size limits, a
 decision on trusting `X-Forwarded-For`, and a second shutdown drain.
 
-The trigger to build it is a concrete client that speaks only DoH and cannot use
-DoT. It would reuse the CL 86 certificate (`tls_cert`, `tls_key`) and reload
-path.
+The trigger to build it is demand from those clients, most likely Windows
+desktops. It would reuse the CL 86 certificate (`tls_cert`, `tls_key`) and
+reload path.
 
-Rated Low: a niche client path with no LAN capability gain over DoT.
+Rated Low: it reaches Windows desktops and browsers, but on a LAN their plain
+DNS already reaches s-hole and gets filtered; DoH would add encryption for them,
+not blocking.
 
 ## Pending decisions
 

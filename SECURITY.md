@@ -76,6 +76,14 @@ Out of scope:
   the last reload error, which can name the certificate file path. Like the
   rest of the admin API it is unauthenticated, so keep `api_listen` on
   localhost or a trusted LAN.
+- **A private CA installed on clients is trusted for every site.** For DoT with
+  a private certificate, each client must trust its CA. Whoever holds that
+  CA's private key can then impersonate any website to those devices, so keep
+  the key off the s-hole box. With mkcert, the CA key stays on the workstation
+  that issued the certificate. The README's openssl self-signed certificate is
+  its own CA, and its private key (`tls_key`) lives on the s-hole box, so use
+  it only for per-command tests (`dig +tls-ca=`) and never install it as a
+  trusted root. A publicly trusted certificate (ACME) needs no client install.
 - **No CGO.** The binary is statically linked, so a libc or
   `libsystemd` vulnerability cannot reach the s-hole process.
 - **Client name labels are read-only and privacy-bounded.** The optional

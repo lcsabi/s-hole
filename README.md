@@ -253,19 +253,20 @@ log_queries: blocked        # skip logging allowed queries to save writes
 
 s-hole can also serve DNS over TLS (DoT, RFC 7858). A DoT client reaches s-hole over an encrypted connection, usually on port 853, and gets the same blocking, cache, and logging as a plain query. When Android's Private DNS is set to a provider hostname, the phone uses only DoT to that host and does not fall back to plain DNS, so it bypasses a plain-DNS s-hole. DoT is off by default.
 
-> **Test status.** The DoT listener, the certificate reload, and the certificate status were tested with automated tests, `dig +tls`, and `openssl s_client`. They have **not** been tested with a real Android phone in Private DNS mode yet. Until that test is done, treat the Android steps below (the certificate route in step 1 and step 5) as untested. The Android behavior they describe comes from Android's documentation, not from a test run.
+> **Test status.** The DoT listener, the certificate reload, and the certificate status were tested with automated tests, `dig +tls`, and `openssl s_client`. They have **not** been tested with a real Android phone in Private DNS mode yet. Until that test is done, treat the Android steps below (the certificate route in step 1, the Android row of the client-trust table, and step 5) as untested. The Android behavior they describe comes from Android's documentation, not from a test run.
 
 **1. Get a certificate.** A DoT client checks two things. The certificate must name the hostname the client connects with (the Subject Alternative Name, or SAN). The client must also trust the certificate's issuer. s-hole does not make a certificate for you, because only you know the hostname and can make your devices trust it. Pick one of these:
 
 - **For Android Private DNS**, use a domain you own, such as `dns.example.com`. Get a publicly trusted certificate for it, for example from Let's Encrypt with a DNS-01 challenge (the box does not have to be reachable from the internet). In your domain's public DNS zone, add an A record that points `dns.example.com` at the s-hole box's LAN IP (s-hole cannot answer that name itself yet). Android may not accept a certificate from a CA that you installed yourself, so test on the phone.
-- **For desktop DoT clients and for testing**, make a local certificate. [mkcert](https://github.com/FiloSottile/mkcert) makes one and installs its CA on the machine that runs it:
+- **For desktop DoT clients**, use [mkcert](https://github.com/FiloSottile/mkcert). It makes a local CA, installs it on the machine that runs it, and issues the certificate. Put the hostname and LAN IP that clients use in the SAN:
 
   ```bash
   mkcert -install
   mkcert -cert-file cert.pem -key-file key.pem dns.home 192.168.1.10
   ```
 
-  Or make a self-signed certificate with openssl. Put the hostname and LAN IP that clients use in the SAN:
+  Then install the mkcert CA on every other client, as described in [Make clients trust the certificate](#make-clients-trust-the-certificate).
+- **For a quick test only**, make a self-signed certificate with openssl:
 
   ```bash
   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
@@ -273,7 +274,7 @@ s-hole can also serve DNS over TLS (DoT, RFC 7858). A DoT client reaches s-hole 
     -addext "subjectAltName=DNS:dns.home,IP:192.168.1.10"
   ```
 
-  Every client must trust this certificate (or the mkcert CA).
+  Use it only with a client that takes the certificate for one command, such as `dig +tls-ca=cert.pem` in step 4. **Do not install this certificate as a trusted root on any device.** OpenSSL marks it as a CA, and its private key is `key.pem` on the s-hole box. Anyone who gets that key could then sign a certificate for any website, and every device that trusts `cert.pem` would accept it.
 
 **2. Install the files.** The systemd service runs as the `s-hole` user and cannot see home directories (`ProtectHome=true`). Put the files in `/etc/s-hole/` and keep the key private:
 
@@ -299,7 +300,7 @@ sudo systemctl restart s-hole
 
 If the port is in use or the certificate does not load, s-hole stops with an error. It does not start without DoT.
 
-**4. Test it** from a machine that trusts the certificate. This needs `dig` from BIND 9.18 or later:
+**4. Test it.** This needs `dig` from BIND 9.18 or later. `+tls-ca` names the CA to trust for this one command: `cert.pem` for the openssl test certificate, or `"$(mkcert -CAROOT)/rootCA.pem"` for mkcert. With a publicly trusted certificate, leave out `+tls-ca`.
 
 ```bash
 dig +tls +tls-ca=cert.pem +tls-hostname=dns.home @192.168.1.10 -p 853 doubleclick.net
@@ -322,6 +323,29 @@ systemctl reload s-hole
 ```
 
 **Docker.** Put the files in `data/` (the container sees them under `/app`), set `tls_cert: "/app/cert.pem"` and `tls_key: "/app/key.pem"`, and publish the port, for example `-p 192.168.1.10:853:853/tcp`. To reload, run `docker kill -s HUP s-hole` (the container runs Linux on every host), or use the dashboard or `POST /api/reload`.
+
+#### Make clients trust the certificate
+
+A client accepts the certificate only if it trusts the issuer. What you must do depends on the certificate route from step 1:
+
+- **Publicly trusted certificate (ACME):** nothing. Every device already trusts the issuer. This is the only route that needs no work on each device.
+- **mkcert:** install the mkcert CA certificate on each client. It is `rootCA.pem` in the folder that `mkcert -CAROOT` prints. Copy only `rootCA.pem`. Never copy `rootCA-key.pem`; keep it on the machine where you ran mkcert.
+- **openssl test certificate:** do not install it on any device (see step 1).
+
+To install `rootCA.pem` on a client:
+
+| Client | How |
+|---|---|
+| Debian, Ubuntu | `sudo cp rootCA.pem /usr/local/share/ca-certificates/s-hole-ca.crt`, then `sudo update-ca-certificates`. The file name must end in `.crt`. |
+| Fedora, RHEL | `sudo cp rootCA.pem /etc/pki/ca-trust/source/anchors/s-hole-ca.pem`, then `sudo update-ca-trust`. |
+| macOS | `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain rootCA.pem` |
+| Windows | In an Administrator prompt: `certutil -addstore -f Root rootCA.pem` |
+| iOS, iPadOS | Send the file to the device (AirDrop or email) and install it in Settings → General → VPN & Device Management. Then turn on full trust in Settings → General → About → Certificate Trust Settings. |
+| Android | Settings → Security → Encryption & credentials → Install a certificate → CA certificate. This adds the CA to the user store, and Private DNS probably ignores user-installed CAs (untested; see the test status above). Use a publicly trusted certificate for Android. |
+
+The trust must be where the DoT client looks. Some clients use the system store, for example `systemd-resolved` with `DNSOverTLS=yes` and `DNS=192.168.1.10#dns.home`. Others read their own CA file, such as `dig +tls-ca=` or stubby's `tls_ca_file`.
+
+> **Warning.** A CA that a device trusts can vouch for any website, and the trust is not limited to your DNS server. Whoever holds the CA's private key can impersonate any site to that device. Install a private CA only on devices you control, and keep its key off the s-hole box.
 
 ---
 
@@ -816,7 +840,7 @@ A full end-to-end integration test (`internal/dnsserver/integration_test.go`) wi
 - The SQLite query log and flat log file contain full browsing history for all devices. Treat them as sensitive data. Use `log_queries: none` if you do not need query history.
 - The admin UI has no authentication. Set `api_listen: "127.0.0.1:8080"` to restrict it to localhost, or use a firewall rule to limit access. The HTTP server enforces read/write/idle timeouts and a 64 KiB request body limit to defend against slowloris-style attacks from LAN peers, but these are no substitute for proper access control on a multi-user network.
 - Blocklist URLs are operator-controlled. Use HTTPS URLs from sources you trust.
-- The DoT private key (`tls_key`) lets anyone who holds it impersonate your resolver. Keep it readable only by root and the `s-hole` group (mode `640`). The DoT listener caps open connections and times out slow TLS handshakes, but like port 53 it is meant for the LAN only.
+- The DoT private key (`tls_key`) lets anyone who holds it impersonate your resolver. Keep it readable only by root and the `s-hole` group (mode `640`). The DoT listener caps open connections and times out slow TLS handshakes, but like port 53 it is meant for the LAN only. A private CA that you install on clients is trusted for every website, so keep its key off the s-hole box, and never install the openssl test certificate as a trusted root (see [Make clients trust the certificate](#make-clients-trust-the-certificate)).
 
 ---
 

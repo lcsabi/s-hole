@@ -302,7 +302,7 @@ sudo bash install-linux.sh ./s-hole-linux-arm64 ./config.yaml
 
 The installer creates a `s-hole` system user, places the binary at `/usr/local/bin/s-hole`, installs config to `/etc/s-hole/config.yaml`, and enables the service to start on boot. Before it starts the service it validates the arguments (so a swapped binary/config pair fails loudly, not silently), dry-runs the config through the binary, and warns if `systemd-resolved` is holding port 53. After the start it health-checks the unit: if the service does not come up it prints the last log lines and exits non-zero, so a dead service never looks installed. It ends by printing the installed build's version and commit. Confirm it matches the binary you meant to ship, because a stale `scp` is otherwise silent.
 
-Run `sudo bash install-linux.sh -h` for the full options, including `--free-port-53` (disable the `systemd-resolved` stub for you when it holds port 53, instead of only warning).
+Run `sudo bash install-linux.sh -h` for the full options, including `--free-port-53` (disable the `systemd-resolved` stub for you when it holds port 53, instead of only warning). After it frees the port, the installer tells you if `/etc/resolv.conf` still points at the disabled stub. In that case the host has no DNS for programs that read that file (including s-hole's blocklist download) until you run `sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf`.
 
 After installation:
 
@@ -477,7 +477,8 @@ machine's LAN IP, not the container address the startup banner prints.
 > `systemd-resolved` still resolves for local programs that use NSS, but on
 > distros where `/etc/resolv.conf` points at `127.0.0.53`, releasing the stub
 > leaves anything that reads `resolv.conf` directly without a resolver. Repoint
-> `/etc/resolv.conf` at s-hole (or an upstream) afterwards. Only then can you use
+> `/etc/resolv.conf` afterwards, for example to resolved's upstream list with
+> `sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf`, or at s-hole. Only then can you use
 > the bare `-p 53:53` / `-p 8080:8080` form.
 
 ### Windows (system service)

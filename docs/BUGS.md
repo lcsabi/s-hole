@@ -1835,3 +1835,92 @@ are untouched.
 
 Tests: `TestParseQueryFilter` gains an `outcome=upstream_error` case asserting
 the underscore form normalizes to `upstream-error`.
+
+## b/058: install: --free-port-53 misses the systemd-resolved stub on current systemd
+
+**Priority:** P1
+**Component:** deploy
+**Status:** Fixed in CL 87
+**Filed:** 2026-09-23
+
+### Description
+
+On a host that runs `systemd-resolved`, `install-linux.sh --free-port-53` did
+not free port 53, so s-hole failed to start with `listen tcp :53: bind: address
+already in use` and the installer's health check stopped the install. Without
+the flag, the installer also printed no warning. Found on the maintainer's
+Debian 12 VM after installing `systemd-resolved` for a DoT client test, and
+reproduced on Ubuntu 24.04 (systemd 255).
+
+### Root Cause
+
+The port-53 preflight matched the literal text `127.0.0.53:53` in `ss -H -lunt`
+output. Current systemd binds the stub to the loopback interface, and `ss`
+prints it as `127.0.0.53%lo:53`, so the match failed. systemd 247 and later also
+run a second stub on `127.0.0.54:53`, which the check never looked for. With no
+match, the installer skipped both the `--free-port-53` drop-in and the warning,
+and started s-hole into a port conflict.
+
+### Fix
+
+The check is now a `resolved_stub_on_53` function that matches `127.0.0.53` and
+`127.0.0.54` on port 53, with or without the `%interface` suffix. After it
+writes the drop-in and restarts `systemd-resolved`, the installer checks again
+and warns if a stub still holds the port. The check captures the `ss` output
+before `grep` reads it, because under `pipefail` an early-exiting `grep -q` can
+make `ss` die of SIGPIPE and read as no match. It also prints the `ln -sf` command
+when `/etc/resolv.conf` still points at the disabled stub, because programs that
+read that file (including s-hole's blocklist download) would have no DNS. It
+does not change `/etc/resolv.conf` itself. The warning text without the flag
+now names both stub addresses.
+
+Tests: the check was run, old and new, against the reporting VM's `ss` output
+(old: no match, new: match), the output after the stub is freed (no match for
+both), older systemd output without `%lo` (both match), s-hole itself holding
+`:53` (no match for both), and this host's live `ss` (old: no match, new:
+match). `shellcheck` is clean.
+
+## b/059: banner: startup banner offers the Docker bridge address as a DNS server
+
+**Priority:** P3
+**Component:** main
+**Status:** Fixed in CL 87
+**Filed:** 2026-09-23
+
+### Description
+
+The "Router setup" banner lists the addresses to enter in the router's DHCP DNS
+field. On a host with Docker installed it also listed `172.17.0.1`, the
+`docker0` bridge, which a router cannot reach. The same applied to other
+container and VM bridges and VPN tunnels. The installer's closing banner had
+the same problem. Seen on the maintainer's Debian VM next to b/058.
+
+### Root Cause
+
+`printNetworkHint` read `net.InterfaceAddrs`, which returns bare addresses with
+no interface name or state. It filtered only loopback and link-local addresses.
+A Docker bridge address is an ordinary private address, and the bridge keeps it
+even with no container attached (no carrier), so nothing filtered it. The installer banner used
+`hostname -I`, which lists every address the same way.
+
+### Fix
+
+The banner now reads `net.Interfaces` and keeps an IPv4 address only when its
+interface is up, is not loopback, and is not a container, VM, or VPN interface
+by name (`docker*`, `br-*`, `veth*`, `virbr*`, `vboxnet*`, `vmnet*`, `lxcbr*`,
+`lxdbr*`, `incusbr*`, `podman*`, `cni*`, `flannel*`, `cali*`, `vxlan*`,
+`tailscale*`, `wg*`, `zt*`, `tun*`, `tap*`, matched case-insensitively). `br-` keeps its hyphen so a real LAN bridge such as `br0` still shows.
+This changes only what the banner prints; s-hole listens on the same addresses
+as before. The installer banner now reads `ip -4 -o addr show up scope global`
+and drops the same interface names (falling back to `hostname -I` if `ip` is
+missing or finds nothing; `|| true` keeps `set -e` from ending the script). Windows virtual switches (`vEthernet (...)`) are not filtered: an
+external Hyper-V switch uses the same prefix as the internal ones, so the name
+cannot tell them apart.
+
+Tests: `TestLanIPv4s_SkipsVirtualAndUnusableInterfaces` (the reporting VM's
+`enp0s3` plus `docker0`, and the other cases), `TestIsVirtualIface`, and
+`TestSystemInterfaces_NoLoopbackInBanner` on the real host. On this host the old code listed `172.18.69.208` and
+`172.17.0.1` (docker0, no carrier); the new code lists only `172.18.69.208`. The
+installer's `lan_ipv4s` gave the same result on this host, and on `ip` output
+shaped like the reporting VM it kept `enp0s3` and `br0` and dropped `docker0`,
+a Docker network bridge, and `wg0`.

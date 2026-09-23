@@ -173,6 +173,33 @@ and the router-setup banner. Then, in a second terminal:
    pre-restart rows, and startup is faster (blocklists load from the
    disk cache).
 
+**Optional: DNS over TLS.** Run this pass after a change to the DoT listener,
+the certificate reload, or the reload path. You need BIND `dig` 9.18 or later.
+Make a test certificate, then restart Terminal 1 with DoT on a high port:
+
+```bash
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+  -days 30 -keyout /tmp/key.pem -out /tmp/cert.pem -subj "/CN=dns.home" \
+  -addext "subjectAltName=DNS:dns.home,IP:127.0.0.1"
+S_HOLE_LISTEN=:5353 S_HOLE_DOT_LISTEN=127.0.0.1:8853 \
+  S_HOLE_TLS_CERT=/tmp/cert.pem S_HOLE_TLS_KEY=/tmp/key.pem \
+  S_HOLE_QUERY_DB=/tmp/q.db S_HOLE_CACHE_DIR=/tmp /tmp/s-hole -config config.yaml
+```
+
+Expect a third `dns listener started` line (`net=tcp-tls`) and a DoT line in
+the banner. Then:
+
+- `dig +tls +tls-ca=/tmp/cert.pem +tls-hostname=dns.home @127.0.0.1 -p 8853 doubleclick.net +short`
+  → `0.0.0.0`. With `+tls-hostname=wrong.name`, dig fails with "hostname
+  mismatch".
+- The dashboard header shows `DNS over TLS OK` with the days left.
+  `/metrics` has `shole_dot_certificate_expiry_timestamp_seconds`.
+- Make a second certificate over the same two files, send
+  `kill -HUP "$(pidof s-hole)"` (or `POST /api/reload`), and check that a new connection gets the new serial:
+  `echo | openssl s_client -connect 127.0.0.1:8853 -servername dns.home 2>/dev/null | openssl x509 -noout -serial`.
+- Write garbage into `/tmp/cert.pem` and reload. The log shows a WARN, the
+  header badge shows RELOAD FAILED, and the old serial is still served.
+
 ## Cutting a release
 
 Releases are tag-triggered. Push a `vMAJOR.MINOR.PATCH` tag and

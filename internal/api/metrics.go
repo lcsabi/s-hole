@@ -93,6 +93,20 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
+	// DNS-over-TLS certificate health, emitted only while DoT is on. The expiry
+	// is a Unix timestamp so an alert rule can compare it with time(), the
+	// usual way to watch a certificate; the reload-failure counter catches a
+	// renewal whose files did not load (the listener kept the old one).
+	if s.dotStatus != nil {
+		st := s.dotStatus()
+		fmt.Fprintln(w, "# HELP shole_dot_certificate_expiry_timestamp_seconds Unix time when the DNS-over-TLS certificate being served expires.")
+		fmt.Fprintln(w, "# TYPE shole_dot_certificate_expiry_timestamp_seconds gauge")
+		fmt.Fprintf(w, "shole_dot_certificate_expiry_timestamp_seconds %d\n", st.NotAfter.Unix())
+		fmt.Fprintln(w, "# HELP shole_dot_certificate_reload_failures_total Reloads whose certificate files did not load; the listener kept the previous certificate.")
+		fmt.Fprintln(w, "# TYPE shole_dot_certificate_reload_failures_total counter")
+		fmt.Fprintf(w, "shole_dot_certificate_reload_failures_total %d\n", st.ReloadFailures)
+	}
+
 	if s.dnsCache != nil {
 		// Hits are already exposed above from the stats counter; only
 		// misses and size come from the cache itself.

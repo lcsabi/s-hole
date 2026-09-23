@@ -17,7 +17,7 @@ s-hole is intentionally small: a single binary, a single YAML config file, no ru
 - [Features](#features)
 - [Scope & limitations](#scope--limitations)
 - [Quick Start](#quick-start)
-- [Configuration](#configuration) (incl. [env-var overrides](#environment-variable-overrides))
+- [Configuration](#configuration) (incl. [env-var overrides](#environment-variable-overrides) and [DNS over TLS](#dns-over-tls-android-private-dns))
 - [REST API](#rest-api)
 - [Deployment](#deployment): [Linux/Pi](#raspberry-pi--linux-systemd), [Docker](#docker), [Windows](#windows-system-service)
 - [Building from Source](#building-from-source)
@@ -38,12 +38,13 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
 - **Community blocklists.** Downloads and auto-refreshes hosts-file or plain-domain lists from any URL.
 - **DNS response cache.** Serves repeat queries from memory. Typical cache hit rates of 40–70% reduce upstream load and latency.
 - **Resilient upstream forwarding.** Tries upstreams in order over UDP, falls back to TCP on truncation, and skips recently-failed resolvers until they recover. Forwards over DNS-over-HTTPS (DoH) when an upstream is an `https://` endpoint, to encrypt the upstream hop.
+- **DNS over TLS for LAN clients.** An optional encrypted listener (usually port 853) so clients such as Android phones in Private DNS mode can use s-hole. Off by default. You supply the certificate, and a reload picks up a renewed one without a restart.
 - **Local reverse DNS.** Answers PTR queries for the RFC 6303 private ranges (`10/8`, `172.16/12`, `192.168/16`, and IPv6 ULA and link-local) locally, so internal LAN addressing never leaks to the upstream resolver. On by default. Disable it with `local_ptr: false`.
 - **Dual query log.** A plain-text file for `grep` and `tail`, plus a SQLite database for historical queries.
 - **Query-log privacy.** Choose how the client IP is stored: keep it, drop it, or mask it to a subnet (`query_privacy`). Optional `client_names` labels map an IP or subnet to a friendly device name in the log and the dashboard.
 - **Admin web UI.** Live stats, a queries-over-time graph (total, blocked, cached, and failed), top blocked domains, top clients, per-source blocklist health, and a searchable recent query log with domain, client, status, and outcome filters. Also whitelist management and a "why is this blocked?" domain check. The dashboard refreshes automatically.
 - **REST API.** All UI data is available as JSON, ready for scripting and future integrations.
-- **Observability.** Serves Prometheus metrics at `/metrics` (query, cache, blocklist, upstream-failure, and Go-runtime health) and liveness and readiness probes at `/healthz` and `/readyz`, with no external metrics library. Ready-made Grafana dashboard and Prometheus scrape/alert examples ship under `deploy/`.
+- **Observability.** Serves Prometheus metrics at `/metrics` (query, cache, blocklist, upstream-failure, DoT-certificate, and Go-runtime health) and liveness and readiness probes at `/healthz` and `/readyz`, with no external metrics library. Ready-made Grafana dashboard and Prometheus scrape/alert examples ship under `deploy/`.
 - **Configurable sinkhole mode.** Returns `0.0.0.0` (the default, a silent failure) or `NXDOMAIN`.
 - **Cross-platform.** A single binary for Windows, Linux x86-64, Linux arm64 (Pi 4/5), and Linux armv7 (Pi 2/3).
 - **Windows Service.** Installs as an auto-start system service with one command.
@@ -179,6 +180,9 @@ All configuration lives in `config.yaml`. Every field has a safe default. An emp
 | Field | Default | Description |
 |---|---|---|
 | `listen` | `:53` | Address and port for DNS queries (UDP + TCP). `:53` binds all interfaces, IPv4 + IPv6; use `0.0.0.0:53` for IPv4 only |
+| `dot_listen` | _(off)_ | Address and port for the DNS-over-TLS listener, usually `:853`. Empty turns DoT off. When set, `tls_cert` and `tls_key` are required, and a port conflict or a bad certificate stops startup. See [DNS over TLS](#dns-over-tls-android-private-dns) |
+| `tls_cert` | _(none)_ | Path to the PEM certificate the DoT listener presents. Re-read on every reload. Ignored while `dot_listen` is empty |
+| `tls_key` | _(none)_ | Path to the PEM private key for `tls_cert`. Re-read on every reload. Ignored while `dot_listen` is empty |
 | `upstreams` | `[1.1.1.1:53, 8.8.8.8:53]` | Upstream resolvers, tried in order. Each is a plain `host:port` or a DNS-over-HTTPS (DoH) endpoint with an IP host (`https://1.1.1.1/dns-query`; also `8.8.8.8`, `9.9.9.9`). DoH encrypts the upstream hop, which defeats an ISP that intercepts plain port-53 traffic; list a plain resolver after a DoH entry to keep a fallback. A DoH host must be an IP, not a hostname (a hostname-only provider is not supported yet). A malformed entry is dropped with a warning at startup, and a config where every entry is malformed fails to start |
 | `blocklists` | StevenBlack + AdAway | List of URLs to download (hosts-file or plain-domain format) |
 | `whitelist` | `[]` | Domains that are never blocked, regardless of blocklist membership. Matched by suffix and wins at every level: a whitelisted domain exempts its whole subtree, even past a more specific blocked parent |
@@ -217,6 +221,9 @@ For container deployments where editing `config.yaml` requires a re-bind-mount, 
 |---|---|
 | `S_HOLE_LISTEN` | `listen` |
 | `S_HOLE_API_LISTEN` | `api_listen` |
+| `S_HOLE_DOT_LISTEN` | `dot_listen` |
+| `S_HOLE_TLS_CERT` | `tls_cert` |
+| `S_HOLE_TLS_KEY` | `tls_key` |
 | `S_HOLE_LOG_FILE` | `log_file` |
 | `S_HOLE_LOG_QUERIES` | `log_queries` |
 | `S_HOLE_QUERY_PRIVACY` | `query_privacy` |
@@ -242,6 +249,78 @@ cache_size: 5000            # more cache = fewer upstream queries
 log_queries: blocked        # skip logging allowed queries to save writes
 ```
 
+### DNS over TLS (Android Private DNS)
+
+s-hole can also serve DNS over TLS (DoT, RFC 7858). A DoT client reaches s-hole over an encrypted connection, usually on port 853, and gets the same blocking, cache, and logging as a plain query. When Android's Private DNS is set to a provider hostname, the phone uses only DoT to that host and does not fall back to plain DNS, so it bypasses a plain-DNS s-hole. DoT is off by default.
+
+**1. Get a certificate.** A DoT client checks two things. The certificate must name the hostname the client connects with (the Subject Alternative Name, or SAN). The client must also trust the certificate's issuer. s-hole does not make a certificate for you, because only you know the hostname and can make your devices trust it. Pick one of these:
+
+- **For Android Private DNS**, use a domain you own, such as `dns.example.com`. Get a publicly trusted certificate for it, for example from Let's Encrypt with a DNS-01 challenge (the box does not have to be reachable from the internet). In your domain's public DNS zone, add an A record that points `dns.example.com` at the s-hole box's LAN IP (s-hole cannot answer that name itself yet). Android may not accept a certificate from a CA that you installed yourself, so test on the phone.
+- **For desktop DoT clients and for testing**, make a local certificate. [mkcert](https://github.com/FiloSottile/mkcert) makes one and installs its CA on the machine that runs it:
+
+  ```bash
+  mkcert -install
+  mkcert -cert-file cert.pem -key-file key.pem dns.home 192.168.1.10
+  ```
+
+  Or make a self-signed certificate with openssl. Put the hostname and LAN IP that clients use in the SAN:
+
+  ```bash
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+    -days 397 -keyout key.pem -out cert.pem -subj "/CN=dns.home" \
+    -addext "subjectAltName=DNS:dns.home,IP:192.168.1.10"
+  ```
+
+  Every client must trust this certificate (or the mkcert CA).
+
+**2. Install the files.** The systemd service runs as the `s-hole` user and cannot see home directories (`ProtectHome=true`). Put the files in `/etc/s-hole/` and keep the key private:
+
+```bash
+sudo install -m 644 -o root -g s-hole cert.pem /etc/s-hole/cert.pem
+sudo install -m 640 -o root -g s-hole key.pem  /etc/s-hole/key.pem
+```
+
+**3. Turn DoT on.** Add these lines to `/etc/s-hole/config.yaml`:
+
+```yaml
+dot_listen: ":853"
+tls_cert: "/etc/s-hole/cert.pem"
+tls_key: "/etc/s-hole/key.pem"
+```
+
+Then validate the file and restart:
+
+```bash
+s-hole -check-config -config /etc/s-hole/config.yaml
+sudo systemctl restart s-hole
+```
+
+If the port is in use or the certificate does not load, s-hole stops with an error. It does not start without DoT.
+
+**4. Test it** from a machine that trusts the certificate. This needs `dig` from BIND 9.18 or later:
+
+```bash
+dig +tls +tls-ca=cert.pem +tls-hostname=dns.home @192.168.1.10 -p 853 doubleclick.net
+```
+
+A blocked domain returns `0.0.0.0`. A wrong hostname fails with "hostname mismatch".
+
+**5. Point Android at it.** Open the Private DNS setting (Settings → Network & internet → Private DNS on most phones; the path varies). Choose "Private DNS provider hostname" and enter the hostname from the certificate. The name points at a LAN address, so the phone cannot reach it away from home. On mobile data or another Wi-Fi network, the phone then reports that the Private DNS server cannot be reached and has no DNS. Set Private DNS back to Automatic or Off when you leave the LAN.
+
+**Watch the certificate.** When DoT is on, the dashboard header shows a certificate badge: OK with the days left, EXPIRES SOON inside 14 days, and EXPIRED or RELOAD FAILED in red. Hover over it for the certificate names, the expiry, and the last reload error. `/api/stats` carries the same data in its `dot` object. `/metrics` exposes `shole_dot_certificate_expiry_timestamp_seconds` and `shole_dot_certificate_reload_failures_total`, and `deploy/prometheus-alerts.yml` has example alerts for both. s-hole also logs a WARN at startup, on every reload, and in `-check-config` when the certificate has expired or expires within 14 days.
+
+**Renewing the certificate.** Replace the two files, then reload with `sudo systemctl reload s-hole`, the dashboard reload button, `POST /api/reload`, or SIGHUP. New connections get the new certificate, and there is no restart. The periodic blocklist refresh also reloads it. If the new files do not load, s-hole keeps the current certificate and logs a WARN. Certbot keeps its keys where only root can read them, so use a deploy hook that copies the files and reloads. Make the script executable (`chmod +x`). Certbot runs deploy hooks only on renewal, so run the script once by hand after the first issuance:
+
+```sh
+#!/bin/sh
+# /etc/letsencrypt/renewal-hooks/deploy/s-hole.sh
+install -m 644 -o root -g s-hole "$RENEWED_LINEAGE/fullchain.pem" /etc/s-hole/cert.pem
+install -m 640 -o root -g s-hole "$RENEWED_LINEAGE/privkey.pem"   /etc/s-hole/key.pem
+systemctl reload s-hole
+```
+
+**Docker.** Put the files in `data/` (the container sees them under `/app`), set `tls_cert: "/app/cert.pem"` and `tls_key: "/app/key.pem"`, and publish the port, for example `-p 192.168.1.10:853:853/tcp`. To reload, run `docker kill -s HUP s-hole` (the container runs Linux on every host), or use the dashboard or `POST /api/reload`.
+
 ---
 
 ## REST API
@@ -250,7 +329,7 @@ The admin web UI is served at **`http://127.0.0.1:8080`** by default. This is lo
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/stats` | Live stats: uptime, query totals, block rate, cache hit rate, blocklist size, per-source blocklist health, top domains/clients (each client carries an optional `client_names` `label`), and the active `query_privacy` mode |
+| `GET` | `/api/stats` | Live stats: uptime, query totals, block rate, cache hit rate, blocklist size, per-source blocklist health, top domains/clients (each client carries an optional `client_names` `label`), the active `query_privacy` mode, and a `dot` object with the DNS-over-TLS certificate state (`enabled`, `listen`, `names`, `not_after`, `expires_in_days`, `state` = `ok`/`expiring`/`expired`/`reload_failed`, and the last reload result) |
 | `GET` | `/api/check?domain=NAME` | Why a domain is blocked: the decision plus the full suffix walk (matched block entry, overriding whitelist entry). Diagnostic; changes no state and does not count in stats |
 | `GET` | `/api/queries?limit=N` | Last N queries from SQLite, newest first (default: 50, max: 1000). Filter with `?domain=` (substring), `?client=` (exact match on the stored value), `?blocked=true`/`false`, or `?outcome=unresolved`/`upstream-error` (failed queries). Each row carries a computed `outcome` (`allowed`/`blocked`/`unresolved`/`upstream_error`) and an optional `client_names` `label` |
 | `GET` | `/api/queries/export?format=csv` | Download the query log for analysis in another tool. `?format=csv` (default) or `json`, streamed. Reuses the `/api/queries` filters, so a filtered export is the filtered view in bulk; uncapped unless `?limit=N` is set. Empty (valid) file when `query_db` is unset |
@@ -259,10 +338,10 @@ The admin web UI is served at **`http://127.0.0.1:8080`** by default. This is lo
 | `GET` | `/api/whitelist` | List all runtime-whitelisted domains |
 | `POST` | `/api/whitelist` | Add a domain. Body: `{"domain": "example.com"}` |
 | `DELETE` | `/api/whitelist?domain=…` | Remove a domain from the runtime whitelist |
-| `POST` | `/api/reload` | Trigger an immediate blocklist refresh. De-duplicated via a single-flight mutex; returns `"reload already in progress"` if one is already running |
+| `POST` | `/api/reload` | Trigger an immediate reload: re-read the DoT certificate (when DoT is on), then refresh the blocklists. De-duplicated via a single-flight mutex; returns `"reload already in progress"` if one is already running |
 | `GET`  | `/healthz` | Liveness probe. Always 200 OK while the HTTP server is responsive |
 | `GET`  | `/readyz` | Readiness probe. 200 OK once the blocklist has loaded at least one entry, 503 otherwise |
-| `GET`  | `/metrics` | Prometheus text exposition of the `shole_*` series: query, cache, blocklist, upstream-failure, and Go-runtime metrics. See the [Metrics reference](docs/DESIGN.md#metrics-reference) for the full list. |
+| `GET`  | `/metrics` | Prometheus text exposition of the `shole_*` series: query, cache, blocklist, upstream-failure, DoT certificate (when DoT is on), and Go-runtime metrics. See the [Metrics reference](docs/DESIGN.md#metrics-reference) for the full list. |
 | `GET`  | `/debug/pprof/*` | Standard Go pprof endpoints. Registered **only** when `enable_pprof: true` is set in config (or `S_HOLE_ENABLE_PPROF=1`). Pair with `api_listen: "127.0.0.1:8080"`. |
 
 Runtime whitelist changes take effect immediately but do not persist across restarts. To make a whitelist entry permanent, add it to `config.yaml`.
@@ -316,22 +395,22 @@ sudo systemctl enable s-hole     # re-enable autostart
 journalctl -u s-hole -f          # follow logs live
 ```
 
-To trigger an immediate blocklist refresh without restarting (Linux/macOS):
+To trigger an immediate reload without restarting (Linux/macOS):
 
 ```bash
-sudo systemctl kill -s HUP s-hole       # via systemd
+sudo systemctl reload s-hole            # via systemd
 sudo kill -HUP "$(pidof s-hole)"        # or directly
 ```
 
-SIGHUP is honored on every non-Windows platform. It runs the same single-flight refresh as `POST /api/reload`. The refresh re-downloads the blocklists from the URLs that s-hole read at startup. It does not re-read `config.yaml`. To apply a change to any config value, restart the service.
+SIGHUP is honored on every non-Windows platform. It runs the same single-flight reload as `POST /api/reload`. The reload re-reads the DoT certificate and key when DoT is on, then re-downloads the blocklists from the URLs that s-hole read at startup. It does not re-read `config.yaml`. To apply a change to any config value, restart the service.
 
-The systemd unit runs with `CAP_NET_BIND_SERVICE` so it can bind port 53 without running as root. `ProtectSystem=strict` and `NoNewPrivileges` are set for defence in depth.
+The systemd unit runs with `CAP_NET_BIND_SERVICE` so it can bind port 53 (and 853 for DNS over TLS) without running as root. `ProtectSystem=strict` and `NoNewPrivileges` are set for defence in depth.
 
 #### Operating an installed service
 
 A few things to know once s-hole runs as a systemd service:
 
-- **Config is *copied*, not live-linked.** The installer copies your config to `/etc/s-hole/config.yaml` on the **first** install only. It never overwrites an existing one (it prints `config already exists, skipping`), and re-running the installer or `scp`-ing a new file to your home directory does **not** update it. To apply a config change on an installed host, edit `/etc/s-hole/config.yaml` directly (or `sudo cp your-config.yaml /etc/s-hole/config.yaml`), then `sudo systemctl restart s-hole`. To catch a mistake before the restart, validate the file first with `s-hole -check-config -config /etc/s-hole/config.yaml`, which loads and validates it exactly the way startup does and exits non-zero on any error. A blocklist reload (`POST /api/reload` or SIGHUP) does not apply a config edit. It re-downloads from the URLs read at startup, so a changed blocklist URL also needs a restart to take effect.
+- **Config is *copied*, not live-linked.** The installer copies your config to `/etc/s-hole/config.yaml` on the **first** install only. It never overwrites an existing one (it prints `config already exists, skipping`), and re-running the installer or `scp`-ing a new file to your home directory does **not** update it. To apply a config change on an installed host, edit `/etc/s-hole/config.yaml` directly (or `sudo cp your-config.yaml /etc/s-hole/config.yaml`), then `sudo systemctl restart s-hole`. To catch a mistake before the restart, validate the file first with `s-hole -check-config -config /etc/s-hole/config.yaml`, which loads and validates it exactly the way startup does and exits non-zero on any error. A reload (`POST /api/reload` or SIGHUP) does not apply a config edit. It re-downloads from the URLs read at startup and re-reads the certificate files at the `tls_cert` and `tls_key` paths read at startup, so a changed blocklist URL or a changed certificate path also needs a restart to take effect.
 - **`S_HOLE_*` environment overrides do not reach the service.** The systemd unit runs with a clean environment, so shell env vars only take effect when you run the binary directly. On the service, put values in `/etc/s-hole/config.yaml` (or add `Environment=` lines to the unit).
 - **`query_db` and `cache_dir` are relative to `/var/lib/s-hole`.** Relative paths resolve against the service's working directory. Because the unit sets `ProtectSystem=strict` with `ReadWritePaths=/var/lib/s-hole`, the rest of the filesystem is read-only to the service. Keep both paths under `/var/lib/s-hole` (the defaults `queries.db` and `.` already do). Pointing them at `/tmp` or a home directory will silently fail to write.
 - **The query log flushes on an interval.** Newly logged queries appear in `/api/queries` and the dashboard's "All time" panel only after the next SQLite flush (`db_flush_interval`, default `30s`), not instantly. Lower it for a more responsive view.
@@ -347,7 +426,9 @@ sudo bash uninstall-linux.sh --restore-resolved  # also restore the systemd-reso
 
 It stops and disables the service, removes the unit, binary, config
 (`/etc/s-hole`), and the `s-hole` system user and group, then prints a summary
-of what it removed and kept. Your query history and blocklist caches in
+of what it removed and kept. `/etc/s-hole` also holds any files you added to it,
+such as a DNS-over-TLS certificate and key. The prompt lists them before it
+deletes them, so back up a key you have no other copy of. Your query history and blocklist caches in
 `/var/lib/s-hole` are preserved unless you pass `--purge`. `--restore-resolved`
 applies only if you had freed port 53 by disabling the `systemd-resolved` stub.
 It removes that drop-in and restarts the resolver. The flags combine
@@ -499,6 +580,8 @@ Run once as Administrator to register s-hole as an auto-start Windows Service:
 
 The service can also be managed through the standard Windows Services panel (`services.msc`) or `sc.exe`.
 
+Windows has no SIGHUP. To reload the blocklists, or a renewed DNS-over-TLS certificate, use the dashboard reload button or `POST /api/reload`.
+
 A service has no console, so s-hole routes its application log (startup,
 blocklist refresh, and audit messages) to the Windows Event Log. Read it in
 Event Viewer under **Windows Logs > Application**, source **s-hole**. `-service
@@ -516,7 +599,8 @@ stack:
 - `deploy/prometheus.yml`: an example scrape config for the s-hole target.
 - `deploy/prometheus-alerts.yml`: example alert rules (resolver down, empty block
   set, stale source, dropped query-log rows, forward and upstream failures,
-  goroutine growth).
+  goroutine growth, and, with DNS over TLS on, certificate expiry and failed
+  certificate reloads).
 - `deploy/grafana-dashboard.json`: a dashboard for the `shole_*` metrics. Import it
   in Grafana (Dashboards > New > Import) and pick your Prometheus data source.
 
@@ -584,7 +668,7 @@ $env:GOOS=""; $env:GOARCH=""
 ```
                    Client devices (DNS via DHCP)
                                 │
-                                │ UDP/TCP :53
+                                │ UDP/TCP :53, DoT :853 (opt-in)
                                 ▼
      ┌──────────────────────────────────────────────────────┐
      │                   s-hole process                     │
@@ -610,7 +694,7 @@ $env:GOOS=""; $env:GOARCH=""
      │   └──────────────────────────────────────────────┘   │
      │                                                      │
      │   Signals: SIGINT/SIGTERM → shutdown                 │
-     │            SIGHUP (Unix)  → blocklist refresh        │
+     │            SIGHUP (Unix)  → reload (cert + lists)    │
      │   Timers : periodic refresh; periodic stats print    │
      └──────────────────────────────────────────────────────┘
                                 │  on cache miss
@@ -649,7 +733,7 @@ All implementation packages live under `internal/` so they cannot be imported by
 |---|---|
 | `internal/blocklist` | Download, parse, cache, and serve the domain block set |
 | `internal/cache` | TTL-based in-memory DNS response cache |
-| `internal/dnsserver` | UDP/TCP server, per-query handler, upstream forwarding with health tracking |
+| `internal/dnsserver` | UDP/TCP server and the optional DNS-over-TLS listener (certificate reload and status), per-query handler, upstream forwarding with health tracking |
 | `internal/querylog` | Async file and SQLite query loggers |
 | `internal/stats` | Atomic counters; top-N domain/client tracking |
 | `internal/api` | HTTP handlers and embedded web UI |
@@ -730,6 +814,7 @@ A full end-to-end integration test (`internal/dnsserver/integration_test.go`) wi
 - The SQLite query log and flat log file contain full browsing history for all devices. Treat them as sensitive data. Use `log_queries: none` if you do not need query history.
 - The admin UI has no authentication. Set `api_listen: "127.0.0.1:8080"` to restrict it to localhost, or use a firewall rule to limit access. The HTTP server enforces read/write/idle timeouts and a 64 KiB request body limit to defend against slowloris-style attacks from LAN peers, but these are no substitute for proper access control on a multi-user network.
 - Blocklist URLs are operator-controlled. Use HTTPS URLs from sources you trust.
+- The DoT private key (`tls_key`) lets anyone who holds it impersonate your resolver. Keep it readable only by root and the `s-hole` group (mode `640`). The DoT listener caps open connections and times out slow TLS handshakes, but like port 53 it is meant for the LAN only.
 
 ---
 

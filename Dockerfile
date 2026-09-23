@@ -51,9 +51,10 @@ WORKDIR /app
 # /app/config.yaml (see the Docker section in README.md).
 COPY config.yaml .
 
-# DNS (UDP + TCP) and admin UI.
+# DNS (UDP + TCP), DNS over TLS (off unless dot_listen is set), and admin UI.
 EXPOSE 53/udp
 EXPOSE 53/tcp
+EXPOSE 853/tcp
 EXPOSE 8080/tcp
 
 # Mount /app to persist config.yaml, blocklist cache, and queries.db

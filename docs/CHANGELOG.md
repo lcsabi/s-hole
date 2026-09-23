@@ -9,6 +9,24 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 ## [Unreleased]
 
 ### Added
+- **DNS over TLS for LAN clients.** An optional encrypted listener (RFC 7858),
+  usually on port 853, so clients such as Android phones in Private DNS mode can
+  use s-hole. Set `dot_listen`, `tls_cert`, and `tls_key` to turn it on; it is
+  off by default. You supply the certificate: the README shows `mkcert`,
+  `openssl`, and an ACME route. DoT queries get the same blocking, cache, and
+  logging as plain ones. If the port is taken or the certificate does not load,
+  s-hole stops with an error instead of running without DoT. (CL 86)
+- **Certificate renewal without a restart.** A reload (the dashboard button,
+  `POST /api/reload`, `systemctl reload s-hole`, SIGHUP, or the periodic
+  refresh) re-reads the DoT certificate and key. If the new files do not load,
+  s-hole keeps serving the current certificate. The systemd unit gains
+  `ExecReload`. (CL 86)
+- **DoT certificate status.** The dashboard header shows a certificate badge
+  (OK, EXPIRES SOON, EXPIRED, RELOAD FAILED). `/api/stats` has a `dot` object,
+  and `/metrics` has `shole_dot_certificate_expiry_timestamp_seconds` and
+  `shole_dot_certificate_reload_failures_total`, with example alert rules and
+  Grafana panels. The log and `-check-config` warn when the certificate has
+  expired or expires within 14 days. (CL 86)
 - **DNS-over-HTTPS (DoH) upstream forwarding.** An `upstreams` entry can now be a
   DoH endpoint with an IP host, for example `https://1.1.1.1/dns-query` (also
   `8.8.8.8`, `9.9.9.9`). s-hole POSTs the query to it over HTTPS (RFC 8484), so
@@ -16,6 +34,15 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   traffic no longer sees or rewrites it. DoH and plain entries share the one
   ordered list and the same failover, so listing a plain resolver after a DoH
   entry keeps a fallback. The DoH host must be an IP, not a hostname. (CL 85)
+
+### Changed
+- **The uninstaller lists extra files in `/etc/s-hole`.** Before it deletes the
+  directory, its prompt names every entry there other than `config.yaml` (such as
+  a DoT certificate and key), and its summary counts them. (CL 86)
+- **Reload log lines no longer say "blocklist".** A reload now also re-reads the
+  DoT certificate, so `blocklist reload requested via API` and `blocklist reload
+  requested via timer` became `reload requested via API` and `reload requested
+  via timer`. Update any log search or alert that matches the old text. (CL 86)
 
 ### Fixed
 - **`install-linux.sh --free-port-53` now frees port 53 on current systemd.** The

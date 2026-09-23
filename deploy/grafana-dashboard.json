@@ -210,6 +210,32 @@
       "targets": [
         { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "shole_blocklist_source_stale", "legendFormat": "{{url}}" }
       ]
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "DoT certificate days left",
+      "description": "Days until the DNS-over-TLS certificate expires. Amber inside 14 days, red once expired. Shows \"DoT off\" when dot_listen is not set.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 12, "x": 0, "y": 39 },
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 0, "noValue": "DoT off", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "orange", "value": 0 }, { "color": "green", "value": 14 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none", "textMode": "auto" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "(shole_dot_certificate_expiry_timestamp_seconds - time()) / 86400", "legendFormat": "days" }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "stat",
+      "title": "DoT certificate reload failures (24h)",
+      "description": "Reloads in the last 24 hours whose certificate files did not load. s-hole kept serving the previous certificate. Shows \"DoT off\" when dot_listen is not set.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 39 },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "noValue": "DoT off", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none", "textMode": "auto" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "increase(shole_dot_certificate_reload_failures_total[24h])", "legendFormat": "failures" }
+      ]
     }
   ]
 }

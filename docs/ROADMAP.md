@@ -49,8 +49,10 @@ rails.
 | 33 | Cache packed wire bytes: drop the per-hit `dns.Msg` copy | Medium | not started |
 | 34 | General admin-API rate limiting (defense-in-depth) | Low | not started |
 | 35 | DNSSEC validation of upstream answers | Medium | not started |
-| 36 | Serve DNS over TLS / HTTPS to LAN clients (DoT/DoH server) | Medium | not started |
+| 36 | Serve DNS over TLS / HTTPS to LAN clients (DoT/DoH server) | Medium | done (CL 86): DoT; DoH server deferred to #39 |
 | 37 | Per-query latency histograms (service time + upstream) in `/metrics` | Medium | not started |
+| 38 | Per-transport query counter (plain, DoT) in `/metrics` | Medium | not started |
+| 39 | Serve DoH to LAN clients (client-facing `/dns-query` endpoint) | Low | not started |
 
 Items 19-26 came out of a 2026-08-24 feature-ideas session. Items 21-24 are a
 dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
@@ -83,6 +85,11 @@ Items 35-36 came out of a 2026-09-18 portfolio-planning session. They are
 independent of each other. #36 (encrypted serving) shares no code with #5 (DoH
 upstream): #5 is the forwarding side (s-hole as a DoH client), #36 is the serving
 side (s-hole as a DoT/DoH server).
+
+Items 38-39 were split out of #36 when its DoT part landed (CL 86). #38 is the
+per-transport metric that #36 listed, deferred so the listener CL did not also
+change the `stats.Counter` invariants. #39 is the client-facing DoH endpoint,
+deferred because on a LAN it adds no capability that DoT lacks.
 
 ## 1. Deploy to real hardware
 
@@ -1646,12 +1653,12 @@ Rated Medium: a security and trust win whose reach is bounded by upstreams that
 already validate. The AD-visibility cut is a modest CL; full local validation is a
 large one and the stronger portfolio signal. It changes no filtering behavior.
 
-## 36. Serve DNS over TLS / HTTPS to LAN clients (DoT/DoH server)
+## 36. Serve DNS over TLS / HTTPS to LAN clients (DoT/DoH server) (DoT done, CL 86)
 
 s-hole listens on plain UDP and TCP port 53 only. A client that wants an encrypted
 channel to s-hole cannot get one. This blocks one common, concrete case: Android
-"Private DNS" mode requires DoT and refuses a plain resolver, so an Android device
-with Private DNS on cannot use s-hole at all today. A DoT listener (and an optional
+"Private DNS" set to a provider hostname uses only DoT and does not fall back to
+plain DNS, so such an Android device cannot use s-hole at all today. A DoT listener (and an optional
 DoH endpoint) lets these clients reach s-hole over TLS.
 
 This is the serving side, and it is distinct from #5 (DoH upstream), which is the
@@ -1702,6 +1709,57 @@ Rated Medium: a user-visible capability that lets encrypted-DNS clients (notably
 Android Private DNS) use s-hole at all, on a trusted LAN where the encryption is
 defense-in-depth. It changes no filtering behavior. The certificate story is the
 real cost, not the protocol code.
+
+**Shipped in CL 86 (DoT only):** an opt-in DoT listener. `dot_listen` (empty by
+default) turns it on, and `tls_cert` / `tls_key` name the operator's PEM files.
+`main` binds the port right after config validation and hands the pre-bound TLS
+listener to miekg/dns as a third `dns.Server` (`Net: "tcp-tls"`) on the shared
+handler, so blocking, the cache, stats, the query log, and the CL 72 mask apply
+unchanged (`clientAddr` sees the `*net.TCPAddr` under the `tls.Conn`).
+`Server.Start` was generalized from two listeners to N with an exact drain.
+
+Design decisions settled in the CL:
+
+- **DoT only; the DoH server is deferred to #39.** Android Private DNS needs DoT,
+  and between a client and its own LAN resolver nothing blocks port 853. So a
+  client-facing DoH endpoint adds no LAN capability, for a large surface (an
+  `http.Server`, a `ResponseWriter` adapter, RFC 8484 GET and POST parsing, its
+  own shutdown drain).
+- **Operator-supplied certificate, no generation.** Only the operator knows the
+  hostname clients use (the SAN) and can make clients trust the issuer; a public
+  CA cannot issue for a private name. So s-hole loads the operator's files and
+  generates nothing, not even through a helper command. The README documents
+  `mkcert`, `openssl`, and an ACME DNS-01 route for Android (which may not accept
+  a user-installed CA for Private DNS). s-hole still runs no ACME client itself:
+  the operator obtains the certificate, and the DNS-01 challenge needs a public
+  domain but no inbound reachability.
+- **Reload without a restart, in the same CL.** The certificate is served through
+  `tls.Config.GetCertificate` from an atomic pointer. The existing single-flight
+  reload path (periodic refresh, `POST /api/reload`, SIGHUP, and a new
+  `ExecReload` in the systemd unit) re-reads the files; a failed load keeps the
+  current certificate. ACME certificates are valid for 90 days or less, so renewal
+  had to be cheap.
+- **A bind or certificate failure is fatal.** The admin UI fails open because it
+  is not the DNS service. An enabled DoT listener that silently did not start
+  would cut off the clients that depend on it.
+- **Fixed limits, no knobs.** A limiter caps open connections at 256; miekg's
+  2 s read timeout (which also bounds the TLS handshake), 8 s idle timeout, and
+  128-query cap bound each connection. TLS 1.2 is the floor. The connection cap is
+  the shed point for the overload concern from the 2026-09-18 session.
+- **Certificate state is visible outside the log.** An expired certificate must
+  not fail silently (Android just stops using Private DNS). s-hole logs a WARN
+  at startup, on each reload, and in `-check-config` when the certificate has
+  expired or expires within 14 days. `/metrics` adds
+  `shole_dot_certificate_expiry_timestamp_seconds` and
+  `shole_dot_certificate_reload_failures_total`, with two example alert rules
+  and two Grafana stat panels. `/api/stats` adds a `dot` object, and the
+  dashboard header shows a badge (OK, EXPIRES SOON, EXPIRED, RELOAD FAILED).
+  The state is computed in dnsserver, where the 14-day window is defined.
+- **The uninstaller names what it deletes.** `/etc/s-hole` now can hold the DoT
+  certificate and private key, so the uninstaller's prompt names every entry
+  there other than `config.yaml`, and its summary counts them.
+- **Per-transport metric deferred to #38**, to keep the listener CL clear of the
+  `stats.Counter` load-order invariants.
 
 ## 37. Per-query latency histograms (service time and upstream) in `/metrics`
 
@@ -1775,6 +1833,47 @@ Design decisions to settle in the CL:
 Rated Medium: the observability gap most worth closing after the runtime gauges
 (#30) and the failed-query outcome split (#31), and evidence-driven once the #1
 soak runs. It changes no filtering behavior and adds no dependency.
+
+## 38. Per-transport query counter in `/metrics`
+
+Split out of #36. With the DoT listener (CL 86), queries reach s-hole over three
+transports (UDP, TCP, and DoT), but `/metrics` counts them as one total. An
+operator who turned on DoT for Android phones cannot see whether those phones use
+it. Add `shole_queries_total{transport="udp|tcp|dot"}` (or a separate
+per-transport counter next to the unlabeled total).
+
+Design decisions to settle in the CL:
+
+- **Where the transport comes from.** The handler is shared, so it must derive the
+  transport from the `dns.ResponseWriter` (the local address network, or a
+  `tls.Conn` check), or each listener wraps the handler with a small decorator that
+  tags the query. The decorator keeps `ServeDNS` unchanged.
+- **Counter discipline.** A new counter bumped after `total` must be read before
+  `total` in `Snapshot` (the `LOAD-ORDER INVARIANT`), with its own
+  `*NeverExceeds*UnderLoad` `-race` test.
+- **Label vs separate metric.** Adding a label to `shole_queries_total` changes an
+  existing series that the Grafana dashboard and the alert rules read; a separate
+  `shole_queries_by_transport_total` avoids that break.
+
+Rated Medium: an observability win that confirms DoT is in use. It changes no
+filtering behavior.
+
+## 39. Serve DoH to LAN clients (client-facing endpoint)
+
+Split out of #36 and deliberately parked. A DoH endpoint (`/dns-query`, RFC 8484
+GET and POST) would let a client that speaks only DoH, such as a browser with a
+custom DoH URL, use s-hole over an encrypted channel. On a LAN this adds no
+capability that DoT (CL 86) lacks: DoH's advantage is that port 443 is hard to
+block, and nothing blocks port 853 between a client and its own resolver. It
+would also add real surface: an `http.Server` kept off the unauthenticated admin
+server, a `dns.ResponseWriter` adapter, request parsing and size limits, a
+decision on trusting `X-Forwarded-For`, and a second shutdown drain.
+
+The trigger to build it is a concrete client that speaks only DoH and cannot use
+DoT. It would reuse the CL 86 certificate (`tls_cert`, `tls_key`) and reload
+path.
+
+Rated Low: a niche client path with no LAN capability gain over DoT.
 
 ## Pending decisions
 
@@ -1911,6 +2010,16 @@ Recorded so future reviews don't re-propose them; each trades the
 "auditable in an afternoon" identity for features better served by
 Pi-hole/AdGuard Home:
 
+- **A "Restart s-hole" button in the web UI.** The admin API is
+  unauthenticated by design, so the button would let any device that can
+  reach the UI cut DNS for the whole LAN with one request. s-hole also cannot
+  restart itself portably: under systemd, `Restart=on-failure` does not
+  restart a clean exit, and the unprivileged `s-hole` user has no polkit
+  authorization to call `systemctl`; under Docker it depends on the restart policy; in an
+  interactive run nothing brings it back. The two real needs are covered
+  without it: a config change is made on the host, where `systemctl restart`
+  is at hand, and a DoT certificate renewal uses the reload path (CL 86),
+  which needs no restart.
 - **Admin API authentication.** LAN-trust is a documented scope
   decision (SECURITY.md, DESIGN open question #6). Half-hearted auth
   would imply a security property the unauthenticated design doesn't

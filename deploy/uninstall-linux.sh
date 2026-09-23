@@ -18,8 +18,10 @@ usage() {
   cat <<'USAGE'
 Usage: sudo bash uninstall-linux.sh [options]
 
-Removes the s-hole systemd service, binary, config, and system user
-installed by install-linux.sh, and prints a summary of what it removed.
+Removes the s-hole systemd service, binary, config directory, and system
+user installed by install-linux.sh, and prints a summary of what it removed.
+The config directory also holds any files you added to it, such as the
+DNS-over-TLS certificate and private key; the prompt names them.
 
 Options:
   --purge             Also delete the data directory (/var/lib/s-hole):
@@ -49,13 +51,27 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
+# Files the operator added next to the config, such as the DNS-over-TLS
+# certificate and private key, are deleted with the directory. List them, so
+# the prompt does not hide the deletion of a private key.
+extra_files=()
+if [[ -d "$CONFIG_DIR" ]]; then
+  mapfile -t extra_files < <(find "$CONFIG_DIR" -mindepth 1 -maxdepth 1 ! -name config.yaml | sort)
+fi
+
 # Show the plan before touching anything; an uninstaller changes system
 # state, so the destructive set should be explicit and confirmable.
 echo "This will:"
 echo "  - stop and disable the s-hole service"
 echo "  - delete $UNIT_FILE"
 echo "  - delete $INSTALL_BIN"
-echo "  - delete $CONFIG_DIR (config)"
+if [[ ${#extra_files[@]} -gt 0 ]]; then
+  echo "  - delete $CONFIG_DIR (config, and these files you added to it):"
+  for f in "${extra_files[@]}"; do echo "        $f"; done
+  echo "    If one is your only copy of a DoT private key, back it up first."
+else
+  echo "  - delete $CONFIG_DIR (config)"
+fi
 if $PURGE; then
   echo "  - delete $DATA_DIR (blocklist caches + query log)   [--purge]"
 else
@@ -108,7 +124,11 @@ fi
 if [[ -d "$CONFIG_DIR" ]]; then
   echo "==> removing config"
   rm -rf "$CONFIG_DIR"
-  removed+=("$CONFIG_DIR")
+  if [[ ${#extra_files[@]} -gt 0 ]]; then
+    removed+=("$CONFIG_DIR (config and ${#extra_files[@]} file(s) you added)")
+  else
+    removed+=("$CONFIG_DIR")
+  fi
 fi
 
 # 5. Data directory: delete only with --purge; otherwise preserve it.

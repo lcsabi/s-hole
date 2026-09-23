@@ -7,6 +7,8 @@
 //   - parse flags; if -service is set, perform the SCM action and exit
 //   - load and validate config (YAML + S_HOLE_* env-var overrides); bail
 //     on any duration/enum failure
+//   - if dot_listen is set, load the DoT certificate and bind the
+//     DNS-over-TLS listener; a failure here is fatal
 //   - construct the blocklist store, stats counter, query loggers, DNS
 //     response cache, DNS handler, and DNS server
 //   - construct the single-flight reload closure and the admin API server
@@ -19,9 +21,9 @@
 //     teardown (interactive mode)
 //
 // Signals: SIGINT and SIGTERM trigger a clean shutdown. On non-Windows
-// builds, SIGHUP triggers a blocklist refresh through the same
-// single-flight closure used by the periodic timer and POST /api/reload.
-// See signals_unix.go.
+// builds, SIGHUP triggers a reload (the DoT certificate when DoT is on, then
+// the blocklists) through the same single-flight closure used by the
+// periodic timer and POST /api/reload. See signals_unix.go.
 //
 // Shutdown is funnelled through a single doStop closure used by both the
 // signal handler and the Windows SCM stop control; this keeps the
@@ -151,11 +153,9 @@ func main() {
 	// lets the installer reject a bad config before `systemctl restart`, so a
 	// config error surfaces on screen instead of as a failed start (ROADMAP #27).
 	if *checkConfig {
-		if _, _, _, _, err := config.LoadAndValidate(*cfgPath); err != nil {
-			mainLog.Error("config", "err", err)
-			os.Exit(1)
+		if code := runCheckConfig(mainLog, *cfgPath); code != 0 {
+			os.Exit(code)
 		}
-		mainLog.Info("config OK", "path", *cfgPath)
 		return
 	}
 
@@ -163,6 +163,27 @@ func main() {
 	if err != nil {
 		mainLog.Error("config", "err", err)
 		os.Exit(1)
+	}
+
+	// Bind the DNS-over-TLS listener before anything else opens, so a bad
+	// dot_listen or a port conflict exits here with nothing half-built. The
+	// failure is fatal, unlike the fail-open admin UI: an enabled DoT listener
+	// that did not come up would silently cut off the clients that need it
+	// (Android's strict Private DNS mode does not fall back to plain DNS).
+	var dotCerts *dnsserver.CertReloader
+	var dotLn net.Listener
+	if cfg.DoTListen != "" {
+		dotCerts, err = dnsserver.NewCertReloader(cfg.TLSCert, cfg.TLSKey)
+		if err == nil {
+			dotLn, err = dnsserver.ListenDoT(cfg.DoTListen, dotCerts)
+		}
+		if err != nil {
+			mainLog.Error("DoT listener failed", "dot_listen", cfg.DoTListen, "err", err,
+				"hint", "check for a port conflict, or fix dot_listen, tls_cert, and tls_key")
+			os.Exit(1)
+		}
+		mainLog.Info("DoT certificate loaded", "cert", cfg.TLSCert, "expires", dotCerts.NotAfter().Format(time.RFC3339))
+		warnCertExpiry(mainLog, dotCerts)
 	}
 
 	store := blocklist.NewStore()
@@ -195,10 +216,14 @@ func main() {
 	logger := buildMultiLogger(fileLog, db)
 	handler := dnsserver.NewHandler(store, counter, cfg.Upstreams, logger, cfg.BlockMode, cfg.BlockTTL, dnsCache, cfg.LocalPTR, cfg.QueryPrivacy)
 	dnsServer := dnsserver.NewServer(cfg.Listen, handler)
+	if dotLn != nil {
+		dnsServer.EnableDoT(dotLn)
+	}
 
-	// reloadMu single-flights blocklist refreshes across both the periodic
-	// timer and POST /api/reload. Two concurrent goroutines downloading to
-	// the same cache files would race on file writes.
+	// reloadMu single-flights reloads across the periodic timer, POST
+	// /api/reload, and SIGHUP. A reload re-reads the DoT certificate (when DoT
+	// is on) and then refreshes the blocklists. Two concurrent goroutines
+	// downloading to the same cache files would race on file writes.
 	//
 	// reloadFn returns synchronously: true means the refresh started, false
 	// means a prior refresh is still running. The actual download work runs
@@ -211,12 +236,16 @@ func main() {
 	// cache .tmp file behind.
 	var reloadMu sync.Mutex
 	var reloadWG sync.WaitGroup
-	reloadFn := newReloadFn(&reloadMu, &reloadWG, func() {
+	var certs certReloader
+	if dotCerts != nil {
+		certs = dotCerts
+	}
+	reloadFn := newReloadFn(&reloadMu, &reloadWG, reloadWork(mainLog, certs, func() {
 		mainLog.Info("refreshing blocklists")
 		if err := blocklist.Update(store, cfg.Blocklists, cfg.CacheDir); err != nil {
 			mainLog.Warn("blocklist refresh failed", "err", err)
 		}
-	})
+	}))
 
 	apiServer := api.New(counter, db, store, dnsCache, reloadFn)
 	apiServer.SetQueryPrivacy(cfg.QueryPrivacy)
@@ -224,6 +253,20 @@ func main() {
 	// Bridge the dnsserver per-upstream transport-failure tracker to /metrics;
 	// api does not import dnsserver, so main wires the two.
 	apiServer.SetUpstreamTransportFailures(dnsserver.UpstreamTransportFailures)
+	if dotCerts != nil {
+		apiServer.SetDoTStatus(func() api.DoTStatus {
+			st := dotCerts.Status(time.Now())
+			return api.DoTStatus{
+				Listen:          cfg.DoTListen,
+				Names:           st.Names,
+				NotAfter:        st.NotAfter,
+				State:           st.State,
+				LastReload:      st.LastReload,
+				LastReloadError: st.LastReloadError,
+				ReloadFailures:  st.ReloadFailures,
+			}
+		})
+	}
 	if cfg.EnablePprof {
 		apiServer.EnablePprof(true)
 		mainLog.Warn("pprof endpoints enabled; bind api_listen to localhost only",
@@ -250,8 +293,12 @@ func main() {
 	}
 
 	_, dnsPort, _ := net.SplitHostPort(cfg.Listen)
+	var dotPort string
+	if dotLn != nil {
+		_, dotPort, _ = net.SplitHostPort(cfg.DoTListen)
+	}
 	apiHost, apiPort, _ := net.SplitHostPort(cfg.APIListen)
-	printNetworkHint(dnsPort, apiHost, apiPort, apiUp)
+	printNetworkHint(dnsPort, dotPort, apiHost, apiPort, apiUp)
 
 	// runCtx is the application-wide lifecycle context. doStop cancels
 	// it before tearing down subsystems so the background tickers exit
@@ -259,7 +306,7 @@ func main() {
 	runCtx, runCancel := context.WithCancel(context.Background())
 	go runTicker(runCtx, statsInterval, counter.Print)
 	go runTicker(runCtx, refreshInterval, func() {
-		mainLog.Info("blocklist reload requested via timer")
+		mainLog.Info("reload requested via timer")
 		reloadFn()
 	})
 
@@ -306,9 +353,10 @@ func main() {
 	// Signal handler for interactive (non-service) use.
 	//
 	// SIGINT/SIGTERM trigger a clean shutdown; SIGHUP (Unix only) triggers
-	// a blocklist refresh, the conventional "reload config" gesture for
-	// long-running daemons. Operators expect `kill -HUP $(pidof s-hole)`
-	// to work without needing the admin API enabled.
+	// a reload (the DoT certificate when DoT is on, then the blocklists), the
+	// conventional "reload config" gesture for long-running daemons.
+	// Operators expect `kill -HUP $(pidof s-hole)` to work without needing
+	// the admin API enabled.
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, append([]os.Signal{syscall.SIGINT, syscall.SIGTERM}, reloadSignals()...)...)
 	go func() {
@@ -383,8 +431,10 @@ func blockUntilStopped(start func() error, done <-chan struct{}) int {
 // a lie (every other device gets connection-refused), so the banner
 // points at 127.0.0.1 and says so (T4). When apiUp is false the admin
 // listener failed to bind, so the banner says the UI is unavailable rather
-// than advertising a URL that refuses connections (b/052).
-func printNetworkHint(dnsPort, apiHost, apiPort string, apiUp bool) {
+// than advertising a URL that refuses connections (b/052). A non-empty
+// dotPort adds a DoT line; it names the port and not an address, because a
+// DoT client connects by the hostname in the certificate, not by IP.
+func printNetworkHint(dnsPort, dotPort, apiHost, apiPort string, apiUp bool) {
 	lanIPs := lanIPv4s(systemInterfaces())
 	if len(lanIPs) == 0 {
 		return
@@ -402,6 +452,9 @@ func printNetworkHint(dnsPort, apiHost, apiPort string, apiUp bool) {
 		for _, ip := range lanIPs {
 			fmt.Printf("[main] |   DNS server -> %s:%s\n", ip, dnsPort)
 		}
+		if dotPort != "" {
+			fmt.Printf("[main] |   DoT        -> port %s (clients connect by the certificate's hostname)\n", dotPort)
+		}
 		if apiUp {
 			for _, h := range adminHosts {
 				fmt.Printf("[main] |   Admin UI   -> http://%s:%s%s\n", h, apiPort, adminNote)
@@ -416,6 +469,9 @@ func printNetworkHint(dnsPort, apiHost, apiPort string, apiUp bool) {
 	fmt.Println("[main] ┌─ Router setup ───────────────────────────────────────")
 	for _, ip := range lanIPs {
 		fmt.Printf("[main] │  DNS server → %s:%s\n", ip, dnsPort)
+	}
+	if dotPort != "" {
+		fmt.Printf("[main] │  DoT        → port %s (clients connect by the certificate's hostname)\n", dotPort)
 	}
 	if apiUp {
 		for _, h := range adminHosts {
@@ -582,7 +638,63 @@ func waitWithDeadline(ctx context.Context, wg *sync.WaitGroup, log *slog.Logger,
 	}
 }
 
-// newReloadFn builds the single-flight blocklist-refresh closure shared by the
+// runCheckConfig is the -check-config dry run: it loads and validates the
+// config the way startup does and returns the process exit code. Validate has
+// already proved that a DoT certificate loads, but an expired certificate
+// still loads, so the dry run also prints the same expiry WARN as startup.
+// That is a warning, not a failure: startup would run with the certificate
+// too, and the dry run mirrors startup.
+func runCheckConfig(log *slog.Logger, path string) int {
+	cfg, _, _, _, err := config.LoadAndValidate(path)
+	if err != nil {
+		log.Error("config", "err", err)
+		return 1
+	}
+	if cfg.DoTListen != "" {
+		if certs, err := dnsserver.NewCertReloader(cfg.TLSCert, cfg.TLSKey); err == nil {
+			warnCertExpiry(log, certs)
+		}
+	}
+	log.Info("config OK", "path", path)
+	return 0
+}
+
+// certReloader is the part of *dnsserver.CertReloader the reload path uses.
+// It is an interface so tests can inject a reloader that fails.
+type certReloader interface {
+	Reload() error
+	NotAfter() time.Time
+	ExpiryWarning(now time.Time) string
+}
+
+// reloadWork returns the body of one reload: re-read the DoT certificate
+// when certs is non-nil (DoT is on), then run refresh (the blocklist
+// download). The certificate goes first because it is fast and local. A
+// failed certificate reload keeps the current certificate and does not skip
+// the blocklist refresh.
+func reloadWork(log *slog.Logger, certs certReloader, refresh func()) func() {
+	return func() {
+		if certs != nil {
+			if err := certs.Reload(); err != nil {
+				log.Warn("DoT certificate reload failed; keeping the current certificate", "err", err)
+			} else {
+				log.Info("DoT certificate reloaded", "expires", certs.NotAfter().Format(time.RFC3339))
+				warnCertExpiry(log, certs)
+			}
+		}
+		refresh()
+	}
+}
+
+// warnCertExpiry logs a WARN when the DoT certificate has expired or expires
+// soon, so a failed renewal shows up in the log before clients reject it.
+func warnCertExpiry(log *slog.Logger, certs certReloader) {
+	if msg := certs.ExpiryWarning(time.Now()); msg != "" {
+		log.Warn(msg, "expires", certs.NotAfter().Format(time.RFC3339))
+	}
+}
+
+// newReloadFn builds the single-flight reload closure shared by the
 // periodic timer, POST /api/reload, and SIGHUP. It returns true if it acquired
 // the lock and started work (asynchronously, so callers return at once), or
 // false if a refresh is already running. The shared mutex stops the three

@@ -10,16 +10,16 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 
 ### Added
 - **DNS over TLS for LAN clients.** An optional encrypted listener (RFC 7858),
-  usually on port 853, so clients such as Android phones in Private DNS mode can
-  use s-hole. Set `dot_listen`, `tls_cert`, and `tls_key` to turn it on; it is
-  off by default. You supply the certificate: the README shows an ACME route and
-  `mkcert`, how to make each client trust the certificate, and an `openssl`
-  certificate for tests only (never install it as a trusted root: its key lives
-  on the s-hole box). DoT queries get the same blocking, cache, and
-  logging as plain ones. If the port is taken or the certificate does not load,
-  s-hole stops with an error instead of running without DoT. The DoT path is
-  not yet tested with a real Android phone; the README marks the Android steps
-  as untested. (CL 86)
+  usually on port 853. It is aimed at Android's default Automatic Private DNS
+  mode: the phone uses DoT on its own when the network's DNS server offers it
+  and does not check the certificate, so a self-signed certificate works and
+  the phone needs no setup. Set `dot_listen`, `tls_cert`, and `tls_key` to turn
+  it on; it is off by default. The README also covers strict mode (a domain you
+  own and a publicly trusted certificate) and desktop DoT clients. DoT queries
+  get the same blocking, cache, and logging as plain ones. If the port is taken
+  or the certificate does not load, s-hole stops with an error instead of
+  running without DoT. Not yet tested with a real Android phone; the README
+  says so. (CL 86)
 - **Certificate renewal without a restart.** A reload (the dashboard button,
   `POST /api/reload`, `systemctl reload s-hole`, SIGHUP, or the periodic
   refresh) re-reads the DoT certificate and key. If the new files do not load,

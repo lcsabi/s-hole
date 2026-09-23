@@ -38,7 +38,7 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
 - **Community blocklists.** Downloads and auto-refreshes hosts-file or plain-domain lists from any URL.
 - **DNS response cache.** Serves repeat queries from memory. Typical cache hit rates of 40–70% reduce upstream load and latency.
 - **Resilient upstream forwarding.** Tries upstreams in order over UDP, falls back to TCP on truncation, and skips recently-failed resolvers until they recover. Forwards over DNS-over-HTTPS (DoH) when an upstream is an `https://` endpoint, to encrypt the upstream hop.
-- **DNS over TLS for LAN clients.** An optional encrypted listener (usually port 853) so clients such as Android phones in Private DNS mode can use s-hole. Off by default. You supply the certificate, and a reload picks up a renewed one without a restart.
+- **DNS over TLS for LAN clients.** An optional encrypted listener (usually port 853). Android phones in the default Automatic Private DNS mode use it on their own, so their DNS queries cross the Wi-Fi encrypted. Off by default. You supply the certificate, and a reload picks up a renewed one without a restart.
 - **Local reverse DNS.** Answers PTR queries for the RFC 6303 private ranges (`10/8`, `172.16/12`, `192.168/16`, and IPv6 ULA and link-local) locally, so internal LAN addressing never leaks to the upstream resolver. On by default. Disable it with `local_ptr: false`.
 - **Dual query log.** A plain-text file for `grep` and `tail`, plus a SQLite database for historical queries.
 - **Query-log privacy.** Choose how the client IP is stored: keep it, drop it, or mask it to a subnet (`query_privacy`). Optional `client_names` labels map an IP or subnet to a friendly device name in the log and the dashboard.
@@ -251,45 +251,30 @@ log_queries: blocked        # skip logging allowed queries to save writes
 
 ### DNS over TLS (Android Private DNS)
 
-s-hole can also serve DNS over TLS (DoT, RFC 7858). A DoT client reaches s-hole over an encrypted connection, usually on port 853, and gets the same blocking, cache, and logging as a plain query. When Android's Private DNS is set to a provider hostname, the phone uses only DoT to that host and does not fall back to plain DNS, so it bypasses a plain-DNS s-hole. DoT is off by default.
+s-hole can serve DNS over TLS (DoT, RFC 7858), usually on port 853. It is off by default.
 
-> **Test status.** The DoT listener, the certificate reload, and the certificate status were tested with automated tests, `dig +tls`, and `openssl s_client`. They have **not** been tested with a real Android phone in Private DNS mode yet. Until that test is done, treat the Android steps below (the certificate route in step 1, the Android row of the client-trust table, and step 5) as untested. The Android behavior they describe comes from Android's documentation, not from a test run.
+The main use is Android's **Automatic** Private DNS mode, the default on most phones. In this mode the phone tries DoT on the network's DNS server and, when it answers, sends its queries to s-hole encrypted. The phone does not check the certificate in this mode, so a self-signed certificate is enough and the phone needs no setup. This stops other devices on the Wi-Fi from reading DNS queries. It does not protect against an impostor resolver, because the certificate is not checked.
 
-**1. Get a certificate.** A DoT client checks two things. The certificate must name the hostname the client connects with (the Subject Alternative Name, or SAN). The client must also trust the certificate's issuer. s-hole does not make a certificate for you, because only you know the hostname and can make your devices trust it. Pick one of these:
+> **Test status.** The listener, certificate reload, and certificate status were tested with automated tests, `dig +tls`, and `openssl s_client`. They were **not** tested with a real Android phone yet. The Android behavior on this page comes from Android's documentation.
 
-- **For Android Private DNS**, use a domain you own, such as `dns.example.com`. Get a publicly trusted certificate for it, for example from Let's Encrypt with a DNS-01 challenge (the box does not have to be reachable from the internet). In your domain's public DNS zone, add an A record that points `dns.example.com` at the s-hole box's LAN IP (s-hole cannot answer that name itself yet). The domain can be a cheap one, or a free dynamic-DNS subdomain if the provider supports the DNS-01 challenge.
+**1. Make a certificate.** Put the hostname and the LAN IP of the s-hole box in the certificate:
 
-  Android needs this route, not the desktop one, for two reasons:
-  - **The phone must resolve the hostname.** Private DNS takes a hostname, not an IP, and the phone looks it up through the network's plain DNS, which is usually s-hole. s-hole forwards a local name such as `dns.home` upstream, where it does not exist, so the lookup fails. A name in a public DNS zone resolves through any upstream.
-  - **The phone must trust the issuer.** A CA that you install on Android goes into the user store, and Private DNS probably trusts only the system store. A publicly trusted certificate is in every phone's system store already. (Untested; see the test status above.)
+```bash
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+  -days 3650 -keyout key.pem -out cert.pem -subj "/CN=dns.home" \
+  -addext "subjectAltName=DNS:dns.home,IP:192.168.1.10"
+```
 
-  Some routers and resolvers use DNS rebind protection: they drop an answer in which a public name points at a private IP. If the phone's lookups pass through such a router, `dns.example.com` does not resolve. s-hole does not filter these answers, so a phone that uses s-hole directly as its DNS server is not affected.
-- **For desktop DoT clients**, use [mkcert](https://github.com/FiloSottile/mkcert). It makes a local CA, installs it on the machine that runs it, and issues the certificate. Put the hostname and LAN IP that clients use in the SAN:
+Automatic mode does not check the expiry, so a long validity saves renewals. **Never install this certificate as a trusted root on a device.** OpenSSL marks it as a CA, and its key is on the s-hole box, so anyone who took that key could impersonate any website to that device.
 
-  ```bash
-  mkcert -install
-  mkcert -cert-file cert.pem -key-file key.pem dns.home 192.168.1.10
-  ```
-
-  Then install the mkcert CA on every other client, as described in [Make clients trust the certificate](#make-clients-trust-the-certificate).
-- **For a quick test only**, make a self-signed certificate with openssl:
-
-  ```bash
-  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
-    -days 397 -keyout key.pem -out cert.pem -subj "/CN=dns.home" \
-    -addext "subjectAltName=DNS:dns.home,IP:192.168.1.10"
-  ```
-
-  Use it only with a client that takes the certificate for one command, such as `dig +tls-ca=cert.pem` in step 4. **Do not install this certificate as a trusted root on any device.** OpenSSL marks it as a CA, and its private key is `key.pem` on the s-hole box. Anyone who gets that key could then sign a certificate for any website, and every device that trusts `cert.pem` would accept it.
-
-**2. Install the files.** The systemd service runs as the `s-hole` user and cannot see home directories (`ProtectHome=true`). Put the files in `/etc/s-hole/` and keep the key private:
+**2. Install the files** in `/etc/s-hole/`. The service user cannot read home directories.
 
 ```bash
 sudo install -m 644 -o root -g s-hole cert.pem /etc/s-hole/cert.pem
 sudo install -m 640 -o root -g s-hole key.pem  /etc/s-hole/key.pem
 ```
 
-**3. Turn DoT on.** Add these lines to `/etc/s-hole/config.yaml`:
+**3. Turn DoT on** in `/etc/s-hole/config.yaml`, then validate the file and restart:
 
 ```yaml
 dot_listen: ":853"
@@ -297,28 +282,42 @@ tls_cert: "/etc/s-hole/cert.pem"
 tls_key: "/etc/s-hole/key.pem"
 ```
 
-Then validate the file and restart:
-
 ```bash
 s-hole -check-config -config /etc/s-hole/config.yaml
 sudo systemctl restart s-hole
 ```
 
-If the port is in use or the certificate does not load, s-hole stops with an error. It does not start without DoT.
+If the port is in use or the certificate does not load, s-hole stops with an error.
 
-**4. Test it.** This needs `dig` from BIND 9.18 or later. `+tls-ca` names the CA to trust for this one command: `cert.pem` for the openssl test certificate, or `"$(mkcert -CAROOT)/rootCA.pem"` for mkcert. With a publicly trusted certificate, leave out `+tls-ca`.
+**4. Check it.** With `dig` from BIND 9.18 or later, a blocked domain returns `0.0.0.0`:
 
 ```bash
 dig +tls +tls-ca=cert.pem +tls-hostname=dns.home @192.168.1.10 -p 853 doubleclick.net
 ```
 
-A blocked domain returns `0.0.0.0`. A wrong hostname fails with "hostname mismatch".
+To see phones use it, run `sudo tcpdump -ni any tcp port 853` on the s-hole box while a phone in Automatic mode browses. Traffic on port 853 means the phone uses DoT.
 
-**5. Point Android at it** (untested; see the test status above). Open the Private DNS setting (Settings → Network & internet → Private DNS on most phones; the path varies). Choose "Private DNS provider hostname" and enter the hostname from the certificate. The name points at a LAN address, so the phone cannot reach it away from home. On mobile data or another Wi-Fi network, the phone then reports that the Private DNS server cannot be reached and has no DNS. Set Private DNS back to Automatic or Off when you leave the LAN.
+**Watch and renew.** The dashboard header shows a certificate badge (OK, EXPIRES SOON, EXPIRED, or RELOAD FAILED). `/metrics` and the example alerts in `deploy/prometheus-alerts.yml` cover the same state. To renew, replace the two files and reload: `sudo systemctl reload s-hole`, the dashboard reload button, `POST /api/reload`, or SIGHUP. If the new files do not load, s-hole keeps the current certificate.
 
-**Watch the certificate.** When DoT is on, the dashboard header shows a certificate badge: OK with the days left, EXPIRES SOON inside 14 days, and EXPIRED or RELOAD FAILED in red. Hover over it for the certificate names, the expiry, and the last reload error. `/api/stats` carries the same data in its `dot` object. `/metrics` exposes `shole_dot_certificate_expiry_timestamp_seconds` and `shole_dot_certificate_reload_failures_total`, and `deploy/prometheus-alerts.yml` has example alerts for both. s-hole also logs a WARN at startup, on every reload, and in `-check-config` when the certificate has expired or expires within 14 days.
+**Docker.** Put the files in `data/` (the container sees them as `/app/cert.pem` and `/app/key.pem`), publish the port (`-p 192.168.1.10:853:853/tcp`), and reload with `docker kill -s HUP s-hole`.
 
-**Renewing the certificate.** Replace the two files, then reload with `sudo systemctl reload s-hole`, the dashboard reload button, `POST /api/reload`, or SIGHUP. New connections get the new certificate, and there is no restart. The periodic blocklist refresh also reloads it. If the new files do not load, s-hole keeps the current certificate and logs a WARN. Certbot keeps its keys where only root can read them, so use a deploy hook that copies the files and reloads. Make the script executable (`chmod +x`). Certbot runs deploy hooks only on renewal, so run the script once by hand after the first issuance:
+#### Strict mode (optional)
+
+A phone set to **Private DNS provider hostname** uses only DoT to that host and checks its certificate. Use strict mode when you want certificate checks, or when a phone must not fall back to plain DNS. It needs more setup than Automatic mode:
+
+- **A domain you own**, such as `dns.example.com`. A cheap domain or a free dynamic-DNS subdomain works if the provider supports the DNS-01 challenge.
+- **A publicly trusted certificate** for that name, for example from Let's Encrypt with DNS-01 (the box does not have to be reachable from the internet). Android probably ignores a CA that you install yourself.
+- **A public A record** that points the name at the s-hole box's LAN IP. The phone looks up the name through plain DNS, and s-hole cannot answer a LAN name itself yet (ROADMAP #15).
+
+Then enter the name in Settings → Network & internet → Private DNS → Private DNS provider hostname (the path varies by phone). Two limits:
+
+- Away from home the name points at an unreachable LAN address, so the phone has no DNS. Switch back to Automatic when you leave.
+- A router with DNS rebind protection drops a public name that points at a private IP. A phone that uses s-hole directly as its DNS server is not affected.
+
+<details>
+<summary>Renewing a Let's Encrypt certificate with certbot</summary>
+
+Certbot keeps its keys where only root can read them, so copy them with a deploy hook. Make the script executable, and run it once by hand after the first issuance (certbot runs deploy hooks only on renewal).
 
 ```sh
 #!/bin/sh
@@ -328,17 +327,14 @@ install -m 640 -o root -g s-hole "$RENEWED_LINEAGE/privkey.pem"   /etc/s-hole/ke
 systemctl reload s-hole
 ```
 
-**Docker.** Put the files in `data/` (the container sees them under `/app`), set `tls_cert: "/app/cert.pem"` and `tls_key: "/app/key.pem"`, and publish the port, for example `-p 192.168.1.10:853:853/tcp`. To reload, run `docker kill -s HUP s-hole` (the container runs Linux on every host), or use the dashboard or `POST /api/reload`.
+</details>
 
-#### Make clients trust the certificate
+#### Other DoT clients
 
-A client accepts the certificate only if it trusts the issuer. What you must do depends on the certificate route from step 1:
+Desktop DoT clients such as `systemd-resolved` (`DNSOverTLS=yes`, `DNS=192.168.1.10#dns.home`) or stubby check the certificate, so each client must trust its issuer. Use [mkcert](https://github.com/FiloSottile/mkcert): it makes a local CA and issues the certificate (`mkcert -cert-file cert.pem -key-file key.pem dns.home 192.168.1.10`). Install only its `rootCA.pem` (in the folder `mkcert -CAROOT` prints) on each client, and never copy `rootCA-key.pem`. A CA that a device trusts can vouch for any website, so install it only on devices you control.
 
-- **Publicly trusted certificate (ACME):** nothing. Every device already trusts the issuer. This is the only route that needs no work on each device.
-- **mkcert:** install the mkcert CA certificate on each client. It is `rootCA.pem` in the folder that `mkcert -CAROOT` prints. Copy only `rootCA.pem`. Never copy `rootCA-key.pem`; keep it on the machine where you ran mkcert.
-- **openssl test certificate:** do not install it on any device (see step 1).
-
-To install `rootCA.pem` on a client:
+<details>
+<summary>How to install <code>rootCA.pem</code> on each client</summary>
 
 | Client | How |
 |---|---|
@@ -346,12 +342,10 @@ To install `rootCA.pem` on a client:
 | Fedora, RHEL | `sudo cp rootCA.pem /etc/pki/ca-trust/source/anchors/s-hole-ca.pem`, then `sudo update-ca-trust`. |
 | macOS | `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain rootCA.pem` |
 | Windows | In an Administrator prompt: `certutil -addstore -f Root rootCA.pem` |
-| iOS, iPadOS | Send the file to the device (AirDrop or email) and install it in Settings → General → VPN & Device Management. Then turn on full trust in Settings → General → About → Certificate Trust Settings. |
-| Android | Settings → Security → Encryption & credentials → Install a certificate → CA certificate. This adds the CA to the user store, and Private DNS probably ignores user-installed CAs (untested; see the test status above). Use a publicly trusted certificate for Android. |
+| iOS, iPadOS | Send the file to the device and install it in Settings → General → VPN & Device Management, then turn on full trust in Settings → General → About → Certificate Trust Settings. |
+| Android | Settings → Security → Encryption & credentials → Install a certificate → CA certificate. Private DNS strict mode probably ignores it (untested); Automatic mode does not need it. |
 
-The trust must be where the DoT client looks. Some clients use the system store, for example `systemd-resolved` with `DNSOverTLS=yes` and `DNS=192.168.1.10#dns.home`. Others read their own CA file, such as `dig +tls-ca=` or stubby's `tls_ca_file`.
-
-> **Warning.** A CA that a device trusts can vouch for any website, and the trust is not limited to your DNS server. Whoever holds the CA's private key can impersonate any site to that device. Install a private CA only on devices you control, and keep its key off the s-hole box.
+</details>
 
 ---
 
@@ -846,7 +840,7 @@ A full end-to-end integration test (`internal/dnsserver/integration_test.go`) wi
 - The SQLite query log and flat log file contain full browsing history for all devices. Treat them as sensitive data. Use `log_queries: none` if you do not need query history.
 - The admin UI has no authentication. Set `api_listen: "127.0.0.1:8080"` to restrict it to localhost, or use a firewall rule to limit access. The HTTP server enforces read/write/idle timeouts and a 64 KiB request body limit to defend against slowloris-style attacks from LAN peers, but these are no substitute for proper access control on a multi-user network.
 - Blocklist URLs are operator-controlled. Use HTTPS URLs from sources you trust.
-- The DoT private key (`tls_key`) lets anyone who holds it impersonate your resolver. Keep it readable only by root and the `s-hole` group (mode `640`). The DoT listener caps open connections and times out slow TLS handshakes, but like port 53 it is meant for the LAN only. A private CA that you install on clients is trusted for every website, so keep its key off the s-hole box, and never install the openssl test certificate as a trusted root (see [Make clients trust the certificate](#make-clients-trust-the-certificate)).
+- The DoT private key (`tls_key`) lets anyone who holds it impersonate your resolver. Keep it readable only by root and the `s-hole` group (mode `640`). The DoT listener caps open connections and times out slow TLS handshakes, but like port 53 it is meant for the LAN only. A private CA that you install on clients is trusted for every website, so keep its key off the s-hole box, and never install the openssl self-signed certificate as a trusted root (see [Other DoT clients](#other-dot-clients)).
 
 ---
 

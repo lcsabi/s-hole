@@ -523,9 +523,10 @@ Design decisions to settle in the CL:
   it. It is answered before the blocklist check, so a name that appears in both
   resolves locally. Record this so a later review does not read it as a bypass.
 
-**DoT hostname resolution (link to #36, CL 86).** Android's Private DNS takes a
-hostname, and the phone resolves it through the network's plain DNS, usually
-s-hole. Today s-hole forwards a LAN name upstream, where it fails, so the README
+**DoT hostname resolution (link to #36, CL 86).** This matters only for Android's
+strict Private DNS mode; the default Automatic mode connects to the network's
+DNS server by IP and needs no name. Strict mode takes a hostname, and the phone
+resolves it through the network's plain DNS, usually s-hole. Today s-hole forwards a LAN name upstream, where it fails, so the README
 tells Android users to publish a public A record that points their domain at the
 LAN IP. A local record (`dns.home: 192.168.1.10`, or the owned name) lets s-hole
 answer that lookup itself. This is split-horizon DNS: the name resolves only
@@ -1680,10 +1681,13 @@ large one and the stronger portfolio signal. It changes no filtering behavior.
 ## 36. Serve DNS over TLS / HTTPS to LAN clients (DoT/DoH server) (DoT done, CL 86)
 
 s-hole listens on plain UDP and TCP port 53 only. A client that wants an encrypted
-channel to s-hole cannot get one. This blocks one common, concrete case: Android
-"Private DNS" set to a provider hostname uses only DoT and does not fall back to
-plain DNS, so such an Android device cannot use s-hole at all today. A DoT listener (and an optional
-DoH endpoint) lets these clients reach s-hole over TLS.
+channel to s-hole cannot get one. Android's Private DNS is the common case. In
+the default Automatic mode, a phone uses DoT on the network's DNS server when it
+answers, so a DoT listener would encrypt most phones' DNS on the LAN with no
+phone setup. In strict mode (a provider hostname) the phone uses only DoT and
+does not fall back to plain DNS, so such a phone cannot use s-hole at all today.
+A DoT listener (and an optional DoH endpoint) lets these clients reach s-hole
+over TLS.
 
 This is the serving side, and it is distinct from #5 (DoH upstream), which is the
 forwarding side. The two share no code: #5 makes s-hole a DoH client to its
@@ -1745,22 +1749,30 @@ unchanged (`clientAddr` sees the `*net.TCPAddr` under the `tls.Conn`).
 **Validation status: not yet tested with a real Android device.** CL 86 was
 tested with automated tests, `dig +tls`, and `openssl s_client` on a
 development machine, but not with an Android phone in Private DNS mode, which is
-the motivating case. The Android guidance in the README (strict mode, the
-publicly trusted certificate, the public A record, the off-LAN warning) comes
-from Android's documented behavior, not from a test run, and the README says so.
+the motivating case. The Android guidance in the README (that Automatic mode
+upgrades to DoT without checking the certificate, and, for strict mode, the
+publicly trusted certificate, the public A record, and the off-LAN warning)
+comes from Android's documented behavior, not from a test run, and the README
+says so.
 The item stays open for that acceptance test, the same way #1 stays open for
 real hardware. Run it in this order, cheapest route first:
 
-1. **Try the mkcert route.** Install the mkcert CA on the phone (user store),
+1. **Automatic mode, the main use.** Serve the README's self-signed openssl
+   certificate, leave the phone on Automatic, and run
+   `sudo tcpdump -ni any tcp port 853` on the s-hole box while the phone
+   browses. Traffic on port 853 confirms that the phone upgrades to DoT without
+   checking the certificate. If it does not, rewrite the README around strict
+   mode, because the main claim would be wrong.
+2. **Strict mode with mkcert** (optional use). Install the mkcert CA on the phone (user store),
    serve a mkcert certificate for a LAN name, make that name resolve on the
    phone (through the router's local names, or through #15 once it lands), and
    point Private DNS at it. If Android accepts it, operators do not need a
    domain: record that and rewrite the README's Android route around mkcert.
-2. **If Android rejects it, use the public-domain route** from the README: a
+3. **If Android rejects it, use the public-domain route** from the README: a
    publicly trusted certificate and a public A record to the LAN IP. This
    confirms that the domain is required.
 
-In both cases, confirm that queries resolve through s-hole (a blocked domain
+In every case, confirm that queries resolve through s-hole (a blocked domain
 returns `0.0.0.0`), and check the off-LAN behavior. Record the results here and
 correct the README if Android behaves differently from its documentation.
 

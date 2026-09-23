@@ -66,6 +66,26 @@ Out of scope:
   localhost-bound `api_listen`. Keep them off in normal operation.
 - **systemd unit** ships with `NoNewPrivileges`, `ProtectSystem=strict`,
   `ProtectHome=true`, `CapabilityBoundingSet=CAP_NET_BIND_SERVICE`.
+- **DNS over TLS** is off by default. When `dot_listen` is set, the listener
+  caps open connections at 256, accepts TLS 1.2 or later, and bounds the TLS
+  handshake with the 2-second per-connection read timeout. The operator
+  supplies the certificate and private key; keep the key readable only by root
+  and the `s-hole` group (mode `640`). A reload whose files do not load keeps
+  the current certificate, and an expired or failing certificate shows in the
+  log, `/metrics`, and the dashboard. The `dot` object in `/api/stats` includes
+  the last reload error, which can name the certificate file path. Like the
+  rest of the admin API it is unauthenticated, so keep `api_listen` on
+  localhost or a trusted LAN.
+- **A private CA installed on clients is trusted for every site.** For DoT with
+  a private certificate, each client must trust its CA. Whoever holds that
+  CA's private key can then impersonate any website to those devices, so keep
+  the key off the s-hole box. With mkcert, the CA key stays on the workstation
+  that issued the certificate. The README's openssl command sets
+  `basicConstraints=critical,CA:FALSE`: by default `openssl req -x509` makes a
+  CA, and its key (`tls_key`) lives on the s-hole box. With `CA:FALSE` the
+  certificate cannot sign others, so a device that trusts it by mistake
+  trusts only that DNS server. A publicly trusted certificate (ACME) needs no
+  client install.
 - **No CGO.** The binary is statically linked, so a libc or
   `libsystemd` vulnerability cannot reach the s-hole process.
 - **Client name labels are read-only and privacy-bounded.** The optional

@@ -1,10 +1,18 @@
 package config
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -530,6 +538,9 @@ func TestApplyEnvOverrides_AllStringFields(t *testing.T) {
 	t.Setenv("S_HOLE_REFRESH_INTERVAL", "12h")
 	t.Setenv("S_HOLE_STATS_INTERVAL", "1m")
 	t.Setenv("S_HOLE_DB_FLUSH_INTERVAL", "1s")
+	t.Setenv("S_HOLE_DOT_LISTEN", ":8853")
+	t.Setenv("S_HOLE_TLS_CERT", "/etc/s-hole/cert.pem")
+	t.Setenv("S_HOLE_TLS_KEY", "/etc/s-hole/key.pem")
 
 	cfg, err := Load(writeTemp(t, ""))
 	if err != nil {
@@ -545,6 +556,9 @@ func TestApplyEnvOverrides_AllStringFields(t *testing.T) {
 		"RefreshInterval": cfg.RefreshInterval,
 		"StatsInterval":   cfg.StatsInterval,
 		"DBFlushInterval": cfg.DBFlushInterval,
+		"DoTListen":       cfg.DoTListen,
+		"TLSCert":         cfg.TLSCert,
+		"TLSKey":          cfg.TLSKey,
 	}
 	expected := map[string]string{
 		"LogFile":         "/var/log/x.log",
@@ -556,6 +570,9 @@ func TestApplyEnvOverrides_AllStringFields(t *testing.T) {
 		"RefreshInterval": "12h",
 		"StatsInterval":   "1m",
 		"DBFlushInterval": "1s",
+		"DoTListen":       ":8853",
+		"TLSCert":         "/etc/s-hole/cert.pem",
+		"TLSKey":          "/etc/s-hole/key.pem",
 	}
 	for k, v := range expected {
 		if want[k] != v {
@@ -666,5 +683,89 @@ func TestApplyEnvOverrides_IgnoresMalformedNumerics(t *testing.T) {
 	}
 	if cfg.CacheSize != 2000 {
 		t.Errorf("CacheSize = %d, want default 2000 (malformed env ignored)", cfg.CacheSize)
+	}
+}
+
+// writeKeyPair writes a self-signed ECDSA certificate and its private key as
+// PEM files in dir and returns the two paths. Validate only needs a pair that
+// tls.LoadX509KeyPair accepts, so the certificate fields are minimal.
+func writeKeyPair(t *testing.T, dir, prefix string) (certFile, keyFile string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "dns.test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		DNSNames:     []string{"dns.test"},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certFile = filepath.Join(dir, prefix+"cert.pem")
+	keyFile = filepath.Join(dir, prefix+"key.pem")
+	if err := os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return certFile, keyFile
+}
+
+func TestValidate_DoT(t *testing.T) {
+	// dot_listen turns DoT on, and then Validate requires a loadable
+	// certificate and key, so -check-config catches a bad pair before the
+	// service starts. With DoT off, the TLS paths are ignored.
+	dir := t.TempDir()
+	certFile, keyFile := writeKeyPair(t, dir, "a-")
+	otherCert, _ := writeKeyPair(t, dir, "b-")
+
+	cases := []struct {
+		name    string
+		listen  string
+		cert    string
+		key     string
+		wantErr string // substring; "" means Validate must pass
+	}{
+		{"off ignores tls paths", "", "/no/such/cert.pem", "", ""},
+		{"valid pair", ":853", certFile, keyFile, ""},
+		{"address without port", "853", certFile, keyFile, "dot_listen"},
+		{"address with empty port", "0.0.0.0:", certFile, keyFile, "dot_listen"},
+		{"missing key", ":853", certFile, "", "tls_cert and tls_key are required"},
+		{"missing cert", ":853", "", keyFile, "tls_cert and tls_key are required"},
+		{"unreadable files", ":853", filepath.Join(dir, "nope.pem"), keyFile, "cannot load the DoT certificate"},
+		{"mismatched key", ":853", otherCert, keyFile, "cannot load the DoT certificate"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{
+				BlockMode:    "zero",
+				LogQueries:   "all",
+				QueryPrivacy: "raw",
+				Upstreams:    []string{"1.1.1.1:53", "8.8.8.8:53"},
+				DoTListen:    tc.listen,
+				TLSCert:      tc.cert,
+				TLSKey:       tc.key,
+			}
+			err := cfg.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Errorf("Validate = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("Validate = %v, want an error containing %q", err, tc.wantErr)
+			}
+		})
 	}
 }

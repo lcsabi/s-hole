@@ -7,10 +7,11 @@ import (
 	"syscall"
 )
 
-// reloadSignals is the set of signals that should trigger a blocklist
-// refresh rather than shutdown. On Unix this is SIGHUP, matching the
-// long-standing convention for "reload config". Operators expect
-// `kill -HUP $(pidof s-hole)` to work without needing the admin API.
+// reloadSignals is the set of signals that should trigger a reload (the DoT
+// certificate when DoT is on, then the blocklists) rather than shutdown. On
+// Unix this is SIGHUP, matching the long-standing convention for "reload
+// config". Operators expect `kill -HUP $(pidof s-hole)` to work without
+// needing the admin API.
 func reloadSignals() []os.Signal {
 	return []os.Signal{syscall.SIGHUP}
 }

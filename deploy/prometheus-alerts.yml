@@ -67,3 +67,22 @@ groups:
         annotations:
           summary: "s-hole goroutine count is growing"
           description: "shole_goroutines has grown by more than 100 over the last hour and stayed high for 30 minutes. s-hole runs one goroutine per in-flight query, so a count that climbs and never settles points to a handler path that is not returning."
+
+      # The two DoT rules only fire when dot_listen is set; without DoT the
+      # metrics are not emitted, so the rules have nothing to match.
+      - alert: DoTCertificateExpiringSoon
+        expr: shole_dot_certificate_expiry_timestamp_seconds - time() < 14 * 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "The s-hole DNS-over-TLS certificate expires within 14 days"
+          description: "The DoT certificate expires in {{ $value | humanizeDuration }} (a negative value means it has already expired). Clients such as Android Private DNS reject an expired certificate. Renew it, replace the tls_cert and tls_key files, and reload s-hole."
+
+      - alert: DoTCertificateReloadFailed
+        expr: increase(shole_dot_certificate_reload_failures_total[24h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "s-hole could not load a new DNS-over-TLS certificate"
+          description: "In the last 24 hours a reload found tls_cert or tls_key unreadable or mismatched, so s-hole kept serving the previous certificate. Check the files and the s-hole log, then reload again. The 24h window matches the default refresh_interval, so the alert stays up until a later reload succeeds and a day passes."

@@ -3,11 +3,20 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"net"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -99,7 +108,7 @@ func TestPrintNetworkHint_EmitsBanner(t *testing.T) {
 	t.Setenv("S_HOLE_LOG_FORMAT", "")
 	t.Setenv("S_HOLE_ASCII_BANNER", "")
 	out := captureStdout(t, func() {
-		printNetworkHint("53", "0.0.0.0", "8080", true)
+		printNetworkHint("53", "", "0.0.0.0", "8080", true)
 	})
 	if !strings.Contains(out, "Router setup") {
 		t.Skipf("no LAN interface in test env; banner skipped (got: %q)", out)
@@ -118,7 +127,7 @@ func TestPrintNetworkHint_AdminDownShowsUnavailable(t *testing.T) {
 	t.Setenv("S_HOLE_LOG_FORMAT", "")
 	t.Setenv("S_HOLE_ASCII_BANNER", "")
 	out := captureStdout(t, func() {
-		printNetworkHint("53", "127.0.0.1", "8080", false)
+		printNetworkHint("53", "", "127.0.0.1", "8080", false)
 	})
 	if !strings.Contains(out, "Router setup") {
 		t.Skipf("no LAN interface in test env; banner skipped (got: %q)", out)
@@ -138,7 +147,7 @@ func TestPrintNetworkHint_LoopbackAPIPointsAtLocalhost(t *testing.T) {
 	t.Setenv("S_HOLE_LOG_FORMAT", "")
 	t.Setenv("S_HOLE_ASCII_BANNER", "")
 	out := captureStdout(t, func() {
-		printNetworkHint("53", "127.0.0.1", "8080", true)
+		printNetworkHint("53", "", "127.0.0.1", "8080", true)
 	})
 	if !strings.Contains(out, "Router setup") {
 		t.Skipf("no LAN interface in test env; banner skipped (got: %q)", out)
@@ -176,7 +185,7 @@ func TestIsLoopbackHost(t *testing.T) {
 func TestPrintNetworkHint_ASCIIFallback(t *testing.T) {
 	t.Setenv("S_HOLE_ASCII_BANNER", "1")
 	out := captureStdout(t, func() {
-		printNetworkHint("53", "0.0.0.0", "8080", true)
+		printNetworkHint("53", "", "0.0.0.0", "8080", true)
 	})
 	if strings.Contains(out, "─") || strings.Contains(out, "│") || strings.Contains(out, "┌") {
 		t.Errorf("ASCII fallback still emitted box-drawing characters:\n%s", out)
@@ -580,5 +589,176 @@ func TestSystemInterfaces_NoLoopbackInBanner(t *testing.T) {
 		if strings.HasPrefix(ip, "127.") {
 			t.Errorf("lanIPv4s returned loopback address %s", ip)
 		}
+	}
+}
+
+// fakeCertReloader stands in for *dnsserver.CertReloader in the reload tests.
+type fakeCertReloader struct {
+	reloadErr error
+	notAfter  time.Time
+	reloads   int
+}
+
+func (f *fakeCertReloader) Reload() error       { f.reloads++; return f.reloadErr }
+func (f *fakeCertReloader) NotAfter() time.Time { return f.notAfter }
+func (f *fakeCertReloader) ExpiryWarning(now time.Time) string {
+	if now.After(f.notAfter) {
+		return "the DoT certificate has expired; clients will reject it"
+	}
+	return ""
+}
+
+func TestReloadWork_ReloadsCertificateThenRefreshes(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	certs := &fakeCertReloader{notAfter: time.Now().Add(90 * 24 * time.Hour)}
+	refreshed := 0
+
+	reloadWork(log, certs, func() {
+		if certs.reloads != 1 {
+			t.Error("blocklist refresh ran before the certificate reload")
+		}
+		refreshed++
+	})()
+
+	if certs.reloads != 1 || refreshed != 1 {
+		t.Errorf("reloads = %d, refreshes = %d, want 1 and 1", certs.reloads, refreshed)
+	}
+	if !strings.Contains(buf.String(), "DoT certificate reloaded") {
+		t.Errorf("missing reload log line:\n%s", buf.String())
+	}
+}
+
+func TestReloadWork_FailedCertificateStillRefreshesBlocklists(t *testing.T) {
+	// A bad certificate file must not stop the blocklist refresh; the
+	// listener keeps its current certificate and the operator gets a WARN.
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	certs := &fakeCertReloader{reloadErr: errors.New("bad pem")}
+	refreshed := 0
+
+	reloadWork(log, certs, func() { refreshed++ })()
+
+	if refreshed != 1 {
+		t.Errorf("refreshes = %d, want 1 even though the certificate reload failed", refreshed)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "keeping the current certificate") || !strings.Contains(out, "level=WARN") {
+		t.Errorf("want a WARN about keeping the current certificate:\n%s", out)
+	}
+}
+
+func TestReloadWork_NoCertificateWhenDoTOff(t *testing.T) {
+	refreshed := 0
+	reloadWork(slog.New(slog.NewTextHandler(io.Discard, nil)), nil, func() { refreshed++ })()
+	if refreshed != 1 {
+		t.Errorf("refreshes = %d, want 1", refreshed)
+	}
+}
+
+func TestReloadWork_WarnsOnExpiredCertificate(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	certs := &fakeCertReloader{notAfter: time.Now().Add(-time.Hour)}
+
+	reloadWork(log, certs, func() {})()
+
+	if !strings.Contains(buf.String(), "has expired") {
+		t.Errorf("want an expiry WARN after reloading an expired certificate:\n%s", buf.String())
+	}
+}
+
+func TestPrintNetworkHint_DoTLine(t *testing.T) {
+	t.Setenv("S_HOLE_LOG_FORMAT", "")
+	for _, ascii := range []string{"", "1"} {
+		t.Setenv("S_HOLE_ASCII_BANNER", ascii)
+		out := captureStdout(t, func() {
+			printNetworkHint("53", "853", "127.0.0.1", "8080", true)
+		})
+		if !strings.Contains(out, "Router setup") {
+			t.Skipf("no LAN interface in test env; banner skipped (got: %q)", out)
+		}
+		if !strings.Contains(out, "port 853") || !strings.Contains(out, "certificate's hostname") {
+			t.Errorf("banner (ascii=%q) missing the DoT line; got: %q", ascii, out)
+		}
+	}
+	out := captureStdout(t, func() {
+		printNetworkHint("53", "", "127.0.0.1", "8080", true)
+	})
+	if strings.Contains(out, "DoT") {
+		t.Errorf("banner shows a DoT line with DoT off; got: %q", out)
+	}
+}
+
+// writeExpiredKeyPair writes a self-signed certificate that expired an hour
+// ago, plus its key, and returns the two paths. An expired pair still loads,
+// which is exactly the case -check-config must warn about.
+func writeExpiredKeyPair(t *testing.T, dir string) (certFile, keyFile string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "dns.test"},
+		NotBefore:    time.Now().Add(-48 * time.Hour),
+		NotAfter:     time.Now().Add(-time.Hour),
+		DNSNames:     []string{"dns.test"},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certFile = filepath.Join(dir, "cert.pem")
+	keyFile = filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return certFile, keyFile
+}
+
+func TestRunCheckConfig(t *testing.T) {
+	dir := t.TempDir()
+	certFile, keyFile := writeExpiredKeyPair(t, dir)
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	cases := []struct {
+		name     string
+		cfg      string
+		wantCode int
+		wantLog  []string
+	}{
+		{"plain config", "", 0, []string{"config OK"}},
+		{"invalid config", "block_mode: bogus\n", 1, []string{"level=ERROR"}},
+		{"expired DoT certificate warns but passes",
+			"dot_listen: \":853\"\ntls_cert: \"" + certFile + "\"\ntls_key: \"" + keyFile + "\"\n",
+			0, []string{"has expired", "level=WARN", "config OK"}},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			code := runCheckConfig(slog.New(slog.NewTextHandler(&buf, nil)), write(fmt.Sprintf("c%d.yaml", i), tc.cfg))
+			if code != tc.wantCode {
+				t.Errorf("exit code = %d, want %d\n%s", code, tc.wantCode, buf.String())
+			}
+			for _, w := range tc.wantLog {
+				if !strings.Contains(buf.String(), w) {
+					t.Errorf("log missing %q:\n%s", w, buf.String())
+				}
+			}
+		})
 	}
 }

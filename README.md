@@ -257,15 +257,16 @@ The main use is Android's **Automatic** Private DNS mode, the default on most ph
 
 > **Test status.** The listener, certificate reload, and certificate status were tested with automated tests, `dig +tls`, and `openssl s_client`. They were **not** tested with a real Android phone yet. The Android behavior on this page comes from Android's documentation.
 
-**1. Make a certificate.** Put the hostname and the LAN IP of the s-hole box in the certificate:
+**1. Make a certificate.** s-hole serves one certificate to every DoT client. Phones in Automatic mode accept any certificate, so a self-signed one is enough. If you also have desktop DoT clients, make the certificate with mkcert instead (see [Other DoT clients](#other-dot-clients)); phones accept that one too. Put the hostname and the LAN IP of the s-hole box in the certificate:
 
 ```bash
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
   -days 3650 -keyout key.pem -out cert.pem -subj "/CN=dns.home" \
-  -addext "subjectAltName=DNS:dns.home,IP:192.168.1.10"
+  -addext "subjectAltName=DNS:dns.home,IP:192.168.1.10" \
+  -addext "basicConstraints=critical,CA:FALSE"
 ```
 
-Automatic mode does not check the expiry, so a long validity saves renewals. **Never install this certificate as a trusted root on a device.** OpenSSL marks it as a CA, and its key is on the s-hole box, so anyone who took that key could impersonate any website to that device.
+Automatic mode does not check the expiry, so a long validity saves renewals. `CA:FALSE` stops the certificate from acting as a CA. Without it, OpenSSL makes a CA whose key is on the s-hole box, and a device that trusted it would accept a certificate for any website signed with that key.
 
 **2. Install the files** in `/etc/s-hole/`. The service user cannot read home directories.
 
@@ -331,7 +332,7 @@ systemctl reload s-hole
 
 #### Other DoT clients
 
-Desktop DoT clients such as `systemd-resolved` (`DNSOverTLS=yes`, `DNS=192.168.1.10#dns.home`) or stubby check the certificate, so each client must trust its issuer. Use [mkcert](https://github.com/FiloSottile/mkcert): it makes a local CA and issues the certificate (`mkcert -cert-file cert.pem -key-file key.pem dns.home 192.168.1.10`). Install only its `rootCA.pem` (in the folder `mkcert -CAROOT` prints) on each client, and never copy `rootCA-key.pem`. A CA that a device trusts can vouch for any website, so install it only on devices you control.
+Desktop DoT clients such as `systemd-resolved` (`DNSOverTLS=yes`, `DNS=192.168.1.10#dns.home`) or stubby check the certificate, so each client must trust its issuer. Use [mkcert](https://github.com/FiloSottile/mkcert): it makes a local CA and issues the certificate (`mkcert -cert-file cert.pem -key-file key.pem dns.home 192.168.1.10`). Use this certificate in place of the openssl one from step 1, because s-hole serves only one. Phones in Automatic mode accept it too. Install only its `rootCA.pem` (in the folder `mkcert -CAROOT` prints) on each client, and never copy `rootCA-key.pem`. A CA that a device trusts can vouch for any website, so install it only on devices you control.
 
 <details>
 <summary>How to install <code>rootCA.pem</code> on each client</summary>
@@ -840,7 +841,7 @@ A full end-to-end integration test (`internal/dnsserver/integration_test.go`) wi
 - The SQLite query log and flat log file contain full browsing history for all devices. Treat them as sensitive data. Use `log_queries: none` if you do not need query history.
 - The admin UI has no authentication. Set `api_listen: "127.0.0.1:8080"` to restrict it to localhost, or use a firewall rule to limit access. The HTTP server enforces read/write/idle timeouts and a 64 KiB request body limit to defend against slowloris-style attacks from LAN peers, but these are no substitute for proper access control on a multi-user network.
 - Blocklist URLs are operator-controlled. Use HTTPS URLs from sources you trust.
-- The DoT private key (`tls_key`) lets anyone who holds it impersonate your resolver. Keep it readable only by root and the `s-hole` group (mode `640`). The DoT listener caps open connections and times out slow TLS handshakes, but like port 53 it is meant for the LAN only. A private CA that you install on clients is trusted for every website, so keep its key off the s-hole box, and never install the openssl self-signed certificate as a trusted root (see [Other DoT clients](#other-dot-clients)).
+- The DoT private key (`tls_key`) lets anyone who holds it impersonate your resolver. Keep it readable only by root and the `s-hole` group (mode `640`). The DoT listener caps open connections and times out slow TLS handshakes, but like port 53 it is meant for the LAN only. A private CA that you install on clients is trusted for every website, so keep its key off the s-hole box (see [Other DoT clients](#other-dot-clients)). Keep `CA:FALSE` in the openssl command, so the self-signed certificate cannot act as a CA.
 
 ---
 

@@ -180,7 +180,8 @@ Make a test certificate, then restart Terminal 1 with DoT on a high port:
 ```bash
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
   -days 30 -keyout /tmp/key.pem -out /tmp/cert.pem -subj "/CN=dns.home" \
-  -addext "subjectAltName=DNS:dns.home,IP:127.0.0.1"
+  -addext "subjectAltName=DNS:dns.home,IP:127.0.0.1" \
+  -addext "basicConstraints=critical,CA:FALSE"
 S_HOLE_LISTEN=:5353 S_HOLE_DOT_LISTEN=127.0.0.1:8853 \
   S_HOLE_TLS_CERT=/tmp/cert.pem S_HOLE_TLS_KEY=/tmp/key.pem \
   S_HOLE_QUERY_DB=/tmp/q.db S_HOLE_CACHE_DIR=/tmp /tmp/s-hole -config config.yaml

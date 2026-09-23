@@ -80,11 +80,12 @@ Out of scope:
   a private certificate, each client must trust its CA. Whoever holds that
   CA's private key can then impersonate any website to those devices, so keep
   the key off the s-hole box. With mkcert, the CA key stays on the workstation
-  that issued the certificate. The README's openssl self-signed certificate is
-  its own CA, and its private key (`tls_key`) lives on the s-hole box. It is
-  fine as the server certificate for Android's Automatic mode, which does not
-  check it, but never install it as a trusted root on a client. A publicly
-  trusted certificate (ACME) needs no client install.
+  that issued the certificate. The README's openssl command sets
+  `basicConstraints=critical,CA:FALSE`: by default `openssl req -x509` makes a
+  CA, and its key (`tls_key`) lives on the s-hole box. With `CA:FALSE` the
+  certificate cannot sign others, so a device that trusts it by mistake
+  trusts only that DNS server. A publicly trusted certificate (ACME) needs no
+  client install.
 - **No CGO.** The binary is statically linked, so a libc or
   `libsystemd` vulnerability cannot reach the s-hole process.
 - **Client name labels are read-only and privacy-bounded.** The optional

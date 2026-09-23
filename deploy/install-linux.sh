@@ -180,11 +180,24 @@ fi
 
 # Port-53 preflight: the most common Linux DNS-server install failure is the
 # systemd-resolved stub listener already holding :53, which makes the s-hole
-# start fail to bind. A listener on 127.0.0.53:53 is that stub. It holds both
-# UDP and TCP :53, so probe both (-u -t) and not UDP alone. Default is a
-# warning with the exact drop-in to create; --free-port-53 creates it now,
-# mirroring the uninstaller's --restore-resolved (ROADMAP #27).
-if command -v ss >/dev/null 2>&1 && ss -H -lunt 2>/dev/null | grep -q '127.0.0.53:53'; then
+# start fail to bind. resolved runs two stubs on port 53: 127.0.0.53, which it
+# binds to the loopback interface (so ss prints it as 127.0.0.53%lo:53), and,
+# on systemd 247 and later, 127.0.0.54. Match both, with or without the
+# %interface suffix; an exact "127.0.0.53:53" match missed the %lo form, so
+# --free-port-53 silently did nothing (b/058). Each stub holds UDP and TCP :53,
+# so probe both (-u -t). Default is a warning with the exact drop-in to create;
+# --free-port-53 creates it now, mirroring the uninstaller's
+# --restore-resolved (ROADMAP #27).
+# The output is captured before grep runs: under pipefail, `ss | grep -q`
+# can report no match when grep exits early and ss dies of SIGPIPE.
+resolved_stub_on_53() {
+  local listeners
+  command -v ss >/dev/null 2>&1 || return 1
+  listeners=$(ss -H -lunt 2>/dev/null) || return 1
+  grep -Eq '127\.0\.0\.5[34](%[^:[:space:]]+)?:53([[:space:]]|$)' <<<"$listeners"
+}
+
+if resolved_stub_on_53; then
   if $FREE_PORT_53; then
     echo "==> freeing port 53: disabling the systemd-resolved stub listener"
     mkdir -p "$(dirname "$RESOLVED_DROPIN")"
@@ -193,8 +206,21 @@ if command -v ss >/dev/null 2>&1 && ss -H -lunt 2>/dev/null | grep -q '127.0.0.5
 DNSStubListener=no
 RESOLVED
     systemctl restart systemd-resolved
+    if resolved_stub_on_53; then
+      echo "warning: systemd-resolved still listens on port 53 after the restart." >&2
+      echo "         Check $RESOLVED_DROPIN, then run: systemctl restart systemd-resolved" >&2
+    fi
+    # With the stub gone, a resolv.conf that points at it leaves this host
+    # without DNS for programs that read it directly, including s-hole's own
+    # blocklist download. Say how to repoint it; do not change it here.
+    if [[ "$(readlink -f /etc/resolv.conf 2>/dev/null)" == /run/systemd/resolve/stub-resolv.conf ]]; then
+      echo "note: /etc/resolv.conf points at the stub listener that was just disabled." >&2
+      echo "      Programs that read it (apt, curl, and s-hole's blocklist download)" >&2
+      echo "      have no DNS until you point it at systemd-resolved's server list:" >&2
+      echo "        sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf" >&2
+    fi
   else
-    echo "warning: systemd-resolved is listening on port 53 (127.0.0.53:53)." >&2
+    echo "warning: systemd-resolved is listening on port 53 (127.0.0.53 or 127.0.0.54)." >&2
     echo "         s-hole cannot bind :53 until the stub is disabled. To free it," >&2
     echo "         create $RESOLVED_DROPIN with:" >&2
     echo "           [Resolve]" >&2
@@ -280,8 +306,23 @@ echo "└───────────────────────�
 
 echo ""
 echo "┌─ Router setup ──────────────────────────────────────────"
-# hostname -I returns space-separated IPs; print one line per address.
-for ip in $(hostname -I); do
+# LAN IPv4 addresses for the banner: global-scope addresses on interfaces that
+# are up and are not a container, VM, or VPN interface. `hostname -I` alone
+# also listed the Docker bridge (172.17.0.1), which a router cannot reach
+# (b/059). Keep the name list in step with virtualIfacePrefixes in
+# cmd/s-hole/main.go; both match case-insensitively. Fall back to
+# `hostname -I` if `ip` is missing or finds nothing, so the banner still shows
+# an address. `|| true` keeps set -e and pipefail from ending the script when
+# `ip` is absent: the service is already running at this point.
+lan_ipv4s() {
+  ip -4 -o addr show up scope global 2>/dev/null |
+    awk 'tolower($2) !~ /^(docker|br-|veth|virbr|vboxnet|vmnet|lxcbr|lxdbr|incusbr|podman|cni|flannel|cali|vxlan|tailscale|wg|zt|tun|tap)/ { sub(/\/.*/, "", $4); print $4 }' || true
+}
+banner_ips=$(lan_ipv4s)
+if [[ -z "$banner_ips" ]]; then
+  banner_ips=$(hostname -I 2>/dev/null || true)
+fi
+for ip in $banner_ips; do
   # Skip IPv6 addresses (contain colons).
   [[ "$ip" == *:* ]] && continue
   echo "│  DNS server → ${ip}:53"

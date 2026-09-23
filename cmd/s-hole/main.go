@@ -40,6 +40,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -369,11 +370,13 @@ func blockUntilStopped(start func() error, done <-chan struct{}) int {
 }
 
 // printNetworkHint prints the machine's LAN-facing IPv4 addresses so the
-// user knows what to enter in the router's DHCP DNS field. The banner is
-// drawn with Unicode box-drawing by default; ASCII fallback kicks in when
-// JSON logs are selected or S_HOLE_ASCII_BANNER=1 is set, so terminals
-// without a UTF-8 codepage (notably the legacy Windows console) and log
-// collectors that don't expect prose are not littered with mojibake.
+// user knows what to enter in the router's DHCP DNS field. Container, VM, and
+// VPN interfaces are left out, because a router cannot reach them (see
+// lanIPv4s, b/059). The banner is drawn with Unicode box-drawing by default;
+// ASCII fallback kicks in when JSON logs are selected or
+// S_HOLE_ASCII_BANNER=1 is set, so terminals without a UTF-8 codepage
+// (notably the legacy Windows console) and log collectors that don't expect
+// prose are not littered with mojibake.
 //
 // The Admin UI line honors where the API server is actually bound: with
 // the localhost-only default, advertising http://<lan-ip>:8080 would be
@@ -382,24 +385,7 @@ func blockUntilStopped(start func() error, done <-chan struct{}) int {
 // listener failed to bind, so the banner says the UI is unavailable rather
 // than advertising a URL that refuses connections (b/052).
 func printNetworkHint(dnsPort, apiHost, apiPort string, apiUp bool) {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return
-	}
-
-	var lanIPs []string
-	for _, addr := range addrs {
-		ipnet, ok := addr.(*net.IPNet)
-		if !ok {
-			continue
-		}
-		ip := ipnet.IP.To4()
-		if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
-			continue
-		}
-		lanIPs = append(lanIPs, ip.String())
-	}
-
+	lanIPs := lanIPv4s(systemInterfaces())
 	if len(lanIPs) == 0 {
 		return
 	}
@@ -439,6 +425,83 @@ func printNetworkHint(dnsPort, apiHost, apiPort string, apiUp bool) {
 		fmt.Println("[main] │  Admin UI   → unavailable (api_listen bind failed)")
 	}
 	fmt.Println("[main] └──────────────────────────────────────────────────────")
+}
+
+// ifaceAddrs is one network interface as the banner sees it: its name, its
+// flags, and its addresses. It is a plain struct so lanIPv4s can be tested
+// with fake interfaces.
+type ifaceAddrs struct {
+	name  string
+	flags net.Flags
+	addrs []net.Addr
+}
+
+// systemInterfaces lists the machine's network interfaces with their
+// addresses. An interface whose addresses cannot be read is skipped.
+func systemInterfaces() []ifaceAddrs {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	out := make([]ifaceAddrs, 0, len(ifaces))
+	for _, ifc := range ifaces {
+		addrs, err := ifc.Addrs()
+		if err != nil {
+			continue
+		}
+		out = append(out, ifaceAddrs{name: ifc.Name, flags: ifc.Flags, addrs: addrs})
+	}
+	return out
+}
+
+// virtualIfacePrefixes names interfaces that a router cannot reach: container
+// and VM bridges (Docker, libvirt, VirtualBox and VMware host-only networks,
+// LXC/LXD/Incus, Podman, Kubernetes network plugins) and VPN tunnels. Their
+// addresses are often private (Docker's docker0 is 172.17.0.1), so an
+// address-range check cannot tell them from a real LAN interface, but the name
+// can (b/059). "br-" keeps its hyphen: it matches Docker's br-<id> networks,
+// not a real LAN bridge such as br0. Keep this list in step with lan_ipv4s in
+// deploy/install-linux.sh, which filters the installer's banner the same way.
+var virtualIfacePrefixes = []string{
+	"docker", "br-", "veth", "virbr", "vboxnet", "vmnet", "lxcbr", "lxdbr",
+	"incusbr", "podman", "cni", "flannel", "cali", "vxlan", "tailscale", "wg",
+	"zt", "tun", "tap",
+}
+
+func isVirtualIface(name string) bool {
+	name = strings.ToLower(name)
+	for _, p := range virtualIfacePrefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// lanIPv4s returns the IPv4 addresses the banner offers as the router's DNS
+// server: addresses on interfaces that are up and are not loopback, not
+// link-local, and not a container, VM, or VPN interface. It only chooses what
+// the banner prints; s-hole still listens on every address its listen
+// setting covers.
+func lanIPv4s(ifaces []ifaceAddrs) []string {
+	var ips []string
+	for _, ifc := range ifaces {
+		if ifc.flags&net.FlagUp == 0 || ifc.flags&net.FlagLoopback != 0 || isVirtualIface(ifc.name) {
+			continue
+		}
+		for _, a := range ifc.addrs {
+			ipnet, ok := a.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip := ipnet.IP.To4()
+			if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+				continue
+			}
+			ips = append(ips, ip.String())
+		}
+	}
+	return ips
 }
 
 // isLoopbackHost reports whether host names a loopback address. An empty

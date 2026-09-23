@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"reflect"
 	"strings"
@@ -504,5 +505,80 @@ func TestShutdown_ReloadGetsOwnBudget(t *testing.T) {
 	// Separate budgets: reload sees ~timeout. Shared budget would give ~80ms.
 	if reloadBudget < 150*time.Millisecond {
 		t.Errorf("reload budget = %v, want > 150ms (its own full timeout, not shared with drain)", reloadBudget)
+	}
+}
+
+// ipNet builds a *net.IPNet address for the lanIPv4s tests.
+func ipNet(t *testing.T, cidr string) net.Addr {
+	t.Helper()
+	ip, n, err := net.ParseCIDR(cidr)
+	if err != nil {
+		t.Fatalf("ParseCIDR(%q): %v", cidr, err)
+	}
+	n.IP = ip
+	return n
+}
+
+func TestLanIPv4s_SkipsVirtualAndUnusableInterfaces(t *testing.T) {
+	// b/059: on a host that runs Docker, the banner offered the docker0 bridge
+	// (172.17.0.1) as a DNS server for the router. A router cannot reach it.
+	// The interface set mirrors the reporting VM plus the other cases.
+	up := net.FlagUp | net.FlagBroadcast
+	ifaces := []ifaceAddrs{
+		{name: "lo", flags: net.FlagUp | net.FlagLoopback, addrs: []net.Addr{ipNet(t, "127.0.0.1/8")}},
+		{name: "enp0s3", flags: up, addrs: []net.Addr{ipNet(t, "192.168.100.18/24"), ipNet(t, "fe80::1/64")}},
+		{name: "docker0", flags: up, addrs: []net.Addr{ipNet(t, "172.17.0.1/16")}},
+		{name: "br-3f2a9c1d", flags: up, addrs: []net.Addr{ipNet(t, "172.18.0.1/16")}},
+		{name: "veth12ab", flags: up, addrs: []net.Addr{ipNet(t, "169.254.3.3/16")}},
+		{name: "virbr0", flags: up, addrs: []net.Addr{ipNet(t, "192.168.122.1/24")}},
+		{name: "tailscale0", flags: up, addrs: []net.Addr{ipNet(t, "100.101.102.103/32")}},
+		{name: "wg0", flags: up, addrs: []net.Addr{ipNet(t, "10.8.0.1/24")}},
+		{name: "eth1", flags: 0, addrs: []net.Addr{ipNet(t, "10.0.0.5/24")}},                // down
+		{name: "wlan0", flags: up, addrs: []net.Addr{ipNet(t, "169.254.10.20/16")}},         // link-local only
+		{name: "br0", flags: up, addrs: []net.Addr{ipNet(t, "192.168.1.10/24")}},            // a real LAN bridge
+		{name: "eth2", flags: up, addrs: []net.Addr{&net.IPAddr{IP: net.IPv4(1, 2, 3, 4)}}}, // not an IPNet
+	}
+	got := lanIPv4s(ifaces)
+	want := []string{"192.168.100.18", "192.168.1.10"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("lanIPv4s = %v, want %v", got, want)
+	}
+}
+
+func TestIsVirtualIface(t *testing.T) {
+	for name, want := range map[string]bool{
+		"docker0": true, "Docker0": true, "docker_gwbridge": true, "br-abc123": true,
+		"veth9": true, "virbr0": true, "lxdbr0": true, "podman0": true, "cni0": true,
+		"flannel.1": true, "cali1234": true, "vxlan.calico": true, "tailscale0": true,
+		"wg0": true, "zt5u4y": true, "tun0": true, "tap0": true,
+		"vboxnet0": true, "vmnet8": true, "incusbr0": true,
+		"eth0": false, "enp0s3": false, "wlan0": false, "br0": false, "bond0": false, "vmbr0": false,
+	} {
+		if got := isVirtualIface(name); got != want {
+			t.Errorf("isVirtualIface(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+func TestSystemInterfaces_NoLoopbackInBanner(t *testing.T) {
+	// A smoke test against the real host: systemInterfaces must report the
+	// loopback interface, and lanIPv4s must never return an address from it.
+	ifaces := systemInterfaces()
+	if len(ifaces) == 0 {
+		t.Skip("no network interfaces visible in this environment")
+	}
+	sawLoopback := false
+	for _, ifc := range ifaces {
+		if ifc.flags&net.FlagLoopback != 0 {
+			sawLoopback = true
+		}
+	}
+	if !sawLoopback {
+		t.Error("systemInterfaces reported no loopback interface")
+	}
+	for _, ip := range lanIPv4s(ifaces) {
+		if strings.HasPrefix(ip, "127.") {
+			t.Errorf("lanIPv4s returned loopback address %s", ip)
+		}
 	}
 }

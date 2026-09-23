@@ -17,6 +17,20 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   ordered list and the same failover, so listing a plain resolver after a DoH
   entry keeps a fallback. The DoH host must be an IP, not a hostname. (CL 85)
 
+### Fixed
+- **`install-linux.sh --free-port-53` now frees port 53 on current systemd.** The
+  installer looked for the `systemd-resolved` stub as `127.0.0.53:53`, but current
+  systemd shows it as `127.0.0.53%lo:53` and runs a second stub on
+  `127.0.0.54:53`. The check missed both, so the flag did nothing and s-hole
+  failed to start with "address already in use". It now matches both stubs,
+  checks again after the restart, and tells you when `/etc/resolv.conf` still
+  points at the disabled stub. (CL 87, b/058)
+- **The startup banner no longer offers container or VPN addresses.** On a host
+  with Docker, the "Router setup" banner (and the installer's closing banner)
+  listed the Docker bridge (`172.17.0.1`) as a DNS server for the router, which
+  a router cannot reach. Container, VM, and VPN interfaces are now left out of
+  the banner. s-hole still listens on the same addresses. (CL 87, b/059)
+
 ## [1.0.0] - 2026-09-18
 
 ### Fixed

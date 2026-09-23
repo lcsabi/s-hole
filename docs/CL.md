@@ -99,6 +99,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 83](cls/CL-83.md) | Graduate the CHANGELOG to v1.0.0 |
 | [CL 84](cls/CL-84.md) | Dedup the dashboard query-filter params into one applyFilterParams helper (code-review follow-up) |
 | [CL 85](cls/CL-85.md) | DNS-over-HTTPS upstream forwarding (ROADMAP #5) |
+| [CL 87](cls/CL-87.md) | Installer frees the systemd-resolved stub on current systemd (b/058); banner skips container and VPN addresses (b/059) |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

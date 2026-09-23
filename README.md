@@ -257,7 +257,13 @@ s-hole can also serve DNS over TLS (DoT, RFC 7858). A DoT client reaches s-hole 
 
 **1. Get a certificate.** A DoT client checks two things. The certificate must name the hostname the client connects with (the Subject Alternative Name, or SAN). The client must also trust the certificate's issuer. s-hole does not make a certificate for you, because only you know the hostname and can make your devices trust it. Pick one of these:
 
-- **For Android Private DNS**, use a domain you own, such as `dns.example.com`. Get a publicly trusted certificate for it, for example from Let's Encrypt with a DNS-01 challenge (the box does not have to be reachable from the internet). In your domain's public DNS zone, add an A record that points `dns.example.com` at the s-hole box's LAN IP (s-hole cannot answer that name itself yet). Android may not accept a certificate from a CA that you installed yourself, so test on the phone.
+- **For Android Private DNS**, use a domain you own, such as `dns.example.com`. Get a publicly trusted certificate for it, for example from Let's Encrypt with a DNS-01 challenge (the box does not have to be reachable from the internet). In your domain's public DNS zone, add an A record that points `dns.example.com` at the s-hole box's LAN IP (s-hole cannot answer that name itself yet). The domain can be a cheap one, or a free dynamic-DNS subdomain if the provider supports the DNS-01 challenge.
+
+  Android needs this route, not the desktop one, for two reasons:
+  - **The phone must resolve the hostname.** Private DNS takes a hostname, not an IP, and the phone looks it up through the network's plain DNS, which is usually s-hole. s-hole forwards a local name such as `dns.home` upstream, where it does not exist, so the lookup fails. A name in a public DNS zone resolves through any upstream.
+  - **The phone must trust the issuer.** A CA that you install on Android goes into the user store, and Private DNS probably trusts only the system store. A publicly trusted certificate is in every phone's system store already. (Untested; see the test status above.)
+
+  Some routers and resolvers use DNS rebind protection: they drop an answer in which a public name points at a private IP. If the phone's lookups pass through such a router, `dns.example.com` does not resolve. s-hole does not filter these answers, so a phone that uses s-hole directly as its DNS server is not affected.
 - **For desktop DoT clients**, use [mkcert](https://github.com/FiloSottile/mkcert). It makes a local CA, installs it on the machine that runs it, and issues the certificate. Put the hostname and LAN IP that clients use in the SAN:
 
   ```bash

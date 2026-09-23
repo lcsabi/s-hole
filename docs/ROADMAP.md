@@ -523,6 +523,30 @@ Design decisions to settle in the CL:
   it. It is answered before the blocklist check, so a name that appears in both
   resolves locally. Record this so a later review does not read it as a bypass.
 
+**DoT hostname resolution (link to #36, CL 86).** Android's Private DNS takes a
+hostname, and the phone resolves it through the network's plain DNS, usually
+s-hole. Today s-hole forwards a LAN name upstream, where it fails, so the README
+tells Android users to publish a public A record that points their domain at the
+LAN IP. A local record (`dns.home: 192.168.1.10`, or the owned name) lets s-hole
+answer that lookup itself. This is split-horizon DNS: the name resolves only
+inside the LAN. It removes the public A record, so the LAN address is no longer
+published, and it avoids DNS rebind protection on the path from the phone to
+s-hole, because the answer never comes from upstream (a router between the
+phone and s-hole can still filter it).
+
+It does not solve certificate trust. Private DNS still checks the certificate
+against Android's trust store, which probably ignores user-installed CAs, so
+Android most likely still needs a publicly trusted certificate and a domain the
+operator owns. The domain then carries only the certificate: the ACME DNS-01
+challenge needs a TXT record, not an A record. If the #36 acceptance test shows
+that Android accepts a user-installed CA, a mkcert certificate plus a local
+record would need no domain at all.
+
+When this lands, update the README's DNS over TLS section: offer a
+`local_records` entry in place of the public A record (keep the public record as
+a fallback), reduce the rebind caveat to the router-in-the-path case, and remove
+the note that s-hole cannot answer that name itself.
+
 Rated High: a user-visible resolution feature that many home deployments want,
 and one of the more commonly requested capabilities s-hole lacks today. It
 changes no filtering behavior.
@@ -1725,10 +1749,20 @@ the motivating case. The Android guidance in the README (strict mode, the
 publicly trusted certificate, the public A record, the off-LAN warning) comes
 from Android's documented behavior, not from a test run, and the README says so.
 The item stays open for that acceptance test, the same way #1 stays open for
-real hardware: point a phone's Private DNS at the hostname, confirm it resolves
-through s-hole (a blocked domain returns `0.0.0.0`), and record whether Android
-accepts a user-installed CA. Record the result here and correct the README if
-Android behaves differently.
+real hardware. Run it in this order, cheapest route first:
+
+1. **Try the mkcert route.** Install the mkcert CA on the phone (user store),
+   serve a mkcert certificate for a LAN name, make that name resolve on the
+   phone (through the router's local names, or through #15 once it lands), and
+   point Private DNS at it. If Android accepts it, operators do not need a
+   domain: record that and rewrite the README's Android route around mkcert.
+2. **If Android rejects it, use the public-domain route** from the README: a
+   publicly trusted certificate and a public A record to the LAN IP. This
+   confirms that the domain is required.
+
+In both cases, confirm that queries resolve through s-hole (a blocked domain
+returns `0.0.0.0`), and check the off-LAN behavior. Record the results here and
+correct the README if Android behaves differently from its documentation.
 
 Design decisions settled in the CL:
 

@@ -1749,8 +1749,9 @@ unchanged (`clientAddr` sees the `*net.TCPAddr` under the `tls.Conn`).
 
 **Validation status: not yet tested with a real Android device.** CL 86 was
 tested with automated tests, `dig +tls`, and `openssl s_client` on a
-development machine, but not with an Android phone in Private DNS mode, which is
-the motivating case. The Android guidance in the README (that Automatic mode
+development machine, and on the maintainer's Debian 12 VM (see the desktop
+check below), but not with an Android phone in Private DNS mode, which is the
+motivating case. The Android guidance in the README (that Automatic mode
 upgrades to DoT without checking the certificate, and, for strict mode, the
 publicly trusted certificate, the public A record, and the off-LAN warning)
 comes from Android's documented behavior, not from a test run, and the README
@@ -1773,12 +1774,21 @@ real hardware. Run it in this order, cheapest route first:
    publicly trusted certificate and a public A record to the LAN IP. This
    confirms that the domain is required.
 
-A desktop check belongs to the same test: on a Debian VM, run `systemd-resolved`
-against s-hole in opportunistic mode (expect DoT on port 853 with the untrusted
-self-signed certificate), then in strict mode (`DNSOverTLS=yes`: expect failure,
-then success after trusting the certificate). Record whether strict mode accepts
-the `CA:FALSE` self-signed certificate as a trust anchor, which would make mkcert
-optional for Linux desktops.
+**Desktop check: done (2026-09-23, maintainer's Debian 12 VM).** All passed:
+
+- Server side: `dig +tls` returned `0.0.0.0` for a blocked domain and real
+  answers for an allowed one, and a wrong `+tls-hostname` failed. `/api/stats`,
+  `/metrics`, and the dashboard badge showed the certificate state.
+  `systemctl reload` served a new certificate without a restart, and a garbage
+  file kept the old one and showed `reload_failed`.
+- `systemd-resolved` opportunistic mode used DoT on port 853 with the untrusted
+  self-signed certificate.
+- `systemd-resolved` strict mode (`DNSOverTLS=yes`) failed while the certificate
+  was untrusted, and worked after the `CA:FALSE` self-signed certificate was
+  installed with `update-ca-certificates`. So the self-signed certificate works
+  as a trust anchor, and Linux desktops do not need mkcert.
+
+stubby, macOS profiles, and the Android steps below are still untested.
 
 In every case, confirm that queries resolve through s-hole (a blocked domain
 returns `0.0.0.0`), and check the off-LAN behavior. Record the results here and

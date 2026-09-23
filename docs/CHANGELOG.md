@@ -18,8 +18,9 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   own and a publicly trusted certificate) and desktop DoT clients. DoT queries
   get the same blocking, cache, and logging as plain ones. If the port is taken
   or the certificate does not load, s-hole stops with an error instead of
-  running without DoT. Not yet tested with a real Android phone; the README
-  says so. (CL 86)
+  running without DoT. Tested with `systemd-resolved` on Debian 12 in both
+  modes; not yet tested with a real Android phone, and the README says so.
+  (CL 86)
 - **Certificate renewal without a restart.** A reload (the dashboard button,
   `POST /api/reload`, `systemctl reload s-hole`, SIGHUP, or the periodic
   refresh) re-reads the DoT certificate and key. If the new files do not load,

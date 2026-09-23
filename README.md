@@ -255,7 +255,7 @@ s-hole can serve DNS over TLS (DoT, RFC 7858), usually on port 853. It is off by
 
 The main use is Android's **Automatic** Private DNS mode, the default on most phones. In this mode the phone tries DoT on the network's DNS server and, when it answers, sends its queries to s-hole encrypted. The phone does not check the certificate in this mode, so a self-signed certificate is enough and the phone needs no setup. This stops other devices on the Wi-Fi from reading DNS queries. It does not protect against an impostor resolver, because the certificate is not checked.
 
-> **Test status.** The listener, certificate reload, and certificate status were tested with automated tests, `dig +tls`, and `openssl s_client`. They were **not** tested with a real Android phone yet. The Android behavior on this page comes from Android's documentation.
+> **Test status.** The listener, certificate reload, and certificate status were tested with automated tests, `dig +tls`, and `openssl s_client`, and on a Debian 12 VM with `systemd-resolved` as the DoT client in both modes. They were **not** tested with a real Android phone yet. The Android behavior on this page comes from Android's documentation.
 
 **1. Make a certificate.** s-hole serves one certificate to every DoT client. Phones in Automatic mode accept any certificate, so a self-signed one is enough. If you also have desktop DoT clients, make the certificate with mkcert instead (see [Other DoT clients](#other-dot-clients)); phones accept that one too. Put the hostname and the LAN IP of the s-hole box in the certificate:
 
@@ -332,12 +332,13 @@ systemctl reload s-hole
 
 #### Other DoT clients
 
-Desktop support for DoT varies. None of these setups was tested against s-hole yet.
+Desktop support for DoT varies. The two `systemd-resolved` rows were tested against s-hole on Debian 12. The other rows come from each client's documentation and are untested.
 
 | Client | DoT to s-hole | Certificate |
 |---|---|---|
 | Linux, `systemd-resolved` with `DNSOverTLS=opportunistic` | Yes | Any; the client does not check it |
-| Linux, `systemd-resolved` with `DNSOverTLS=yes`, or stubby | Yes | Must be trusted: the mkcert CA or a public certificate |
+| Linux, `systemd-resolved` with `DNSOverTLS=yes` | Yes | Must be trusted: the self-signed certificate itself, the mkcert CA, or a public certificate |
+| Linux, stubby | Yes | Must be trusted |
 | macOS 11+, iOS 14+ | Yes, through a configuration profile with a DNS settings payload | Must be trusted |
 | Windows 11 | No: its built-in encrypted DNS is DoH only | n/a |
 | Browsers | No: they support DoH only | n/a |
@@ -351,9 +352,17 @@ DNSOverTLS=opportunistic
 Domains=~.
 ```
 
-Then run `sudo systemctl restart systemd-resolved`. `resolvectl status` shows `+DNSOverTLS`. `Domains=~.` sends every lookup to this server, ahead of a server that DHCP gives the network link. In opportunistic mode the client falls back to plain DNS when DoT fails.
+Then run `sudo systemctl restart systemd-resolved`. `resolvectl status` shows `+DNSOverTLS`. `Domains=~.` sends every lookup to this server, ahead of a server that DHCP gives the network link. In opportunistic mode the client falls back to plain DNS when DoT fails. On the s-hole box itself, this makes the box resolve through s-hole. s-hole downloads its blocklists at startup before its DNS listener is up, so on that box it loads them from its on-disk cache; a fresh install with no cache starts with an empty blocklist until the next reload.
 
-The clients that check the certificate need to trust its issuer. Use [mkcert](https://github.com/FiloSottile/mkcert): it makes a local CA and issues the certificate (`mkcert -cert-file cert.pem -key-file key.pem dns.home 192.168.1.10`). Use this certificate in place of the openssl one from step 1, because s-hole serves only one. Phones in Automatic mode accept it too. Install only its `rootCA.pem` (in the folder `mkcert -CAROOT` prints) on each client, and never copy `rootCA-key.pem`. A CA that a device trusts can vouch for any website, so install it only on devices you control.
+For strict mode, set `DNSOverTLS=yes` and trust the certificate. On Linux, the self-signed certificate from step 1 works as its own trust anchor, so you do not need mkcert:
+
+```bash
+sudo cp cert.pem /usr/local/share/ca-certificates/s-hole.crt
+sudo update-ca-certificates
+sudo systemctl restart systemd-resolved
+```
+
+For other clients that check the certificate, or to cover several servers with one CA, use [mkcert](https://github.com/FiloSottile/mkcert): it makes a local CA and issues the certificate (`mkcert -cert-file cert.pem -key-file key.pem dns.home 192.168.1.10`). Use this certificate in place of the openssl one from step 1, because s-hole serves only one. Phones in Automatic mode accept it too. Install only its `rootCA.pem` (in the folder `mkcert -CAROOT` prints) on each client, and never copy `rootCA-key.pem`. A CA that a device trusts can vouch for any website, so install it only on devices you control.
 
 <details>
 <summary>How to install <code>rootCA.pem</code> on each client</summary>

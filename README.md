@@ -255,7 +255,7 @@ s-hole can serve DNS over TLS (DoT, RFC 7858), usually on port 853. It is off by
 
 The main use is Android's **Automatic** Private DNS mode, the default on most phones. In this mode the phone tries DoT on the network's DNS server and, when it answers, sends its queries to s-hole encrypted. The phone does not check the certificate in this mode, so a self-signed certificate is enough and the phone needs no setup. This stops other devices on the Wi-Fi from reading DNS queries. It does not protect against an impostor resolver, because the certificate is not checked.
 
-> **Test status.** The listener, certificate reload, and certificate status were tested with automated tests, `dig +tls`, and `openssl s_client`, and on a Debian 12 VM with `systemd-resolved` as the DoT client in both modes. Automatic mode was tested on Bliss OS 16.9.7 (Android 13) in VirtualBox, not on a phone: Android found DoT on the DHCP DNS server, accepted the self-signed certificate, and s-hole blocked its lookups over DoT. Strict mode was **not** tested on Android; that behavior comes from Android's documentation.
+> **Test status.** The listener, certificate reload, and certificate status were tested with automated tests, `dig +tls`, and `openssl s_client`, and on a Debian 12 VM with `systemd-resolved` as the DoT client in both modes. Automatic mode was tested on Bliss OS 16.9.7 (Android 13) in VirtualBox, not on a phone: Android found DoT on the DHCP DNS server, accepted the self-signed certificate, and s-hole blocked its lookups over DoT. In strict mode, the same Android rejected a certificate that the user installed, both a self-signed certificate and a CA. The public-certificate route in strict mode was not tested.
 
 **1. Make a certificate.** s-hole serves one certificate to every DoT client. Phones in Automatic mode accept any certificate, so a self-signed one is enough. If you also have desktop DoT clients, make the certificate with mkcert instead (see [Other DoT clients](#other-dot-clients)); phones accept that one too. Put the hostname and the LAN IP of the s-hole box in the certificate:
 
@@ -307,7 +307,7 @@ To see phones use it, run `sudo tcpdump -ni any tcp port 853` on the s-hole box 
 A phone set to **Private DNS provider hostname** uses only DoT to that host and checks its certificate. Use strict mode when you want certificate checks, or when a phone must not fall back to plain DNS. It needs more setup than Automatic mode:
 
 - **A domain you own**, such as `dns.example.com`. A cheap domain or a free dynamic-DNS subdomain works if the provider supports the DNS-01 challenge.
-- **A publicly trusted certificate** for that name, for example from Let's Encrypt with DNS-01 (the box does not have to be reachable from the internet). Android probably ignores a CA that you install yourself.
+- **A publicly trusted certificate** for that name, for example from Let's Encrypt with DNS-01 (the box does not have to be reachable from the internet). Android ignores a certificate or CA that you install yourself (tested on Android 13).
 - **A public A record** that points the name at the s-hole box's LAN IP. The phone looks up the name through plain DNS, and s-hole cannot answer a LAN name itself yet (ROADMAP #15).
 
 Then enter the name in Settings → Network & internet → Private DNS → Private DNS provider hostname (the path varies by phone). Two limits:
@@ -374,7 +374,7 @@ For other clients that check the certificate, or to cover several servers with o
 | macOS | `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain rootCA.pem` |
 | Windows | In an Administrator prompt: `certutil -addstore -f Root rootCA.pem` |
 | iOS, iPadOS | Send the file to the device and install it in Settings → General → VPN & Device Management, then turn on full trust in Settings → General → About → Certificate Trust Settings. |
-| Android | Settings → Security → Encryption & credentials → Install a certificate → CA certificate. Private DNS strict mode probably ignores it (untested); Automatic mode does not need it. |
+| Android | Settings → Security → Encryption & credentials → Install a certificate → CA certificate. Private DNS strict mode ignores it (tested on Android 13); Automatic mode does not need it. |
 
 </details>
 

@@ -20,7 +20,8 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   or the certificate does not load, s-hole stops with an error instead of
   running without DoT. Tested with `systemd-resolved` on Debian 12 in both
   modes, and with Android Automatic mode on Bliss OS 16.9.7 (Android 13) in
-  VirtualBox. Android strict mode is untested, and the README says so.
+  VirtualBox. Android strict mode rejected a user-installed certificate, so it
+  needs a publicly trusted one; that route is untested, and the README says so.
   (CL 86)
 - **Certificate renewal without a restart.** A reload (the dashboard button,
   `POST /api/reload`, `systemctl reload s-hole`, SIGHUP, or the periodic

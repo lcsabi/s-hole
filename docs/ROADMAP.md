@@ -49,7 +49,7 @@ rails.
 | 33 | Cache packed wire bytes: drop the per-hit `dns.Msg` copy | Medium | not started |
 | 34 | General admin-API rate limiting (defense-in-depth) | Low | not started |
 | 35 | DNSSEC validation of upstream answers | Medium | not started |
-| 36 | Serve DNS over TLS / HTTPS to LAN clients (DoT/DoH server) | Medium | done (CL 86): DoT; Android Automatic mode tested (Bliss OS VM), strict mode untested; DoH server deferred to #39 |
+| 36 | Serve DNS over TLS / HTTPS to LAN clients (DoT/DoH server) | Medium | done (CL 86): DoT; Android Automatic mode tested (Bliss OS VM); strict mode rejects a user-installed CA, public-certificate route untested; DoH server deferred to #39 |
 | 37 | Per-query latency histograms (service time + upstream) in `/metrics` | Medium | not started |
 | 38 | Per-transport query counter (plain, DoT) in `/metrics` | Medium | not started |
 | 39 | Serve DoH to LAN clients (client-facing `/dns-query` endpoint) | Low | not started |
@@ -1747,24 +1747,22 @@ handler, so blocking, the cache, stats, the query log, and the CL 72 mask apply
 unchanged (`clientAddr` sees the `*net.TCPAddr` under the `tls.Conn`).
 `Server.Start` was generalized from two listeners to N with an exact drain.
 
-**Validation status: Automatic mode tested; strict mode untested.** CL 86 was
+**Validation status: Automatic mode tested; strict mode partly tested.** CL 86 was
 tested with automated tests, `dig +tls`, and `openssl s_client` on a
 development machine, and on the maintainer's Debian 12 VM (see the desktop
 check below). Android was tested in a VM, not on a phone (see the Android
-check below). The strict-mode guidance in the README (the publicly trusted
-certificate, the public A record, and the off-LAN warning) comes from
-Android's documented behavior, not from a test run, and the README says so.
-The strict-mode steps below stay open, in this order, cheapest route first:
+check below). Strict mode with a user-installed certificate was tested and rejected. The
+public-domain route in the README (the publicly trusted certificate, the public
+A record, and the off-LAN warning) comes from Android's documented behavior,
+not from a test run, and the README says so. The steps, cheapest route first:
 
 1. **Automatic mode, the main use: done** (see the Android check below).
-2. **Strict mode with mkcert** (optional use). Install the mkcert CA on the phone (user store),
-   serve a mkcert certificate for a LAN name, make that name resolve on the
-   phone (through the router's local names, or through #15 once it lands), and
-   point Private DNS at it. If Android accepts it, operators do not need a
-   domain: record that and rewrite the README's Android route around mkcert.
-3. **If Android rejects it, use the public-domain route** from the README: a
-   publicly trusted certificate and a public A record to the LAN IP. This
-   confirms that the domain is required.
+2. **Strict mode with a user-installed CA: done, rejected** (see the Android
+   check below). Operators need a domain for strict mode.
+3. **Strict mode with the public-domain route** from the README: a publicly
+   trusted certificate and a public A record to the LAN IP. Still untested; it
+   relies on Android's standard certificate check, not on anything specific to
+   s-hole.
 
 **Desktop check: done (2026-09-23, maintainer's Debian 12 VM).** All passed:
 
@@ -1791,7 +1789,16 @@ went over port 53. VirtualBox's NAT Network DHCP replaces option 6 with the
 host's DNS server, so the test used a dnsmasq DHCP server on an internal
 network instead.
 
-stubby, macOS profiles, and Android strict mode are still untested.
+**Android check: strict mode with a user-installed CA rejected (2026-09-28,
+same VM).** s-hole served a certificate for `10-0-9-250.sslip.io`, a public
+name that resolves to the s-hole address, and the matching certificate went
+into Android's user CA store over ADB. Android resolved the name through
+s-hole, then failed the TLS handshake (`SSL_connect ssl error =1`) for both the
+`CA:FALSE` self-signed certificate and a CA plus a leaf it signed, while
+`dig +tls` accepted both. Android looks up the strict-mode name only after its
+internet check passes, so the test network needed internet.
+
+stubby, macOS profiles, and the public-domain strict route are still untested.
 
 In every case, confirm that queries resolve through s-hole (a blocked domain
 returns `0.0.0.0`), and check the off-LAN behavior. Record the results here and

@@ -19,7 +19,8 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   get the same blocking, cache, and logging as plain ones. If the port is taken
   or the certificate does not load, s-hole stops with an error instead of
   running without DoT. Tested with `systemd-resolved` on Debian 12 in both
-  modes; not yet tested with a real Android phone, and the README says so.
+  modes, and with Android Automatic mode on Bliss OS 16.9.7 (Android 13) in
+  VirtualBox. Android strict mode is untested, and the README says so.
   (CL 86)
 - **Certificate renewal without a restart.** A reload (the dashboard button,
   `POST /api/reload`, `systemctl reload s-hole`, SIGHUP, or the periodic

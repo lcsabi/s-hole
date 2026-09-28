@@ -255,7 +255,7 @@ s-hole can serve DNS over TLS (DoT, RFC 7858), usually on port 853. It is off by
 
 The main use is Android's **Automatic** Private DNS mode, the default on most phones. In this mode the phone tries DoT on the network's DNS server and, when it answers, sends its queries to s-hole encrypted. The phone does not check the certificate in this mode, so a self-signed certificate is enough and the phone needs no setup. This stops other devices on the Wi-Fi from reading DNS queries. It does not protect against an impostor resolver, because the certificate is not checked.
 
-> **Test status.** The listener, certificate reload, and certificate status were tested with automated tests, `dig +tls`, and `openssl s_client`, and on a Debian 12 VM with `systemd-resolved` as the DoT client in both modes. They were **not** tested with a real Android phone yet. The Android behavior on this page comes from Android's documentation.
+> **Test status.** The listener, certificate reload, and certificate status were tested with automated tests, `dig +tls`, and `openssl s_client`, and on a Debian 12 VM with `systemd-resolved` as the DoT client in both modes. Automatic mode was tested on Bliss OS 16.9.7 (Android 13) in VirtualBox, not on a phone: Android found DoT on the DHCP DNS server, accepted the self-signed certificate, and s-hole blocked its lookups over DoT. Strict mode was **not** tested on Android; that behavior comes from Android's documentation.
 
 **1. Make a certificate.** s-hole serves one certificate to every DoT client. Phones in Automatic mode accept any certificate, so a self-signed one is enough. If you also have desktop DoT clients, make the certificate with mkcert instead (see [Other DoT clients](#other-dot-clients)); phones accept that one too. Put the hostname and the LAN IP of the s-hole box in the certificate:
 
@@ -296,7 +296,7 @@ If the port is in use or the certificate does not load, s-hole stops with an err
 dig +tls +tls-ca=cert.pem +tls-hostname=dns.home @192.168.1.10 -p 853 doubleclick.net
 ```
 
-To see phones use it, run `sudo tcpdump -ni any tcp port 853` on the s-hole box while a phone in Automatic mode browses. Traffic on port 853 means the phone uses DoT.
+To see phones use it, run `sudo tcpdump -ni any tcp port 853` on the s-hole box while a phone in Automatic mode browses. Traffic on port 853 means the phone uses DoT. Some port 53 queries continue (for example `connectivitycheck.gstatic.com`): Android's network check does not use Private DNS, by design.
 
 **Watch and renew.** The dashboard header shows a certificate badge (OK, EXPIRES SOON, EXPIRED, or RELOAD FAILED). `/metrics` and the example alerts in `deploy/prometheus-alerts.yml` cover the same state. To renew, replace the two files and reload: `sudo systemctl reload s-hole`, the dashboard reload button, `POST /api/reload`, or SIGHUP. If the new files do not load, s-hole keeps the current certificate.
 

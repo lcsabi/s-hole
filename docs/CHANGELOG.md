@@ -9,6 +9,11 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 ## [Unreleased]
 
 ### Added
+- **The blocklist `loaded` log line says where each list came from.** A new
+  `from` attribute is `download` (fetched now), `cache` (the on-disk cache was
+  less than 24 hours old, so s-hole did not fetch), or `stale_cache` (the fetch
+  failed, so s-hole used an older cache). Before, a cache load and a download
+  logged the same line. (CL 88)
 - **DNS over TLS for LAN clients.** An optional encrypted listener (RFC 7858),
   usually on port 853. It is aimed at Android's default Automatic Private DNS
   mode: the phone uses DoT on its own when the network's DNS server offers it

@@ -2,6 +2,7 @@ package blocklist
 
 import (
 	"bytes"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -94,7 +96,7 @@ func TestFetchList_DownloadAndCache(t *testing.T) {
 	if len(domains) != 2 {
 		t.Fatalf("got %d domains, want 2", len(domains))
 	}
-	if meta.stale {
+	if meta.from == fromStaleCache {
 		t.Error("fresh download reported stale")
 	}
 	if meta.snapshot.IsZero() {
@@ -155,7 +157,7 @@ func TestFetchList_Non200FallsBackToStaleCache(t *testing.T) {
 	}
 	// The fallback must be flagged stale and report the cached snapshot's
 	// mtime (the backdated time), not "now".
-	if !meta.stale {
+	if meta.from != fromStaleCache {
 		t.Error("stale-cache fallback not flagged stale")
 	}
 	if meta.snapshot.After(time.Now().Add(-time.Hour)) {
@@ -202,7 +204,7 @@ func TestFetchList_TruncatedAtCapFallsBackToStale(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected stale-cache fallback, got error: %v", err)
 	}
-	if !meta.stale {
+	if meta.from != fromStaleCache {
 		t.Error("truncated fallback not flagged stale")
 	}
 	if len(domains) != 1 || domains[0] != "cached.example.com" {
@@ -551,6 +553,309 @@ func BenchmarkParseHostsFormat(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		if _, err := parseHostsFormat(strings.NewReader(data)); err != nil {
 			b.Fatal(err)
+		}
+	}
+}
+
+// captureLogs redirects the package logger to a JSON handler at INFO level
+// (swapLogger filters at WARN, which hides the "loaded" line) and returns a
+// func that parses every record written so far. Safe only because blocklist
+// tests run sequentially.
+func captureLogs(t *testing.T) (records func() []map[string]any) {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := logger
+	logger = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	t.Cleanup(func() { logger = prev })
+	return func() []map[string]any {
+		var out []map[string]any
+		for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+			if line == "" {
+				continue
+			}
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(line), &rec); err != nil {
+				t.Fatalf("parse log line %q: %v", line, err)
+			}
+			out = append(out, rec)
+		}
+		return out
+	}
+}
+
+// loadedFrom returns the "from" attribute of each "loaded" record, keyed by
+// url. It fails the test if a url has more than one "loaded" line, or if a
+// line lacks a string "from" or a numeric "domains".
+func loadedFrom(t *testing.T, recs []map[string]any) map[string]string {
+	t.Helper()
+	got := map[string]string{}
+	for _, r := range recs {
+		if r["msg"] != "loaded" {
+			continue
+		}
+		url, _ := r["url"].(string)
+		from, ok := r["from"].(string)
+		if !ok {
+			t.Errorf("loaded line for %q has no string from attribute: %v", url, r)
+		}
+		if _, ok := r["domains"].(float64); !ok {
+			t.Errorf("loaded line for %q has no numeric domains attribute: %v", url, r)
+		}
+		if _, dup := got[url]; dup {
+			t.Errorf("more than one loaded line for %q", url)
+		}
+		got[url] = from
+	}
+	return got
+}
+
+// hasWarn reports whether recs hold a WARN record with message msg for url.
+func hasWarn(recs []map[string]any, msg, url string) bool {
+	for _, r := range recs {
+		if r["level"] == "WARN" && r["msg"] == msg && r["url"] == url {
+			return true
+		}
+	}
+	return false
+}
+
+// seedCache writes body as the cache file for url and sets its mtime to
+// now minus age.
+func seedCache(t *testing.T, dir, url, body string, age time.Duration) {
+	t.Helper()
+	p := filepath.Join(dir, cacheFilename(url))
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+	ts := time.Now().Add(-age)
+	if err := os.Chtimes(p, ts, ts); err != nil {
+		t.Fatalf("age cache: %v", err)
+	}
+}
+
+func sourceByURL(store *Store) map[string]SourceStatus {
+	m := map[string]SourceStatus{}
+	for _, s := range store.Sources() {
+		m[s.URL] = s
+	}
+	return m
+}
+
+func TestUpdate_LoadedFromDownload(t *testing.T) {
+	// CL 88: a fetch with no cache logs from=download, writes the cache, and
+	// is not stale.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("0.0.0.0 ads.example.com\n0.0.0.0 tracker.example.net\n"))
+	}))
+	defer srv.Close()
+	records := captureLogs(t)
+	dir := t.TempDir()
+	store := NewStore()
+	if err := Update(store, []string{srv.URL}, dir); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	recs := records()
+	if got := loadedFrom(t, recs)[srv.URL]; got != "download" {
+		t.Errorf("from = %q, want download", got)
+	}
+	for _, r := range recs {
+		if r["msg"] == "loaded" && r["domains"] != float64(2) {
+			t.Errorf("domains = %v, want 2", r["domains"])
+		}
+	}
+	if sourceByURL(store)[srv.URL].Stale {
+		t.Error("fresh download flagged stale")
+	}
+	if _, err := os.Stat(filepath.Join(dir, cacheFilename(srv.URL))); err != nil {
+		t.Errorf("download did not write the cache file: %v", err)
+	}
+}
+
+func TestUpdate_LoadedFromFreshCacheMakesNoRequest(t *testing.T) {
+	// CL 88: a cache file younger than 24 hours is served with from=cache and
+	// no HTTP request. The 23-hour age sits just inside the window.
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Write([]byte("0.0.0.0 network.example.com\n"))
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	seedCache(t, dir, srv.URL, "0.0.0.0 cached.example.com\n", 23*time.Hour)
+	records := captureLogs(t)
+	store := NewStore()
+	if err := Update(store, []string{srv.URL}, dir); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if got := loadedFrom(t, records())[srv.URL]; got != "cache" {
+		t.Errorf("from = %q, want cache", got)
+	}
+	if n := hits.Load(); n != 0 {
+		t.Errorf("fresh cache made %d HTTP requests, want 0", n)
+	}
+	if !store.IsBlocked("cached.example.com") || store.IsBlocked("network.example.com") {
+		t.Error("list did not come from the cache file")
+	}
+	if sourceByURL(store)[srv.URL].Stale {
+		t.Error("fresh cache load flagged stale")
+	}
+}
+
+func TestUpdate_OldCacheRefetchedLogsDownload(t *testing.T) {
+	// CL 88: an old cache does not decide the origin. If the fetch succeeds,
+	// the list is a download, not a cache or stale_cache load.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("0.0.0.0 network.example.com\n"))
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	seedCache(t, dir, srv.URL, "0.0.0.0 cached.example.com\n", 48*time.Hour)
+	records := captureLogs(t)
+	store := NewStore()
+	if err := Update(store, []string{srv.URL}, dir); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if got := loadedFrom(t, records())[srv.URL]; got != "download" {
+		t.Errorf("from = %q, want download", got)
+	}
+	if !store.IsBlocked("network.example.com") {
+		t.Error("list did not come from the download")
+	}
+	if sourceByURL(store)[srv.URL].Stale {
+		t.Error("successful refetch flagged stale")
+	}
+}
+
+func TestUpdate_LoadedFromStaleCache(t *testing.T) {
+	// CL 88: each kind of failed fetch with an old cache logs
+	// from=stale_cache, keeps its fallback WARN, and marks the source stale.
+	cases := []struct {
+		name    string
+		handler http.HandlerFunc
+		closed  bool // close the server first to force a connection error
+		lowCap  bool // lower maxBodyBytes so the body is over the cap
+		warn    string
+	}{
+		{
+			name:   "connection error",
+			closed: true,
+			warn:   "download failed, using stale cache",
+		},
+		{
+			name: "non-200",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, "down", http.StatusServiceUnavailable)
+			},
+			warn: "non-200 response, using stale cache",
+		},
+		{
+			name: "over cap",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.Write([]byte("0.0.0.0 " + strings.Repeat("a", 100) + ".example.com\n"))
+			},
+			lowCap: true,
+			warn:   "response truncated at cap, using stale cache",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.lowCap {
+				orig := maxBodyBytes
+				maxBodyBytes = 32
+				t.Cleanup(func() { maxBodyBytes = orig })
+			}
+			h := tc.handler
+			if h == nil {
+				h = func(http.ResponseWriter, *http.Request) {}
+			}
+			srv := httptest.NewServer(h)
+			url := srv.URL
+			if tc.closed {
+				srv.Close()
+			} else {
+				defer srv.Close()
+			}
+			dir := t.TempDir()
+			seedCache(t, dir, url, "0.0.0.0 cached.example.com\n", 48*time.Hour)
+			records := captureLogs(t)
+			store := NewStore()
+			if err := Update(store, []string{url}, dir); err != nil {
+				t.Fatalf("Update: %v", err)
+			}
+			recs := records()
+			if got := loadedFrom(t, recs)[url]; got != "stale_cache" {
+				t.Errorf("from = %q, want stale_cache", got)
+			}
+			if !hasWarn(recs, tc.warn, url) {
+				t.Errorf("missing WARN %q; logs: %v", tc.warn, recs)
+			}
+			if !store.IsBlocked("cached.example.com") {
+				t.Error("list did not come from the old cache file")
+			}
+			if !sourceByURL(store)[url].Stale {
+				t.Error("stale-cache fallback not flagged stale")
+			}
+		})
+	}
+}
+
+func TestUpdate_MixedOriginsOneLoadedLinePerSource(t *testing.T) {
+	// CL 88: in one Update, each source logs its own origin, a source that
+	// fails with no cache logs no loaded line, and Stale agrees with from for
+	// every loaded source.
+	ok := func(body string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Write([]byte(body))
+		}))
+	}
+	dl := ok("0.0.0.0 dl.example.com\n")
+	defer dl.Close()
+	cached := ok("0.0.0.0 unused.example.com\n")
+	defer cached.Close()
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "down", http.StatusBadGateway)
+	}))
+	defer down.Close()
+	gone := ok("")
+	goneURL := gone.URL
+	gone.Close()
+
+	dir := t.TempDir()
+	seedCache(t, dir, cached.URL, "0.0.0.0 c.example.com\n", time.Hour)
+	seedCache(t, dir, down.URL, "0.0.0.0 s.example.com\n", 48*time.Hour)
+	records := captureLogs(t)
+	store := NewStore()
+	if err := Update(store, []string{dl.URL, cached.URL, down.URL, goneURL}, dir); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	recs := records()
+	got := loadedFrom(t, recs)
+	want := map[string]string{
+		dl.URL:     "download",
+		cached.URL: "cache",
+		down.URL:   "stale_cache",
+	}
+	if len(got) != len(want) {
+		t.Errorf("loaded lines = %v, want %v", got, want)
+	}
+	srcs := sourceByURL(store)
+	for u, w := range want {
+		if got[u] != w {
+			t.Errorf("from for %q = %q, want %q", u, got[u], w)
+		}
+		if srcs[u].Stale != (w == "stale_cache") {
+			t.Errorf("Stale for %q = %v, want %v", u, srcs[u].Stale, w == "stale_cache")
+		}
+	}
+	if _, found := got[goneURL]; found {
+		t.Error("failed source with no cache logged a loaded line")
+	}
+	if !hasWarn(recs, "failed to load", goneURL) {
+		t.Error("failed source with no cache did not log failed to load")
+	}
+	for _, d := range []string{"dl.example.com", "c.example.com", "s.example.com"} {
+		if !store.IsBlocked(d) {
+			t.Errorf("%s missing: a failed source broke the others", d)
 		}
 	}
 }

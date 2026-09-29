@@ -27,9 +27,10 @@ var httpClient = &http.Client{Timeout: 60 * time.Second}
 //
 // Only tests mutate this, and blocklist tests run sequentially (none call
 // t.Parallel), so the fetch-path read never races a test's write. The same
-// no-parallel rule protects swapLogger in loader_test.go. Keep it that way: if
-// a blocklist test ever needs t.Parallel, pass the cap in explicitly rather
-// than mutating this global, or the mutation races the read under -race.
+// no-parallel rule protects the logger swaps (swapLogger and captureLogs) in
+// loader_test.go. Keep it that way: if a blocklist test ever needs t.Parallel,
+// pass the cap in explicitly rather than mutating this global, or the mutation
+// races the read under -race.
 var maxBodyBytes int64 = 256 << 20 // 256 MiB
 
 // Update downloads (or loads from cache) all lists and replaces the store.
@@ -59,9 +60,9 @@ func Update(store *Store, urls []string, cacheDir string) error {
 			URL:         u,
 			Count:       len(domains),
 			LastRefresh: meta.snapshot,
-			Stale:       meta.stale,
+			Stale:       meta.from == fromStaleCache,
 		})
-		logger.Info("loaded", "url", u, "domains", len(domains))
+		logger.Info("loaded", "url", u, "domains", len(domains), "from", meta.from)
 	}
 	// Publish per-source health even when every source failed, so the
 	// dashboard shows the outage rather than the last good snapshot.
@@ -91,13 +92,21 @@ func warnIfEmpty(store *Store) {
 	}
 }
 
+// Values of sourceMeta.from, logged as the "from" attribute of the "loaded"
+// line so an operator can tell a download from a cache load in the journal.
+const (
+	fromDownload   = "download"    // fetched now
+	fromCache      = "cache"       // on-disk cache younger than cacheMaxAge; no fetch tried
+	fromStaleCache = "stale_cache" // on-disk cache served because the fetch failed
+)
+
 // sourceMeta carries the per-source health that Update records alongside the
-// domains. snapshot is when the served data was actually fetched: the cache
-// file's mtime for a cache load, or now for a fresh download. stale is true
-// only when the served data came from the on-disk cache after the live fetch
-// failed; a fresh download or a still-valid (< cacheMaxAge) cache is not stale.
+// domains. from says where the served data came from (see the from*
+// constants); only fromStaleCache marks the source stale. snapshot is when the
+// served data was fetched: the cache file's mtime for a cache load,
+// or now for a fresh download.
 type sourceMeta struct {
-	stale    bool
+	from     string
 	snapshot time.Time
 }
 
@@ -107,7 +116,7 @@ func fetchList(url, cacheDir string) ([]string, sourceMeta, error) {
 	if info, err := os.Stat(cachePath); err == nil {
 		if time.Since(info.ModTime()) < cacheMaxAge {
 			domains, loadErr := loadFromFile(cachePath)
-			return domains, sourceMeta{snapshot: info.ModTime()}, loadErr
+			return domains, sourceMeta{from: fromCache, snapshot: info.ModTime()}, loadErr
 		}
 	}
 
@@ -117,7 +126,7 @@ func fetchList(url, cacheDir string) ([]string, sourceMeta, error) {
 		if info, statErr := os.Stat(cachePath); statErr == nil {
 			logger.Warn("download failed, using stale cache", "url", url, "err", err)
 			domains, loadErr := loadFromFile(cachePath)
-			return domains, sourceMeta{stale: true, snapshot: info.ModTime()}, loadErr
+			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime()}, loadErr
 		}
 		return nil, sourceMeta{}, err
 	}
@@ -128,7 +137,7 @@ func fetchList(url, cacheDir string) ([]string, sourceMeta, error) {
 		if info, statErr := os.Stat(cachePath); statErr == nil {
 			logger.Warn("non-200 response, using stale cache", "url", url, "status", resp.StatusCode)
 			domains, loadErr := loadFromFile(cachePath)
-			return domains, sourceMeta{stale: true, snapshot: info.ModTime()}, loadErr
+			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime()}, loadErr
 		}
 		return nil, sourceMeta{}, fmt.Errorf("%q: HTTP %d", url, resp.StatusCode)
 	}
@@ -168,7 +177,7 @@ func fetchList(url, cacheDir string) ([]string, sourceMeta, error) {
 		if info, statErr := os.Stat(cachePath); statErr == nil {
 			logger.Warn("response truncated at cap, using stale cache", "url", url, "cap_bytes", maxBodyBytes)
 			domains, loadErr := loadFromFile(cachePath)
-			return domains, sourceMeta{stale: true, snapshot: info.ModTime()}, loadErr
+			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime()}, loadErr
 		}
 		return nil, sourceMeta{}, fmt.Errorf("%q: response exceeded %d-byte cap", url, maxBodyBytes)
 	}
@@ -176,7 +185,7 @@ func fetchList(url, cacheDir string) ([]string, sourceMeta, error) {
 		_ = os.Remove(tmpPath)
 		return nil, sourceMeta{}, err
 	}
-	return domains, sourceMeta{snapshot: time.Now()}, nil
+	return domains, sourceMeta{from: fromDownload, snapshot: time.Now()}, nil
 }
 
 func loadFromFile(path string) ([]string, error) {

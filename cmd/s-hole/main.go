@@ -225,8 +225,8 @@ func main() {
 	// is on) and then refreshes the blocklists. Two concurrent goroutines
 	// downloading to the same cache files would race on file writes.
 	//
-	// reloadFn returns synchronously: true means the refresh started, false
-	// means a prior refresh is still running. The actual download work runs
+	// reloadFn returns synchronously: true means the reload started, false
+	// means a prior reload is still running. The actual download work runs
 	// in a background goroutine so callers (including the HTTP handler)
 	// return quickly.
 	//
@@ -697,7 +697,7 @@ func warnCertExpiry(log *slog.Logger, certs certReloader) {
 // newReloadFn builds the single-flight reload closure shared by the
 // periodic timer, POST /api/reload, and SIGHUP. It returns true if it acquired
 // the lock and started work (asynchronously, so callers return at once), or
-// false if a refresh is already running. The shared mutex stops the three
+// false if a reload is already running. The shared mutex stops the three
 // callers from launching concurrent downloads that would race on the cache
 // files. Keeping the lock in this one closure, not in api.Server, is what
 // prevents the periodic timer from bypassing the gate (b/022).

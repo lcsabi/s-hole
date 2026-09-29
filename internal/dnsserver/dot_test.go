@@ -157,7 +157,8 @@ func TestDoT_ServesQueryThroughSharedHandler(t *testing.T) {
 
 func TestDoT_UntrustedClientFailsHandshake(t *testing.T) {
 	// A client that does not trust the issuer must not get an answer: this is
-	// the property that makes DoT safe against an impostor resolver.
+	// the property that makes DoT safe against an impostor resolver for a
+	// client that verifies the certificate.
 	certFile, keyFile, _ := writeTestCert(t, t.TempDir(), 1, time.Now().Add(90*24*time.Hour))
 	certs, err := NewCertReloader(certFile, keyFile)
 	if err != nil {
@@ -307,7 +308,7 @@ func TestListenDoT_BindErrorIsReturned(t *testing.T) {
 func TestServer_DoTShutdownBeforeStartClosesListener(t *testing.T) {
 	// The DoT listener is bound before Start. If Shutdown runs first, the
 	// port must still be released; dns.Server.Shutdown alone closes the
-	// listener only of a started server.
+	// listener only when the server has started.
 	certFile, keyFile, _ := writeTestCert(t, t.TempDir(), 1, time.Now().Add(time.Hour))
 	certs, err := NewCertReloader(certFile, keyFile)
 	if err != nil {

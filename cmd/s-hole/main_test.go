@@ -692,7 +692,7 @@ func TestPrintNetworkHint_DoTLine(t *testing.T) {
 
 // writeExpiredKeyPair writes a self-signed certificate that expired an hour
 // ago, plus its key, and returns the two paths. An expired pair still loads,
-// which is exactly the case -check-config must warn about.
+// which is the case -check-config must warn about.
 func writeExpiredKeyPair(t *testing.T, dir string) (certFile, keyFile string) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

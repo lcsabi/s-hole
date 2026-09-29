@@ -50,6 +50,8 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   DoT certificate, so `blocklist reload requested via API` and `blocklist reload
   requested via timer` became `reload requested via API` and `reload requested
   via timer`. Update any log search or alert that matches the old text. (CL 86)
+- **The dashboard's Reload Blocklists button is now Reload.** It also re-reads
+  the DoT certificate when DoT is on. (CL 86)
 
 ### Fixed
 - **`install-linux.sh --free-port-53` now frees port 53 on current systemd.** The

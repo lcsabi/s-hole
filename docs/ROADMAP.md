@@ -527,8 +527,8 @@ Design decisions to settle in the CL:
 **DoT hostname resolution (link to #36, CL 86).** This matters only for Android's
 strict Private DNS mode; the default Automatic mode connects to the network's
 DNS server by IP and needs no name. Strict mode takes a hostname, and the phone
-resolves it through the network's plain DNS, usually s-hole. Today s-hole forwards a LAN name upstream, where it fails, so the README
-tells Android users to publish a public A record that points their domain at the
+resolves it through the network's plain DNS, usually s-hole. Today s-hole
+forwards a LAN name upstream, where it fails, so the README tells Android users to publish a public A record that points their domain at the
 LAN IP. A local record (`dns.home: 192.168.1.10`, or the owned name) lets s-hole
 answer that lookup itself. This is split-horizon DNS: the name resolves only
 inside the LAN. It removes the public A record, so the LAN address is no longer
@@ -537,12 +537,10 @@ s-hole, because the answer never comes from upstream (a router between the
 phone and s-hole can still filter it).
 
 It does not solve certificate trust. Private DNS still checks the certificate
-against Android's trust store, which probably ignores user-installed CAs, so
-Android most likely still needs a publicly trusted certificate and a domain the
-operator owns. The domain then carries only the certificate: the ACME DNS-01
-challenge needs a TXT record, not an A record. If the #36 acceptance test shows
-that Android accepts a user-installed CA, a mkcert certificate plus a local
-record would need no domain at all.
+against Android's trust store. Android rejected a user-installed CA in the #36
+test (CL 86), so strict mode still needs a publicly trusted certificate and a
+domain the operator owns. The domain then carries only the certificate: the
+ACME DNS-01 challenge needs a TXT record, not an A record.
 
 When this lands, update the README's DNS over TLS section: offer a
 `local_records` entry in place of the public A record (keep the public record as
@@ -1686,7 +1684,7 @@ channel to s-hole cannot get one. Android's Private DNS is the common case. In
 the default Automatic mode, a phone uses DoT on the network's DNS server when it
 answers, so a DoT listener would encrypt most phones' DNS on the LAN with no
 phone setup. In strict mode (a provider hostname) the phone uses only DoT and
-does not fall back to plain DNS, so such a phone cannot use s-hole at all today.
+does not fall back to plain DNS, so before CL 86 such a phone could not use s-hole at all.
 A DoT listener (and an optional DoH endpoint) lets these clients reach s-hole
 over TLS.
 
@@ -1711,7 +1709,8 @@ Design decisions to settle in the CL:
   this is the hard part. A public CA cannot issue for a private name or IP, so the
   options are a self-signed certificate the operator installs on clients, or a
   certificate the operator supplies (`tls_cert` and `tls_key` config paths). No
-  ACME automation: it needs a public name and reachability, against the LAN scope.
+  ACME automation: it needs a public name and reachability, against the LAN scope
+  (superseded: see the settled decisions below).
   Prefer operator-supplied paths, and fail with a clear message when a listener is
   enabled but the paths are missing.
 - **Opt-in, off by default.** Each encrypted listener is off unless configured (a
@@ -1808,9 +1807,10 @@ Expect the openssl certificate to fail. As far as is known, Apple requires the
 server certificates, and the openssl command sets neither. If it fails, add
 both to the README command or point iOS users at mkcert.
 
-In every case, confirm that queries resolve through s-hole (a blocked domain
-returns `0.0.0.0`), and check the off-LAN behavior. Record the results here and
-correct the README if Android behaves differently from its documentation.
+For each remaining test (the public-domain strict route, stubby, macOS, iOS),
+confirm that queries resolve through s-hole (a blocked domain returns
+`0.0.0.0`) and check the off-LAN behavior. Record the results here and correct
+the README if a client behaves differently.
 
 Design decisions settled in the CL:
 
@@ -1824,8 +1824,8 @@ Design decisions settled in the CL:
   hostname clients use (the SAN) and can make clients trust the issuer; a public
   CA cannot issue for a private name. So s-hole loads the operator's files and
   generates nothing, not even through a helper command. The README documents
-  `mkcert`, `openssl`, and an ACME DNS-01 route for Android (which may not accept
-  a user-installed CA for Private DNS). s-hole still runs no ACME client itself:
+  `mkcert`, `openssl`, and an ACME DNS-01 route for Android (which rejected
+  a user-installed CA for Private DNS in testing). s-hole still runs no ACME client itself:
   the operator obtains the certificate, and the DNS-01 challenge needs a public
   domain but no inbound reachability.
 - **Reload without a restart, in the same CL.** The certificate is served through

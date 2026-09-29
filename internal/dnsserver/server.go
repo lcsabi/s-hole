@@ -107,7 +107,7 @@ func (s *Server) Shutdown() {
 		if err := s.dot.Shutdown(); err != nil {
 			logger.Warn("dot listener shutdown", "err", err)
 		}
-		// dns.Server.Shutdown closes the listener only of a server that has
+		// dns.Server.Shutdown closes the listener only when the server has
 		// started. The DoT listener is bound before Start, so close it here
 		// too; otherwise a Shutdown that wins the race against Start would
 		// leave the port bound. A second Close is harmless.

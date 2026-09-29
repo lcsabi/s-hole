@@ -352,7 +352,9 @@ DNSOverTLS=opportunistic
 Domains=~.
 ```
 
-Then run `sudo systemctl restart systemd-resolved`. `resolvectl status` shows `+DNSOverTLS`. `Domains=~.` sends every lookup to this server, ahead of a server that DHCP gives the network link. In opportunistic mode the client falls back to plain DNS when DoT fails. On the s-hole box itself, this setting applies only to programs that ask `systemd-resolved`. With the stub listener off, most programs read `/etc/resolv.conf`, which also lists the DHCP servers, and use the next server when s-hole does not answer. s-hole downloads its blocklists at startup before its DNS listener is up, so on its own box this fallback does the download. If s-hole is the box's only DNS server, the download fails: s-hole loads the lists from its on-disk cache, and a fresh install with no cache starts with an empty blocklist until the next reload.
+Then run `sudo systemctl restart systemd-resolved`. `resolvectl status` shows `+DNSOverTLS`. `Domains=~.` sends every lookup to this server, ahead of a server that DHCP gives the network link. In opportunistic mode the client falls back to plain DNS when DoT fails.
+
+If you run this on the s-hole box itself, the setting applies only to programs that ask `systemd-resolved`. With the stub listener off, most programs read `/etc/resolv.conf`, which also lists the DHCP servers, and use the next server when s-hole does not answer. s-hole downloads its blocklists at startup before its DNS listener is up, so on its own box this fallback does the download. If s-hole is the box's only DNS server, the download fails: s-hole loads the lists from its on-disk cache, and a fresh install with no cache starts with an empty blocklist until the next reload.
 
 For strict mode, set `DNSOverTLS=yes` and trust the certificate. On Linux, the self-signed certificate from step 1 works as its own trust anchor, so you do not need mkcert:
 

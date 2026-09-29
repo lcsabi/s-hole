@@ -51,8 +51,8 @@ With `S_HOLE_LOG_FORMAT=json`, each line is a JSON object with the same fields.
 
 The log also has two other kinds of lines:
 
-- **Query lines.** When `log_file` is empty, s-hole writes one line for each
-  DNS query, such as `2026-09-29T06:51:19-04:00 BLOCK 192.168.1.23 ads.example.com.`.
+- **Query lines.** When `log_file` is empty and `log_queries` is `all`, s-hole
+  writes one line for each DNS query, such as `2026-09-29T06:51:19-04:00 BLOCK 192.168.1.23 ads.example.com.`.
   These lines have no `level` field. To write fewer of them, set `log_queries`
   to `blocked` or `none`. To write them to a file, set `log_file`.
 - **The startup banner.** The "Router setup" box shows the address to enter
@@ -71,6 +71,8 @@ In Docker or a terminal, search for the level:
 ```bash
 docker logs s-hole 2>&1 | grep -E 'level=(WARN|ERROR)'
 ```
+
+### Read the counters
 
 Every 5 minutes (`stats_interval`), s-hole writes one `msg=stats` line with
 its counters:
@@ -92,9 +94,9 @@ journalctl -u s-hole -b -p err
 
 | You see | What it means | What to do |
 |---|---|---|
-| `msg="config load failed"` | The config file has an error. `err` names the setting. | Correct the setting. To check the file before a restart, run `s-hole -check-config -config /etc/s-hole/config.yaml`. |
+| `msg="config load failed"` | The config file has an error. `err` names the setting. A DoT certificate that does not load also shows here, with `tls_cert/tls_key` in `err`. | Correct the setting. To check the file before a restart, run `s-hole -check-config -config /etc/s-hole/config.yaml`. |
 | `msg="dns server failed"` with `address already in use` | Another program uses port 53. On many Linux systems, this is the `systemd-resolved` stub. | To find the program, run `sudo ss -lunp 'sport = :53'`. If the program is `systemd-resolved`, run the installer with `--free-port-53` to free the port. |
-| `msg="DoT listener failed"` | `dot_listen` is set, but s-hole cannot open the port or load the certificate. | Read `err` and `hint`. Check for a port conflict on 853, and check the `tls_cert` and `tls_key` files. |
+| `msg="DoT listener failed"` | `dot_listen` is set, but s-hole cannot open the DoT port. | Read `err` and `hint`. Look for another program on port 853, or correct `dot_listen`. |
 
 If the start fails, systemd tries again every 5 seconds. `systemctl status
 s-hole` then shows `activating (auto-restart)`.
@@ -117,7 +119,7 @@ journalctl -u s-hole | grep -E 'block set is empty|all sources failed|blocklist 
 | You see | What it means | What to do |
 |---|---|---|
 | `msg="blocklist load failed" url=...` | s-hole cannot get this list, and it has no cached copy. | Read `err`. Check the URL, and check that the s-hole host can reach the internet. |
-| `msg="all sources failed; keeping existing block set"` | No list loaded in this refresh. s-hole keeps the domains it blocked before. | Correct the network or the URLs. The next refresh tries again. |
+| `msg="all sources failed; keeping existing block set"` | No list loaded in this reload. s-hole keeps the domains it blocked before. | Correct the network or the URLs. The next reload tries again. |
 | `msg="block set is empty"` | s-hole answers queries but blocks nothing. | Correct the cause that the other lines show. Then run `sudo systemctl reload s-hole`. |
 
 If the log shows no problem, check that the device uses s-hole. Read
@@ -133,8 +135,7 @@ journalctl -u s-hole | grep 'msg=loaded'
 
 The `from` field tells where the list came from:
 
-- `from=download`: s-hole downloaded the list. This is correct for every
-  refresh.
+- `from=download`: s-hole downloaded the list. Every reload shows this value.
 - `from=cache`: s-hole used its disk copy at startup, because the copy was less
   than 24 hours old.
 - `from=stale_cache`: the download failed, so s-hole used an older disk copy.
@@ -175,8 +176,8 @@ upstream, so that DNS continues to work when one upstream fails.
 
 ## A device's queries do not reach s-hole
 
-When `log_file` is empty, s-hole writes one query line for each query. Search
-for the device's IP address:
+When `log_file` is empty and `log_queries` is `all`, s-hole writes one query
+line for each query. Search for the device's IP address:
 
 ```bash
 journalctl -u s-hole | grep ' 192.168.1.23 '
@@ -199,8 +200,9 @@ Ask s-hole why it blocks the domain:
 curl -s 'localhost:8080/api/check?domain=example.com'
 ```
 
-The answer shows the block entry that matched. To allow the domain, add it to
-the whitelist on the dashboard, or add it to `whitelist` in the config file.
+The answer shows the block entry that matched. To allow the domain now, add
+it to the whitelist on the dashboard. This entry is lost when s-hole restarts.
+To keep it, also add it to `whitelist` in the config file.
 
 ## The dashboard does not open
 
@@ -258,7 +260,8 @@ Each reload writes a line that tells what started it:
 | `msg="reload signal received"` | `systemctl reload s-hole` or SIGHUP |
 
 If a reload is running already, s-hole writes `msg="reload queued until the
-running reload ends"`. When the running reload ends, s-hole writes
+running reload ends"` once and queues one more reload. More requests during
+the same reload add nothing. When the running reload ends, s-hole writes
 `msg="queued reload started"` and does the reload again.
 
 `msg="blocklist refresh failed"` means that no list loaded in that reload.

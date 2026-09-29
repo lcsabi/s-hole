@@ -851,7 +851,7 @@ func TestUpdate_MixedOriginsOneLoadedLinePerSource(t *testing.T) {
 		t.Error("failed source with no cache logged a loaded line")
 	}
 	if !hasWarn(recs, "blocklist load failed", goneURL) {
-		t.Error("failed source with no cache did not log failed to load")
+		t.Error("failed source with no cache did not log blocklist load failed")
 	}
 	for _, d := range []string{"dl.example.com", "c.example.com", "s.example.com"} {
 		if !store.IsBlocked(d) {
@@ -1047,7 +1047,7 @@ func TestUpdate_DownloadFirstFailureNoCacheIsHardFailure(t *testing.T) {
 		t.Errorf("loaded lines = %v, want none", got)
 	}
 	if !hasWarn(recs, "blocklist load failed", srv.URL) {
-		t.Error("missing failed to load WARN")
+		t.Error("missing blocklist load failed WARN")
 	}
 	s := sourceByURL(store)[srv.URL]
 	if !s.Stale || !s.LastRefresh.IsZero() || s.Count != 0 {

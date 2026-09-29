@@ -67,7 +67,7 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   errors. Text lines in the journal have no `time=` field, because journald
   records the time. Terminal, Docker, and JSON output keep `time=`. (CL 89)
 - **The periodic stats are one log line.** The multi-line `[stats]` block is now
-  one `msg=stats pkg=stats` line with `queries`, `blocked`, `blocked_pct`,
+  one `msg=stats pkg=stats` line with `uptime`, `queries`, `blocked`, `blocked_pct`,
   `local_ptr`, `cache_hits`, `cache_hit_pct`, `forward_failures`, and
   `upstream_errors`. The top-5 lists are no longer in the log; the dashboard
   and `/api/stats` show them. (CL 89)
@@ -119,10 +119,10 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   less than 24 hours old. (CL 89, b/060)
 - **A reload request during a reload is no longer lost.** A request from the
   timer, the dashboard, `POST /api/reload`, SIGHUP, or `systemctl reload` that
-  arrived while a reload ran was dropped. Only the API reply said so; the log
-  did not. For a DoT
-  certificate renewed by a certbot deploy hook during a blocklist download,
-  the new certificate then waited for the next timer reload. Now the request
+  arrived while a reload ran was dropped. Only the API reply said so. The log
+  did not. For a DoT certificate renewed by a certbot deploy hook during a
+  blocklist download, the new certificate then waited for the next timer
+  reload. Now the request
   is queued and one more reload runs when the current one finishes. (CL 89,
   b/061)
 - **`install-linux.sh --free-port-53` now frees port 53 on current systemd.** The

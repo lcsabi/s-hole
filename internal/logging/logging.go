@@ -1,6 +1,6 @@
 // Package logging builds the application's slog loggers and handlers.
 //
-// Every package logs through a logger from For, which tags each record with
+// Every package-level logger comes from For, which tags each record with
 // pkg=<name>. main installs the output handler with slog.SetDefault after the
 // packages are initialised, so a package logger cannot bind the handler when
 // its package-level var is set. It looks up slog.Default() for each record

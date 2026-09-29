@@ -16,7 +16,7 @@ import (
 
 // TestCounter_Log checks that Log writes exactly one INFO record with msg
 // "stats" through the package logger, with each counter as its own
-// attribute, and nothing on stdout. The top-N lists are not logged (b/062).
+// attribute, and nothing on stdout. The top-N lists are not logged (CL 89).
 func TestCounter_Log(t *testing.T) {
 	orig := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(orig) })

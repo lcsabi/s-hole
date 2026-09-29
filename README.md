@@ -197,7 +197,7 @@ All configuration lives in `config.yaml`. Every field has a safe default. An emp
 | `query_db` | _(off)_ | Path to the SQLite query log database; set a path to enable, empty disables it |
 | `db_flush_interval` | `30s` | How often buffered queries are committed to SQLite |
 | `cache_size` | `2000` | Maximum DNS responses held in the in-memory cache (0 to disable) |
-| `stats_interval` | `5m` | How often stats are printed to stdout |
+| `stats_interval` | `5m` | How often s-hole logs the `msg=stats` counters line |
 | `api_listen` | `127.0.0.1:8080` | Address for the admin web UI and REST API. Set to `0.0.0.0:8080` to expose to the LAN. |
 | `cache_dir` | `.` | Directory for cached blocklist files |
 | `query_db_retention_days` | `0` (forever) | Delete query-log rows older than this many days. `0` disables the prune. |

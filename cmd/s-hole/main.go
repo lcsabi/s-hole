@@ -14,7 +14,7 @@
 //   - construct the single-flight reload closure and the admin API server
 //     (which exposes /healthz, /readyz, /metrics, and, opt-in via
 //     enable_pprof, /debug/pprof/* alongside the REST API)
-//   - launch background tickers for stats printing and blocklist refresh,
+//   - launch background tickers for the stats line and the blocklist reload,
 //     both panic-recovered
 //   - either enter the Windows SCM event loop (service mode) or run the DNS
 //     server in the background and block until doStop completes the ordered
@@ -589,7 +589,7 @@ func buildMultiLogger(fl *querylog.FileLogger, db *querylog.DBLogger) dnsserver.
 }
 
 // runTicker invokes fn on a fixed interval until ctx is cancelled. Used
-// for the stats printer and the periodic blocklist refresh. doStop
+// for the stats log line and the periodic reload. doStop
 // cancels the application-wide context before tearing down dependent
 // subsystems so these tickers exit cleanly. Without that, the goroutines
 // would have to be reclaimed implicitly by os.Exit, which is fragile if
@@ -617,7 +617,7 @@ func runTickerOnce(fn func()) {
 			// Include the full stack so a panic that fires in the field
 			// is diagnosable from the log stream alone. Without one,
 			// recover() swallows the only signal.
-			slog.Error("ticker fn panic recovered",
+			slog.With("pkg", "main").Error("ticker fn panic recovered",
 				"panic", r,
 				"stack", string(debug.Stack()))
 		}

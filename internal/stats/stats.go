@@ -15,7 +15,7 @@
 //
 // The package is safe for concurrent use and produces a
 // JSON-serialisable Summary via Snapshot, consumed both by the periodic
-// stdout printer (Counter.Print) and the REST API (/api/stats).
+// stats log line (Counter.Log) and the REST API (/api/stats).
 package stats
 
 import (
@@ -299,7 +299,7 @@ func (c *Counter) topN(target topNTarget, n int) []Entry {
 // fields replaces an older multi-line block that had no level and no pkg, so
 // a log filter could not select it.
 func (c *Counter) Log() {
-	s := c.Snapshot(1) // the top-N lists are not logged; 1 keeps their sort small
+	s := c.Snapshot(1) // the top-N lists are not logged; n only truncates them
 	logger.Info("stats",
 		"uptime", s.Uptime,
 		"queries", s.TotalQueries,

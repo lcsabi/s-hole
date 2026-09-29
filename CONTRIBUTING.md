@@ -169,7 +169,7 @@ and the router-setup banner. Then, in a second terminal:
 6. **Stats vs. metrics.** `curl localhost:8080/api/stats` and
    `curl localhost:8080/metrics`; blocked/total/cache numbers must
    agree with what you just did.
-7. **Persistence + shutdown.** Ctrl+C: expect the final stats print
+7. **Persistence + shutdown.** Ctrl+C: expect a final `msg=stats` line
    and a clean exit. Restart: `/api/queries?limit=10` still shows the
    pre-restart rows, and startup is faster (blocklists load from the
    disk cache).

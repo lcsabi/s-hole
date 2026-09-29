@@ -101,6 +101,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 85](cls/CL-85.md) | DNS-over-HTTPS upstream forwarding (ROADMAP #5) |
 | [CL 86](cls/CL-86.md) | DNS-over-TLS listener for LAN clients, with certificate reload and status (ROADMAP #36, DoT part) |
 | [CL 87](cls/CL-87.md) | Installer frees the systemd-resolved stub on current systemd (b/058); banner skips container and VPN addresses (b/059) |
+| [CL 88](cls/CL-88.md) | Blocklist `loaded` log line says whether a list came from a download or the cache; CLAUDE.md rule: a separate cold agent writes the tests |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

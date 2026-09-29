@@ -1800,6 +1800,14 @@ internet check passes, so the test network needed internet.
 
 stubby, macOS profiles, and the public-domain strict route are still untested.
 
+**iOS check: deferred.** iOS is not a target for now, so CL 86 shipped without
+the iOS profile test. When it resumes, test two certificates: the README's
+openssl certificate, and then an mkcert certificate with its CA in the profile.
+Expect the openssl certificate to fail. As far as is known, Apple requires the
+`serverAuth` extended key usage and a validity of 825 days or less for TLS
+server certificates, and the openssl command sets neither. If it fails, add
+both to the README command or point iOS users at mkcert.
+
 In every case, confirm that queries resolve through s-hole (a blocked domain
 returns `0.0.0.0`), and check the off-LAN behavior. Record the results here and
 correct the README if Android behaves differently from its documentation.

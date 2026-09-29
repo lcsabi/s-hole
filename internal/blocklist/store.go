@@ -22,7 +22,8 @@ import (
 // set deduplicates them, so the sum of Count across sources is greater than or
 // equal to the aggregate blocklist size. The three states encode as:
 //   - fresh:         Stale=false, LastRefresh=download time, or the cache
-//     file's mtime when a cache under 24 hours old was served (from=cache).
+//     file's mtime when startup served a cache under 24 hours old
+//     (from=cache).
 //   - stale cache:   Stale=true,  LastRefresh=cached snapshot's mtime.
 //   - hard failure:  Stale=true,  LastRefresh=zero (never loaded, no cache).
 type SourceStatus struct {

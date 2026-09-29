@@ -1924,3 +1924,75 @@ Tests: `TestLanIPv4s_SkipsVirtualAndUnusableInterfaces` (the reporting VM's
 installer's `lan_ipv4s` gave the same result on this host, and on `ip` output
 shaped like the reporting VM it kept `enp0s3` and `br0` and dropped `docker0`,
 a Docker network bridge, and `wg0`.
+
+## b/060: blocklist: the default 24h refresh downloads the blocklists only every 48 hours
+
+**Priority:** P2
+**Component:** blocklist
+**Status:** Fixed in CL 89
+**Filed:** 2026-09-29
+
+### Description
+
+With the defaults (`refresh_interval: 24h`), s-hole downloaded its blocklists
+every second timer reload, not every one. The first timer reload after a
+download logged `from=cache` for every source and made no request. A manual
+reload (the dashboard's Reload button, `POST /api/reload`, SIGHUP) within 24
+hours of the last download also did not download, although the Reload tooltip
+says it "Re-downloads the blocklists". Found in the code review of CL 86 and
+CL 88; the CL 88 `from` attribute makes it visible in the journal.
+
+### Root Cause
+
+`fetchList` served any cache file younger than `cacheMaxAge` (24 hours)
+without a download, on every call. The refresh timer ticks at a fixed
+interval, but a download finishes a few seconds after its tick, so the cache
+file's mtime is a few seconds later than the tick. At the next tick, 24 hours
+later, the cache is 24 hours minus those seconds old: under `cacheMaxAge`, so
+the source loads from the cache. The tick after that finds a cache about 48
+hours old and downloads. The fresh-cache shortcut exists so that a restart does
+not re-fetch every list, but it applied to reloads too.
+
+### Fix
+
+`blocklist.Update` takes a `Mode`. Startup passes `CacheFirst` and keeps the
+fresh-cache shortcut. Every reload passes `DownloadFirst`, which always tries
+the download and uses the cache only as the stale fallback when the download
+fails. `from=cache` now appears only at startup.
+
+## b/061: reload: a reload request during a running reload is dropped with no log
+
+**Priority:** P3
+**Component:** main
+**Status:** Fixed in CL 89
+**Filed:** 2026-09-29
+
+### Description
+
+A reload request (the refresh timer, `POST /api/reload`, SIGHUP, or `systemctl
+reload`) that arrived while another reload was running did nothing. The timer
+and SIGHUP paths logged no line about it, and `systemctl reload` exited 0. The
+README's certbot deploy hook runs `systemctl reload s-hole` after it installs a
+renewed DoT certificate. If that happened during a timer reload's blocklist
+download, the running reload had already read the old certificate files, and
+the hook's request was dropped. The new certificate was then served only after
+the next timer reload, up to `refresh_interval` later. Found in the code review
+of CL 86.
+
+### Root Cause
+
+The single-flight closure `newReloadFn` used `TryLock` and returned `false`
+when the lock was held. `POST /api/reload` reported that as `"reload already
+in progress"`; the timer and the SIGHUP handler discarded the return value.
+Single-flight kept concurrent downloads apart, as intended (b/022), but it
+also threw away requests whose work the running reload had not done.
+
+### Fix
+
+The closure now queues a request that arrives during a reload, and the running
+reload does one more pass when it finishes. Any number of requests during one
+pass queue a single follow-up pass, so passes still never overlap. The queue
+is logged (`reload already running; queued one more pass`, then `running the
+queued reload`), and `POST /api/reload` answers `"reload queued"`. A queued
+pass is dropped once shutdown has started, so the bounded reload wait in
+`shutdown` covers at most the pass in flight.

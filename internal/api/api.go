@@ -73,9 +73,10 @@ type Server struct {
 	store    *blocklist.Store
 	dnsCache CacheStatser // nil when caching is disabled
 	// reloadFn is the single-flight reload (the DoT certificate when DoT is
-	// on, then the blocklists); the caller owns the mutex so the periodic
-	// timer, the API, and SIGHUP are serialised against the same gate.
-	// Returns false if a reload is already running.
+	// on, then the blocklists); the caller owns the gate so the periodic
+	// timer, the API, and SIGHUP are serialised against it. Returns false if
+	// a reload is already running; the request is then queued and runs when
+	// that reload finishes.
 	reloadFn func() bool
 	// httpServer is stored by Serve, which runs in a background goroutine in
 	// main, and read by Shutdown, which runs on the signal goroutine. It is an
@@ -885,7 +886,7 @@ func (s *Server) handleWhitelistRemove(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
 	logger.Info("reload requested via API", "client", clientIP(r))
 	if !s.reloadFn() {
-		writeJSON(w, map[string]string{"status": "reload already in progress"})
+		writeJSON(w, map[string]string{"status": "reload queued"})
 		return
 	}
 	writeJSON(w, map[string]string{"status": "reload triggered"})

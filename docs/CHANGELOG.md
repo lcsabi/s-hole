@@ -10,8 +10,8 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 
 ### Added
 - **The blocklist `loaded` log line says where each list came from.** A new
-  `from` attribute is `download` (fetched now), `cache` (the on-disk cache was
-  less than 24 hours old, so s-hole did not fetch), or `stale_cache` (the fetch
+  `from` attribute is `download` (fetched now), `cache` (at startup, the on-disk
+  cache was less than 24 hours old, so s-hole did not fetch), or `stale_cache` (the fetch
   failed, so s-hole used an older cache). Before, a cache load and a download
   logged the same line. (CL 88)
 - **DNS over TLS for LAN clients.** An optional encrypted listener (RFC 7858),
@@ -57,8 +57,25 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   via timer`. Update any log search or alert that matches the old text. (CL 86)
 - **The dashboard's Reload Blocklists button is now Reload.** It also re-reads
   the DoT certificate when DoT is on. (CL 86)
+- **`POST /api/reload` answers `"reload queued"` instead of `"reload already in
+  progress"`.** A reload request that arrives during a reload is now queued, not
+  dropped (see Fixed). Update any script that matches the old text. (CL 89, b/061)
 
 ### Fixed
+- **The blocklists now refresh every `refresh_interval`.** With the default 24h
+  interval, s-hole downloaded its blocklists only every 48 hours: the first
+  timer reload after a download found the cache just under 24 hours old and
+  used it without a fetch. A manual reload within a day of a download also did
+  not download. Every reload now downloads; only startup uses a cache that is
+  less than 24 hours old. (CL 89, b/060)
+- **A reload request during a reload is no longer lost.** A request from the
+  timer, the dashboard, `POST /api/reload`, SIGHUP, or `systemctl reload` that
+  arrived while a reload ran was dropped. Only the API reply said so; the log
+  did not. For a DoT
+  certificate renewed by a certbot deploy hook during a blocklist download,
+  the new certificate then waited for the next timer reload. Now the request
+  is queued and one more reload runs when the current one finishes. (CL 89,
+  b/061)
 - **`install-linux.sh --free-port-53` now frees port 53 on current systemd.** The
   installer looked for the `systemd-resolved` stub as `127.0.0.53:53`, but current
   systemd shows it as `127.0.0.53%lo:53` and runs a second stub on

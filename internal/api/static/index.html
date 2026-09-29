@@ -1324,7 +1324,11 @@
     async function reloadBlocklists() {
       try {
         const res = await fetch('/api/reload', { method: 'POST' });
-        flash(res.ok ? '✓ Reload triggered' : '✗ Request failed', res.ok);
+        if (!res.ok) { flash('✗ Request failed', false); return; }
+        const body = await res.json();
+        flash(body.status === 'reload queued'
+          ? '✓ Reload queued: it runs after the current reload'
+          : '✓ Reload triggered', true);
       } catch (e) { flash('✗ ' + e.message, false); }
     }
 

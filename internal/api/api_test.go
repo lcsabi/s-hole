@@ -1383,7 +1383,7 @@ func TestStatsAndMetrics_IncludePerSourceHealth(t *testing.T) {
 	defer listSrv.Close()
 
 	store := blocklist.NewStore()
-	if err := blocklist.Update(store, []string{listSrv.URL}, t.TempDir()); err != nil {
+	if err := blocklist.Update(store, []string{listSrv.URL}, t.TempDir(), blocklist.CacheFirst); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	s := New(stats.New(), nil, store, nil, func() bool { return true })
@@ -1636,12 +1636,15 @@ func TestReload_DispatchesAndReturnsStatus(t *testing.T) {
 	}
 }
 
-func TestReload_AlreadyInProgressDoesNotDispatch(t *testing.T) {
-	// Regression for b/022: when reloadFn returns false (because the
-	// caller-owned mutex is held), the API must surface
-	// "reload already in progress" rather than spawning a duplicate.
+func TestReload_QueuedWhenReloadRuns(t *testing.T) {
+	// b/061: when reloadFn returns false, a reload is running and the request
+	// is queued behind it. The API must say "reload queued", not the old
+	// b/022 reply "reload already in progress", and must not call reloadFn
+	// again to force a second pass.
+	var called atomic.Int32
 	_, srv := newTestServer(t, func() bool {
-		return false // simulate the mutex being held by someone else
+		called.Add(1)
+		return false // a reload runs; this request is queued
 	})
 
 	resp, err := http.Post(srv.URL+"/api/reload", "application/json", nil)
@@ -1649,36 +1652,36 @@ func TestReload_AlreadyInProgressDoesNotDispatch(t *testing.T) {
 		t.Fatalf("POST reload: %v", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("HTTP status = %d, want 200", resp.StatusCode)
+	}
 	out := decode[map[string]string](t, resp.Body)
-	if out["status"] != "reload already in progress" {
-		t.Errorf("status = %q, want 'reload already in progress'", out["status"])
+	if out["status"] != "reload queued" {
+		t.Errorf("status = %q, want 'reload queued'", out["status"])
+	}
+	if called.Load() != 1 {
+		t.Errorf("reloadFn called %d times, want 1", called.Load())
 	}
 }
 
-func TestReload_ConcurrentCallsCollapse(t *testing.T) {
-	// With a real single-flight closure, only one of N concurrent calls
-	// should observe "triggered"; the rest should see "already in progress."
-	var mu sync.Mutex
-	reload := func() bool {
-		if !mu.TryLock() {
-			return false
-		}
-		go func() {
-			// Hold the lock briefly to ensure other requests collide.
-			defer mu.Unlock()
-		}()
-		return true
-	}
+func TestReload_ConcurrentCallsOneTriggeredRestQueued(t *testing.T) {
+	// b/022 and b/061: with a single-flight closure that stays busy, exactly
+	// one of N concurrent calls sees "reload triggered" and every other call
+	// sees "reload queued". No reply uses any other status.
+	var running atomic.Bool
+	reload := func() bool { return running.CompareAndSwap(false, true) }
 	_, srv := newTestServer(t, reload)
 
-	var triggered, inProgress atomic.Int32
+	const n = 50
+	var triggered, queued, other atomic.Int32
 	var wg sync.WaitGroup
-	for range 50 {
+	for range n {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			resp, err := http.Post(srv.URL+"/api/reload", "application/json", nil)
 			if err != nil {
+				t.Errorf("POST reload: %v", err)
 				return
 			}
 			defer resp.Body.Close()
@@ -1686,20 +1689,19 @@ func TestReload_ConcurrentCallsCollapse(t *testing.T) {
 			switch out["status"] {
 			case "reload triggered":
 				triggered.Add(1)
-			case "reload already in progress":
-				inProgress.Add(1)
+			case "reload queued":
+				queued.Add(1)
+			default:
+				other.Add(1)
+				t.Errorf("unexpected status %q", out["status"])
 			}
 		}()
 	}
 	wg.Wait()
 
-	if triggered.Load()+inProgress.Load() == 0 {
-		t.Fatal("no requests returned a known status")
-	}
-	if triggered.Load() == 50 {
-		// Possible but unlikely; if the goroutine releases the lock
-		// between every TryLock attempt we never observe contention.
-		t.Log("note: no contention observed; single-flight gate ran serially")
+	if triggered.Load() != 1 || queued.Load() != n-1 || other.Load() != 0 {
+		t.Errorf("triggered=%d queued=%d other=%d, want 1, %d, 0",
+			triggered.Load(), queued.Load(), other.Load(), n-1)
 	}
 }
 

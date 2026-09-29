@@ -119,7 +119,7 @@ sudo ./s-hole -config config.yaml          # Linux / macOS
 .\s-hole.exe -config config.yaml           # Windows (Administrator)
 ```
 
-On first run, s-hole downloads the blocklists (~80 000 domains with the default lists, and the exact count shifts as the upstream lists evolve) and caches them to disk. Later starts skip the download when the cache is less than 24 hours old.
+On first run, s-hole downloads the blocklists (~80 000 domains with the default lists, and the exact count shifts as the upstream lists evolve) and caches them to disk. Later starts skip the download when the cache is less than 24 hours old. Every reload (the `refresh_interval` timer, the dashboard's Reload button, `POST /api/reload`, SIGHUP) downloads again.
 
 Each source download is capped at 256 MiB. Real blocklists are far smaller, so hitting the cap means a wrong URL or a broken source. If a source exceeds the cap, s-hole logs a WARN, keeps serving the previous cached copy of that source (marked stale), and does not replace it with the truncated download.
 
@@ -397,7 +397,7 @@ The admin web UI is served at **`http://127.0.0.1:8080`** by default. This is lo
 | `GET` | `/api/whitelist` | List all runtime-whitelisted domains |
 | `POST` | `/api/whitelist` | Add a domain. Body: `{"domain": "example.com"}` |
 | `DELETE` | `/api/whitelist?domain=…` | Remove a domain from the runtime whitelist |
-| `POST` | `/api/reload` | Trigger an immediate reload: re-read the DoT certificate (when DoT is on), then refresh the blocklists. De-duplicated via a single-flight mutex; returns `"reload already in progress"` if one is already running |
+| `POST` | `/api/reload` | Trigger an immediate reload: re-read the DoT certificate (when DoT is on), then refresh the blocklists. Single-flight: if a reload is already running, returns `"reload queued"`, and one more reload runs when the current one finishes |
 | `GET`  | `/healthz` | Liveness probe. Always 200 OK while the HTTP server is responsive |
 | `GET`  | `/readyz` | Readiness probe. 200 OK once the blocklist has loaded at least one entry, 503 otherwise |
 | `GET`  | `/metrics` | Prometheus text exposition of the `shole_*` series: query, cache, blocklist, upstream-failure, DoT certificate (when DoT is on), and Go-runtime metrics. See the [Metrics reference](docs/DESIGN.md#metrics-reference) for the full list. |

@@ -189,7 +189,7 @@ func main() {
 	store := blocklist.NewStore()
 	store.SetWhitelist(cfg.Whitelist)
 
-	if err := blocklist.Update(store, cfg.Blocklists, cfg.CacheDir); err != nil {
+	if err := blocklist.Update(store, cfg.Blocklists, cfg.CacheDir, blocklist.CacheFirst); err != nil {
 		mainLog.Warn("initial blocklist update", "err", err)
 	}
 
@@ -220,29 +220,34 @@ func main() {
 		dnsServer.EnableDoT(dotLn)
 	}
 
-	// reloadMu single-flights reloads across the periodic timer, POST
+	// runCtx is the application-wide lifecycle context. doStop cancels
+	// it before tearing down subsystems so the background tickers exit
+	// promptly instead of running until os.Exit, and so a queued reload
+	// does not start a new pass during shutdown.
+	runCtx, runCancel := context.WithCancel(context.Background())
+
+	// reloadFn single-flights reloads across the periodic timer, POST
 	// /api/reload, and SIGHUP. A reload re-reads the DoT certificate (when DoT
 	// is on) and then refreshes the blocklists. Two concurrent goroutines
 	// downloading to the same cache files would race on file writes.
 	//
 	// reloadFn returns synchronously: true means the reload started, false
-	// means a prior reload is still running. The actual download work runs
-	// in a background goroutine so callers (including the HTTP handler)
-	// return quickly.
+	// means a reload is already running and this request is queued behind it
+	// (b/061). The actual download work runs in a background goroutine so
+	// callers (including the HTTP handler) return quickly.
 	//
 	// reloadWG lets doStop wait for any in-flight refresh to complete (or
 	// be cancelled by deadline) before the process exits; otherwise the
 	// goroutine could be killed mid-rename and leave a half-written
 	// cache .tmp file behind.
-	var reloadMu sync.Mutex
 	var reloadWG sync.WaitGroup
 	var certs certReloader
 	if dotCerts != nil {
 		certs = dotCerts
 	}
-	reloadFn := newReloadFn(&reloadMu, &reloadWG, reloadWork(mainLog, certs, func() {
+	reloadFn := newReloadFn(runCtx, mainLog, &reloadWG, reloadWork(mainLog, certs, func() {
 		mainLog.Info("refreshing blocklists")
-		if err := blocklist.Update(store, cfg.Blocklists, cfg.CacheDir); err != nil {
+		if err := blocklist.Update(store, cfg.Blocklists, cfg.CacheDir, blocklist.DownloadFirst); err != nil {
 			mainLog.Warn("blocklist refresh failed", "err", err)
 		}
 	}))
@@ -300,10 +305,6 @@ func main() {
 	apiHost, apiPort, _ := net.SplitHostPort(cfg.APIListen)
 	printNetworkHint(dnsPort, dotPort, apiHost, apiPort, apiUp)
 
-	// runCtx is the application-wide lifecycle context. doStop cancels
-	// it before tearing down subsystems so the background tickers exit
-	// promptly instead of running until os.Exit.
-	runCtx, runCancel := context.WithCancel(context.Background())
 	go runTicker(runCtx, statsInterval, counter.Print)
 	go runTicker(runCtx, refreshInterval, func() {
 		mainLog.Info("reload requested via timer")
@@ -695,33 +696,60 @@ func warnCertExpiry(log *slog.Logger, certs certReloader) {
 }
 
 // newReloadFn builds the single-flight reload closure shared by the
-// periodic timer, POST /api/reload, and SIGHUP. It returns true if it acquired
-// the lock and started work (asynchronously, so callers return at once), or
-// false if a reload is already running. The shared mutex stops the three
-// callers from launching concurrent downloads that would race on the cache
-// files. Keeping the lock in this one closure, not in api.Server, is what
-// prevents the periodic timer from bypassing the gate (b/022).
+// periodic timer, POST /api/reload, and SIGHUP. It returns true if no reload
+// was running and it started one (asynchronously, so callers return at once).
+// It returns false if a reload is already running; the request is then queued,
+// and the running reload does one more pass when it finishes. Any number of
+// requests during one pass queue a single follow-up pass.
+//
+// Only one pass runs at a time, so the three callers never launch concurrent
+// downloads that would race on the cache files. Keeping this state in one
+// closure, not in api.Server, is what prevents the periodic timer from
+// bypassing the gate (b/022). The queue exists because a request that arrives
+// mid-pass may need work that the pass already did: a certbot deploy hook
+// that runs `systemctl reload` during a blocklist download installed the new
+// certificate after the pass read the old one. A dropped request left the old
+// certificate served until the next timer reload (b/061).
+//
+// Once ctx is cancelled (shutdown has started), a queued pass is dropped, so
+// the bounded reload wait in shutdown covers at most the pass in flight.
 //
 // wg lets doStop wait for an in-flight refresh to finish its os.Rename before
 // the process exits, so a refresh is never killed mid-write.
-func newReloadFn(mu *sync.Mutex, wg *sync.WaitGroup, work func()) func() bool {
+func newReloadFn(ctx context.Context, log *slog.Logger, wg *sync.WaitGroup, work func()) func() bool {
+	var mu sync.Mutex // guards running and queued
+	var running, queued bool
 	return func() bool {
-		if !mu.TryLock() {
+		mu.Lock()
+		defer mu.Unlock()
+		if running {
+			if !queued {
+				log.Info("reload already running; queued one more pass")
+			}
+			queued = true
 			return false
 		}
+		running = true
 		wg.Add(1)
 		go func() {
-			// Explicit, ordered cleanup: release the lock first so a
-			// subsequent caller is not gated on us, then signal Done so
-			// doStop's wg.Wait() returns only after the mutex is already
-			// free. Two separate defers would fire in LIFO order, which
-			// puts Done before Unlock and confuses readers who expect
-			// "release resources in reverse acquisition order."
-			defer func() {
+			defer wg.Done()
+			for {
+				work()
+				// Check and clear the queue under the same lock that callers
+				// take, so a request that arrives after this check sees
+				// running == false and starts its own pass: none is lost.
+				mu.Lock()
+				again := queued && ctx.Err() == nil
+				queued = false
+				if !again {
+					running = false
+				}
 				mu.Unlock()
-				wg.Done()
-			}()
-			work()
+				if !again {
+					return
+				}
+				log.Info("running the queued reload")
+			}
 		}()
 		return true
 	}

@@ -33,18 +33,35 @@ var httpClient = &http.Client{Timeout: 60 * time.Second}
 // races the read under -race.
 var maxBodyBytes int64 = 256 << 20 // 256 MiB
 
-// Update downloads (or loads from cache) all lists and replaces the store.
-// If every configured URL fails (network outage, all servers down), the
-// existing block set is preserved rather than being replaced with an empty
-// slice; otherwise a transient outage would silently unblock every ad until
-// the next successful refresh.
-func Update(store *Store, urls []string, cacheDir string) error {
+// Mode says whether Update may serve a fresh on-disk cache instead of
+// downloading.
+type Mode int
+
+const (
+	// CacheFirst loads a source from a cache file younger than cacheMaxAge
+	// without a download. Startup uses it, so a restart does not re-fetch
+	// every list.
+	CacheFirst Mode = iota
+	// DownloadFirst always tries the download and uses the cache only as the
+	// stale fallback. Every reload uses it. With CacheFirst, a reload one
+	// refresh_interval after the last download found a cache just under 24
+	// hours old, so the default 24h refresh downloaded only every 48 hours
+	// (b/060).
+	DownloadFirst
+)
+
+// Update downloads (or loads from cache, see Mode) all lists and replaces
+// the store. If every configured URL fails (network outage, all servers
+// down), the existing block set is preserved rather than being replaced with
+// an empty slice; otherwise a transient outage would silently unblock every
+// ad until the next successful refresh.
+func Update(store *Store, urls []string, cacheDir string, mode Mode) error {
 	var all []string
 	var ok int
 	var lastErr error
 	sources := make([]SourceStatus, 0, len(urls))
 	for _, u := range urls {
-		domains, meta, err := fetchList(u, cacheDir)
+		domains, meta, err := fetchList(u, cacheDir, mode)
 		if err != nil {
 			lastErr = err
 			logger.Warn("failed to load", "url", u, "err", err)
@@ -96,7 +113,7 @@ func warnIfEmpty(store *Store) {
 // line so an operator can tell a download from a cache load in the journal.
 const (
 	fromDownload   = "download"    // fetched now
-	fromCache      = "cache"       // on-disk cache younger than cacheMaxAge; no fetch tried
+	fromCache      = "cache"       // CacheFirst only: cache younger than cacheMaxAge; no fetch tried
 	fromStaleCache = "stale_cache" // on-disk cache served because the fetch failed
 )
 
@@ -110,10 +127,10 @@ type sourceMeta struct {
 	snapshot time.Time
 }
 
-func fetchList(url, cacheDir string) ([]string, sourceMeta, error) {
+func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 	cachePath := filepath.Join(cacheDir, cacheFilename(url))
 
-	if info, err := os.Stat(cachePath); err == nil {
+	if info, err := os.Stat(cachePath); err == nil && mode == CacheFirst {
 		if time.Since(info.ModTime()) < cacheMaxAge {
 			domains, loadErr := loadFromFile(cachePath)
 			return domains, sourceMeta{from: fromCache, snapshot: info.ModTime()}, loadErr

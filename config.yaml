@@ -3,6 +3,18 @@
 # Use "0.0.0.0:53" for IPv4 only, or a specific address to bind one interface.
 listen: ":53"
 
+# DNS over TLS (DoT): an encrypted listener for LAN clients, usually on
+# port 853. Android phones in the default "Automatic" Private DNS mode use it
+# on their own and do not check the certificate, so a self-signed one works.
+# DoT is off while dot_listen is empty (the default). To turn it on, set all
+# three keys. You supply the certificate and key (PEM).
+# See "DNS over TLS" in README.md for the commands and for strict mode.
+# To renew, replace the two files and reload: the dashboard reload button,
+# POST /api/reload, `systemctl reload s-hole`, or SIGHUP. No restart needed.
+# dot_listen: ":853"
+# tls_cert: "/etc/s-hole/cert.pem"
+# tls_key: "/etc/s-hole/key.pem"
+
 # Upstream resolvers, tried in order. Each entry is either a plain host:port
 # resolver or a DNS-over-HTTPS (DoH) endpoint. A bare address such as "1.1.1.1"
 # (no ":53") is dropped with a warning at startup. If every entry is malformed,

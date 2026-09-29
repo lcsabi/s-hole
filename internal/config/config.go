@@ -15,6 +15,7 @@
 package config
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -97,6 +98,18 @@ type Config struct {
 	// to the upstream resolver. Set to false only if you run a private
 	// reverse DNS zone on your LAN and want those queries forwarded.
 	LocalPTR bool `yaml:"local_ptr"`
+	// DoTListen is the address:port for the DNS-over-TLS (RFC 7858) listener,
+	// usually ":853". Empty (the default) turns DoT off. When set, TLSCert and
+	// TLSKey are required. DoT serves the same handler as the plain listener.
+	DoTListen string `yaml:"dot_listen"`
+	// TLSCert and TLSKey are paths to the PEM certificate and private key the
+	// DoT listener presents. The operator supplies them: only the operator
+	// knows the name clients connect with (the certificate SAN) and can make
+	// clients trust the issuer. They are read at startup and again on every
+	// reload (POST /api/reload, SIGHUP, the periodic refresh). Ignored while
+	// DoTListen is empty.
+	TLSCert string `yaml:"tls_cert"`
+	TLSKey  string `yaml:"tls_key"`
 }
 
 // Defaults for the two fields whose zero value is itself a meaningful
@@ -296,12 +309,24 @@ func isValidDoHURL(u string) bool {
 //	S_HOLE_RETENTION_DAYS      → query_db_retention_days (integer)
 //	S_HOLE_ENABLE_PPROF        → enable_pprof (1/true/yes turns it on, case-insensitive)
 //	S_HOLE_LOCAL_PTR           → local_ptr    (1/true/yes keeps it on; 0/false/no opts out; case-insensitive)
+//	S_HOLE_DOT_LISTEN          → dot_listen
+//	S_HOLE_TLS_CERT            → tls_cert
+//	S_HOLE_TLS_KEY             → tls_key
 func (c *Config) applyEnvOverrides() {
 	if v, ok := os.LookupEnv("S_HOLE_LISTEN"); ok {
 		c.Listen = v
 	}
 	if v, ok := os.LookupEnv("S_HOLE_API_LISTEN"); ok {
 		c.APIListen = v
+	}
+	if v, ok := os.LookupEnv("S_HOLE_DOT_LISTEN"); ok {
+		c.DoTListen = v
+	}
+	if v, ok := os.LookupEnv("S_HOLE_TLS_CERT"); ok {
+		c.TLSCert = v
+	}
+	if v, ok := os.LookupEnv("S_HOLE_TLS_KEY"); ok {
+		c.TLSKey = v
 	}
 	if v, ok := os.LookupEnv("S_HOLE_LOG_FILE"); ok {
 		c.LogFile = v
@@ -441,6 +466,29 @@ func (c *Config) Validate() error {
 		return errors.New("no usable upstream: every configured upstream was malformed (want host:port such as 1.1.1.1:53, or a DoH URL with an IP host such as https://1.1.1.1/dns-query)")
 	case 1:
 		logger.Info("single upstream configured; no forwarding fallback if it fails", "upstream", c.Upstreams[0])
+	}
+	return c.validateDoT()
+}
+
+// validateDoT checks the DNS-over-TLS settings when dot_listen is set. The
+// address must be host:port, and tls_cert and tls_key must name a PEM
+// certificate and a matching private key. tls.LoadX509KeyPair reads the two
+// local files and checks that the key matches the certificate, so
+// -check-config and the installer dry run catch a bad or mismatched pair
+// before the service starts. It reads local files only and makes no network
+// call. With dot_listen empty, DoT is off and the TLS paths are ignored.
+func (c *Config) validateDoT() error {
+	if c.DoTListen == "" {
+		return nil
+	}
+	if _, port, err := net.SplitHostPort(c.DoTListen); err != nil || port == "" {
+		return fmt.Errorf("dot_listen %q: must be host:port, such as \":853\"", c.DoTListen)
+	}
+	if c.TLSCert == "" || c.TLSKey == "" {
+		return errors.New("dot_listen is set, so tls_cert and tls_key are required")
+	}
+	if _, err := tls.LoadX509KeyPair(c.TLSCert, c.TLSKey); err != nil {
+		return fmt.Errorf("tls_cert/tls_key: cannot load the DoT certificate: %w", err)
 	}
 	return nil
 }

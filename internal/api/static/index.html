@@ -46,10 +46,14 @@
     }
 
     /* ── Header ─────────────────────────────────────────────── */
+    /* The meta line wraps under the logo on a narrow screen instead of
+       squeezing it; the optional DNS-over-TLS status makes it long. */
     header {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
+      gap: 6px 16px;
       padding: 14px 24px;
       border-bottom: 1px solid var(--border);
     }
@@ -58,6 +62,7 @@
       font-size: 18px;
       font-weight: 700;
       letter-spacing: -0.3px;
+      white-space: nowrap;
     }
 
     .logo .dot {
@@ -72,6 +77,11 @@
 
     .meta strong {
       color: var(--text);
+    }
+
+    /* Keep the DNS-over-TLS status in one piece when the meta line wraps. */
+    #dot-meta {
+      white-space: nowrap;
     }
 
     /* ── Stat cards ──────────────────────────────────────────── */
@@ -537,6 +547,11 @@
       refreshed <span id="last-refresh">–</span>
       &nbsp;·&nbsp;
       query privacy <strong id="privacy-mode">–</strong>
+      <span id="dot-meta" hidden>
+        &nbsp;·&nbsp;
+        DNS over TLS <span id="dot-status" class="badge">–</span>
+        <span id="dot-detail"></span>
+      </span>
     </div>
   </header>
 
@@ -659,7 +674,7 @@
   <div class="full panel">
     <div class="panel-hd">Actions</div>
     <div class="actions-body">
-      <button class="btn-secondary" onclick="reloadBlocklists()">↺ Reload Blocklists</button>
+      <button class="btn-secondary" onclick="reloadBlocklists()" title="Re-downloads the blocklists. With DNS over TLS on, it also reloads the certificate files.">↺ Reload</button>
       <form onsubmit="addWhitelist(event)" style="display:flex;gap:8px;align-items:center">
         <input id="wl-input" type="text" placeholder="domain to whitelist…">
         <button type="submit" class="btn-primary">+ Whitelist</button>
@@ -1189,6 +1204,45 @@
         : '<tr><td colspan="4" class="empty">No blocklist sources configured</td></tr>');
     }
 
+    // Render the DNS-over-TLS status in the header from /api/stats. The server
+    // computes the state and the days left (so the browser clock does not
+    // matter); the dashboard maps them to a badge. The line is hidden while
+    // DoT is off. The tooltip lists the certificate names, the expiry, and the
+    // last reload error, if any.
+    function renderDoT(dot) {
+      const meta = $('dot-meta');
+      if (!dot || !dot.enabled) {
+        meta.hidden = true;
+        return;
+      }
+      meta.hidden = false;
+      const days = dot.expires_in_days;
+      const dayText = days === 1 ? '1 day' : `${days} days`;
+      let cls = 'badge-allow', text = 'OK', detail = `${dayText} left`;
+      switch (dot.state) {
+        case 'expiring':
+          cls = 'badge-unresolved'; text = 'EXPIRES SOON'; detail = `${dayText} left`;
+          break;
+        case 'expired':
+          cls = 'badge-block'; text = 'EXPIRED'; detail = 'renew the certificate and reload';
+          break;
+        case 'reload_failed':
+          cls = 'badge-block'; text = 'RELOAD FAILED'; detail = 'still serving the previous certificate';
+          break;
+      }
+      const el = $('dot-status');
+      el.className = 'badge ' + cls;
+      el.textContent = text;
+      $('dot-detail').textContent = detail;
+      const lines = [
+        `Certificate for: ${(dot.names || []).join(', ') || 'unknown'}`,
+        `Expires: ${new Date(dot.not_after).toLocaleString()}`,
+      ];
+      if (dot.last_reload) lines.push(`Last reload: ${new Date(dot.last_reload).toLocaleString()}`);
+      if (dot.last_reload_error) lines.push(`Last reload error: ${dot.last_reload_error}`);
+      meta.title = lines.join('\n');
+    }
+
     // 'start' = in-memory tally from /api/stats (resets on restart);
     // 'all' = persistent tally from /api/top-blocked (SQLite, survives restart).
     let domainsMode = 'start';
@@ -1260,6 +1314,7 @@
         updateClientPicker(privacy, clients);
 
         renderSources(s.sources || []);
+        renderDoT(s.dot);
       } catch (e) { console.error('stats fetch failed:', e); }
 
       refreshHistory();

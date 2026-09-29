@@ -1802,7 +1802,7 @@ func TestReload_LogsSource(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	if !rec.contains("blocklist reload requested via API") {
+	if !rec.contains("reload requested via API") {
 		t.Errorf("missing reload source line; got %v", rec.msgs)
 	}
 }

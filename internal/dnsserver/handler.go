@@ -7,7 +7,8 @@
 //  3. Checks the in-memory response cache and returns cached replies.
 //  4. Forwards cache misses to upstream resolvers.
 //
-// UDP and TCP listeners run in parallel; clients fall back to TCP
+// UDP and TCP listeners (and the optional DNS-over-TLS listener, see dot.go)
+// run in parallel and share this handler; clients fall back to TCP
 // automatically when a UDP reply is truncated. On the upstream side the
 // forwarder mirrors that fallback: a truncated UDP reply is retried over TCP
 // against the same upstream before being returned. An "https://" upstream is

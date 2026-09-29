@@ -20,10 +20,10 @@
 //	GET    /api/whitelist        runtime whitelist (sorted)
 //	POST   /api/whitelist        add a domain (ValidDomain-gated, 64 KiB cap)
 //	DELETE /api/whitelist        remove a domain
-//	POST   /api/reload           trigger blocklist refresh (single-flight)
+//	POST   /api/reload           reload the DoT certificate (if on) and refresh blocklists (single-flight)
 //	GET    /healthz              liveness probe (always 200 when running)
 //	GET    /readyz               readiness probe (200 once blocklist > 0)
-//	GET    /metrics              Prometheus text exposition (queries, blocked, local_ptr, cache, failures, blocklist, runtime gauges)
+//	GET    /metrics              Prometheus text exposition (queries, blocked, local_ptr, cache, failures, blocklist, DoT certificate, runtime gauges)
 //	GET    /debug/pprof/*        net/http/pprof handlers (/symbol also POST); opt-in via EnablePprof
 //	GET    /                     embedded SPA from internal/api/static/
 package api
@@ -38,6 +38,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"runtime/metrics"
@@ -71,9 +72,10 @@ type Server struct {
 	db       *querylog.DBLogger // nil when query_db is not configured
 	store    *blocklist.Store
 	dnsCache CacheStatser // nil when caching is disabled
-	// reloadFn is the single-flight blocklist refresh; the caller owns the
-	// mutex so the periodic timer and the API are serialised against the
-	// same gate. Returns false if a refresh is already running.
+	// reloadFn is the single-flight reload (the DoT certificate when DoT is
+	// on, then the blocklists); the caller owns the mutex so the periodic
+	// timer, the API, and SIGHUP are serialised against the same gate.
+	// Returns false if a reload is already running.
 	reloadFn func() bool
 	// httpServer is stored by Serve, which runs in a background goroutine in
 	// main, and read by Shutdown, which runs on the signal goroutine. It is an
@@ -106,6 +108,10 @@ type Server struct {
 	// the metric off (the api package does not import dnsserver, so main bridges
 	// the two).
 	upstreamTransportFailures func() map[string]uint64
+	// dotStatus reports the DNS-over-TLS certificate state for /api/stats and
+	// /metrics. main wires it only when dot_listen is set; nil means DoT is off,
+	// so /api/stats reports {"enabled": false} and the DoT metrics are omitted.
+	dotStatus func() DoTStatus
 	// readRuntimeMetrics reads the Go runtime gauges (shole_goroutines and the
 	// heap gauges) for /metrics. It defaults to runtime/metrics.Read in New;
 	// tests reassign it to a deterministic, call-counting fake so they can assert
@@ -130,7 +136,7 @@ const maxConcurrentExports = 2
 
 // New constructs a Server. db and dnsCache may be nil to disable the
 // corresponding metric/endpoint surfaces. reloadFn must be the
-// single-flight blocklist refresh closure owned by cmd/s-hole/main.go; see the
+// single-flight reload closure owned by cmd/s-hole/main.go; see the
 // reloadFn field for the contract.
 func New(counter *stats.Counter, db *querylog.DBLogger, store *blocklist.Store, dnsCache CacheStatser, reloadFn func() bool) *Server {
 	return &Server{
@@ -174,6 +180,27 @@ func (s *Server) SetClientNames(m map[string]string) {
 // not import dnsserver.
 func (s *Server) SetUpstreamTransportFailures(fn func() map[string]uint64) {
 	s.upstreamTransportFailures = fn
+}
+
+// DoTStatus is the DNS-over-TLS state the admin API reports. main fills it
+// from dnsserver.CertReloader.Status, so the api package does not import
+// dnsserver. State is one of "ok", "expiring", "expired", or "reload_failed",
+// computed where the expiry window is defined.
+type DoTStatus struct {
+	Listen          string
+	Names           []string
+	NotAfter        time.Time
+	State           string
+	LastReload      time.Time
+	LastReloadError string
+	ReloadFailures  uint64
+}
+
+// SetDoTStatus wires the DNS-over-TLS status accessor, so /api/stats reports
+// the certificate state and /metrics emits the DoT certificate metrics. Call
+// before Serve, and only when DoT is on.
+func (s *Server) SetDoTStatus(fn func() DoTStatus) {
+	s.dotStatus = fn
 }
 
 // Timeouts protect the unauthenticated admin server from slowloris-style
@@ -291,6 +318,44 @@ type statsResponse struct {
 	TopClients   []clientEntry            `json:"top_clients"`
 	Sources      []blocklist.SourceStatus `json:"sources"`
 	QueryPrivacy string                   `json:"query_privacy"`
+	DoT          dotResponse              `json:"dot"`
+}
+
+// dotResponse is the "dot" object in /api/stats. With DoT off it is just
+// {"enabled": false}. ExpiresInDays is computed on the server, so the
+// dashboard does not depend on the browser's clock; it is negative once the
+// certificate has expired.
+type dotResponse struct {
+	Enabled         bool     `json:"enabled"`
+	Listen          string   `json:"listen,omitempty"`
+	Names           []string `json:"names,omitempty"`
+	NotAfter        string   `json:"not_after,omitempty"`
+	ExpiresInDays   *int     `json:"expires_in_days,omitempty"`
+	State           string   `json:"state,omitempty"`
+	LastReload      string   `json:"last_reload,omitempty"`
+	LastReloadError string   `json:"last_reload_error,omitempty"`
+}
+
+// dotSummary builds the /api/stats "dot" object at now.
+func (s *Server) dotSummary(now time.Time) dotResponse {
+	if s.dotStatus == nil {
+		return dotResponse{}
+	}
+	st := s.dotStatus()
+	days := int(math.Floor(st.NotAfter.Sub(now).Hours() / 24))
+	resp := dotResponse{
+		Enabled:         true,
+		Listen:          st.Listen,
+		Names:           st.Names,
+		NotAfter:        st.NotAfter.UTC().Format(time.RFC3339),
+		ExpiresInDays:   &days,
+		State:           st.State,
+		LastReloadError: st.LastReloadError,
+	}
+	if !st.LastReload.IsZero() {
+		resp.LastReload = st.LastReload.UTC().Format(time.RFC3339)
+	}
+	return resp
 }
 
 // clientEntry is a Top Clients row: the masked client value (Name), its query
@@ -317,6 +382,7 @@ func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
 		TopClients:   clients,
 		Sources:      s.store.Sources(),
 		QueryPrivacy: privacy,
+		DoT:          s.dotSummary(time.Now()),
 	})
 }
 
@@ -817,7 +883,7 @@ func (s *Server) handleWhitelistRemove(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
-	logger.Info("blocklist reload requested via API", "client", clientIP(r))
+	logger.Info("reload requested via API", "client", clientIP(r))
 	if !s.reloadFn() {
 		writeJSON(w, map[string]string{"status": "reload already in progress"})
 		return

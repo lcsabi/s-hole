@@ -14,7 +14,10 @@ WorkingDirectory=/var/lib/s-hole
 Restart=on-failure
 RestartSec=5s
 
-# Allow binding to port 53 without running as root.
+# `systemctl reload s-hole` re-reads the DoT certificate and the blocklists.
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Allow binding to ports 53 and 853 (DNS over TLS) without running as root.
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 

@@ -36,12 +36,12 @@ type Server struct {
 func Listen(addr string) (net.PacketConn, net.Listener, error) {
 	pc, err := net.ListenPacket("udp", addr)
 	if err != nil {
-		return nil, nil, fmt.Errorf("dns: listen on udp %s: %w", addr, err)
+		return nil, nil, fmt.Errorf("dns: %w", err) // err names udp and addr
 	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		_ = pc.Close()
-		return nil, nil, fmt.Errorf("dns: listen on tcp %s: %w", addr, err)
+		return nil, nil, fmt.Errorf("dns: %w", err) // err names tcp and addr
 	}
 	return pc, ln, nil
 }

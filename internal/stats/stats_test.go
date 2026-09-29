@@ -2,23 +2,45 @@ package stats
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
-func TestCounter_Print(t *testing.T) {
-	// Print writes to stdout; redirect it through a pipe to assert the
-	// human-readable format includes the values from a recorded query.
-	c := New()
-	c.RecordQuery("1.2.3.4", "ads.example.com.", true)
-	c.RecordQuery("1.2.3.4", "google.com.", false)
+// TestCounter_Log checks that Log writes exactly one INFO record with msg
+// "stats" through the package logger, with each counter as its own
+// attribute, and nothing on stdout. The top-N lists are not logged (CL 89).
+func TestCounter_Log(t *testing.T) {
+	orig := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 
-	orig := os.Stdout
+	c := New()
+	// 8 queries: 4 blocked (50.0 %), 1 local PTR, so 3 forwardable with
+	// 2 cache hits (66.7 %).
+	for i := 0; i < 4; i++ {
+		c.RecordQuery("1.2.3.4", "ads.example.com.", true)
+	}
+	for i := 0; i < 4; i++ {
+		c.RecordQuery("5.6.7.8", "google.com.", false)
+	}
+	c.RecordLocalPTR()
+	c.RecordCacheHit()
+	c.RecordCacheHit()
+	c.RecordForwardFailure()
+	for i := 0; i < 3; i++ {
+		c.RecordUpstreamError()
+	}
+
+	origStdout := os.Stdout
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
@@ -26,27 +48,56 @@ func TestCounter_Print(t *testing.T) {
 	os.Stdout = w
 	done := make(chan string)
 	go func() {
-		var buf bytes.Buffer
-		io.Copy(&buf, r)
-		done <- buf.String()
+		var out bytes.Buffer
+		io.Copy(&out, r)
+		done <- out.String()
 	}()
-
-	c.Print()
+	c.Log()
 	w.Close()
-	os.Stdout = orig
-	out := <-done
+	os.Stdout = origStdout
+	if stdout := <-done; stdout != "" {
+		t.Errorf("Log wrote to stdout directly: %q", stdout)
+	}
 
-	if !strings.Contains(out, "[stats]") {
-		t.Errorf("Print() output missing [stats] prefix: %q", out)
+	lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
+	if len(lines) != 1 || lines[0] == "" {
+		t.Fatalf("Log wrote %d records, want exactly 1: %q", len(lines), buf.String())
 	}
-	if !strings.Contains(out, "total=2") {
-		t.Errorf("Print() output missing total=2: %q", out)
+	var rec map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &rec); err != nil {
+		t.Fatalf("record is not JSON: %q: %v", lines[0], err)
 	}
-	if !strings.Contains(out, "blocked=1") {
-		t.Errorf("Print() output missing blocked=1: %q", out)
+
+	want := map[string]any{
+		"level":            "INFO",
+		"msg":              "stats",
+		"pkg":              "stats",
+		"queries":          float64(8),
+		"blocked":          float64(4),
+		"blocked_pct":      "50.0",
+		"local_ptr":        float64(1),
+		"cache_hits":       float64(2),
+		"cache_hit_pct":    "66.7",
+		"forward_failures": float64(1),
+		"upstream_errors":  float64(3),
 	}
-	if !strings.Contains(out, "top blocked domains") {
-		t.Errorf("Print() output missing top blocked domains section: %q", out)
+	for k, v := range want {
+		if rec[k] != v {
+			t.Errorf("%s = %#v, want %#v", k, rec[k], v)
+		}
+	}
+	uptime, ok := rec["uptime"].(string)
+	if !ok {
+		t.Fatalf("uptime = %#v, want a duration string", rec["uptime"])
+	}
+	if _, err := time.ParseDuration(uptime); err != nil {
+		t.Errorf("uptime = %q, want a duration string: %v", uptime, err)
+	}
+	// time and uptime are the only keys beyond want; no top-N lists.
+	for k := range rec {
+		if _, ok := want[k]; !ok && k != "time" && k != "uptime" {
+			t.Errorf("unexpected attribute %s = %v", k, rec[k])
+		}
 	}
 }
 

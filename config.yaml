@@ -65,7 +65,7 @@ whitelist:
 # How often to re-download blocklists (Go duration: 1h, 24h, 168h …)
 refresh_interval: "24h"
 
-# How often to print stats to stdout
+# How often to log the stats line (msg=stats)
 stats_interval: "5m"
 
 # How to respond to blocked queries: "zero" (0.0.0.0) or "nxdomain"

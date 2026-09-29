@@ -29,19 +29,19 @@ package dnsserver
 
 import (
 	"context"
-	"log/slog"
 	"net"
 	"strings"
 	"time"
 
 	"github.com/lcsabi/s-hole/internal/blocklist"
 	"github.com/lcsabi/s-hole/internal/cache"
+	"github.com/lcsabi/s-hole/internal/logging"
 	"github.com/lcsabi/s-hole/internal/querylog"
 	"github.com/lcsabi/s-hole/internal/stats"
 	"github.com/miekg/dns"
 )
 
-var logger = slog.With("pkg", "dns")
+var logger = logging.For("dns")
 
 // queryDeadline is the maximum time the handler is allowed to spend
 // resolving a single query end-to-end (upstreams × per-upstream timeout

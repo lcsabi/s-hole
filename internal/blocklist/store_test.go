@@ -369,7 +369,7 @@ func BenchmarkStore_IsBlocked_Parallel(b *testing.B) {
 // BenchmarkStore_Replace measures the reload swap: build a fresh blocked
 // set from a slice, then swap the map pointer under the write lock. This
 // runs on every blocklist refresh (periodic ticker, POST /api/reload,
-// SIGHUP) inside the single-flight lock, so a regression here stalls the
+// SIGHUP) inside the single-flight reload, so a regression here stalls the
 // swap and the readers waiting on it. The build dominates; the swap itself
 // is a pointer store. ReportAllocs tracks the per-reload allocation of the
 // new set.

@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -337,42 +338,317 @@ func TestWaitWithDeadline_GivesUpOnDeadline(t *testing.T) {
 	}
 }
 
+// gatedWork is a reload pass the test steps through. Each pass signals on
+// entered, then blocks until the test calls step. It counts passes and fails
+// the test if two passes overlap. Every wait is bounded, so a closure that runs
+// too many or too few passes fails the test instead of hanging it.
+type gatedWork struct {
+	t        *testing.T
+	entered  chan struct{}
+	release  chan struct{}
+	abort    chan struct{} // closed at cleanup to free a pass the test never stepped
+	active   atomic.Int32
+	started  atomic.Int32
+	finished atomic.Int32
+}
+
+func newGatedWork(t *testing.T) *gatedWork {
+	g := &gatedWork{
+		t:       t,
+		entered: make(chan struct{}, 64),
+		release: make(chan struct{}),
+		abort:   make(chan struct{}),
+	}
+	t.Cleanup(func() { close(g.abort) })
+	return g
+}
+
+func (g *gatedWork) run() {
+	if g.active.Add(1) != 1 {
+		g.t.Error("two reload passes ran at the same time")
+	}
+	g.started.Add(1)
+	g.entered <- struct{}{}
+	select {
+	case <-g.release:
+	case <-g.abort:
+	}
+	g.finished.Add(1)
+	g.active.Add(-1)
+}
+
+// waitEntered waits for the next pass to start.
+func (g *gatedWork) waitEntered() {
+	g.t.Helper()
+	select {
+	case <-g.entered:
+	case <-time.After(5 * time.Second):
+		g.t.Fatal("reload pass did not start")
+	}
+}
+
+// step lets the pass that is blocked in run finish.
+func (g *gatedWork) step() {
+	g.t.Helper()
+	select {
+	case g.release <- struct{}{}:
+	case <-time.After(5 * time.Second):
+		g.t.Fatal("no reload pass was waiting to finish")
+	}
+}
+
+// assertNoPassStarts checks that no further pass starts within a short wait.
+func (g *gatedWork) assertNoPassStarts(msg string) {
+	g.t.Helper()
+	select {
+	case <-g.entered:
+		g.t.Fatal(msg)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// waitIdle waits for wg with a bound, so a surplus pass fails the test.
+func waitIdle(t *testing.T, wg *sync.WaitGroup) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reload closure did not go idle")
+	}
+}
+
+func discardLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
 // TestNewReloadFn_SingleFlight pins the b/022 invariant on the real closure
-// the timer, the API, and SIGHUP all share: while one refresh holds the lock,
-// a second call returns false and does not run the work. b/022 was a mutex
-// living in api.Server that the periodic timer bypassed; the fix moved the
-// lock into this closure. The rejected caller must not launch a concurrent
-// refresh.
+// the timer, the API, and SIGHUP all share: while one pass runs, a second call
+// returns false and does not start a concurrent pass. b/022 was a mutex in
+// api.Server that the periodic timer bypassed. Since b/061 the rejected call
+// is queued, so exactly one follow-up pass runs after the first one.
 func TestNewReloadFn_SingleFlight(t *testing.T) {
-	var mu sync.Mutex
 	var wg sync.WaitGroup
-	var calls atomic.Int32
-	release := make(chan struct{})
+	g := newGatedWork(t)
+	reload := newReloadFn(context.Background(), discardLog(), &wg, g.run)
 
-	reload := newReloadFn(&mu, &wg, func() {
-		calls.Add(1)
-		<-release // hold the lock until the test lets go
-	})
-
-	// TryLock succeeds synchronously, so on return the lock is already held.
 	if !reload() {
-		t.Fatal("first reload() = false, want true (should win the lock)")
+		t.Fatal("first reload() = false, want true")
 	}
+	g.waitEntered()
 	if reload() {
-		t.Error("second reload() = true while a refresh is in flight, want false (single-flight)")
+		t.Error("second reload() = true while a pass runs, want false")
 	}
+	g.assertNoPassStarts("a second pass started while the first one ran")
 
-	close(release) // let the in-flight refresh finish and release the lock
-	wg.Wait()
+	g.step()        // finish pass 1
+	g.waitEntered() // b/061: the queued pass runs
+	g.step()
+	waitIdle(t, &wg)
 
-	// After completion a fresh call wins again.
+	if got := g.started.Load(); got != 2 {
+		t.Errorf("work ran %d times, want 2 (first pass plus the queued pass)", got)
+	}
+}
+
+// TestNewReloadFn_ManyCallsQueueOnePass pins b/061: any number of calls
+// during one pass queue a single follow-up pass, not one per call.
+func TestNewReloadFn_ManyCallsQueueOnePass(t *testing.T) {
+	var wg sync.WaitGroup
+	g := newGatedWork(t)
+	reload := newReloadFn(context.Background(), discardLog(), &wg, g.run)
+
 	if !reload() {
-		t.Error("reload() after completion = false, want true")
+		t.Fatal("first reload() = false, want true")
 	}
-	wg.Wait()
+	g.waitEntered()
+	for i := 0; i < 10; i++ {
+		if reload() {
+			t.Fatalf("call %d during a pass returned true, want false", i)
+		}
+	}
+	g.step()
+	g.waitEntered()
+	g.step()
+	g.assertNoPassStarts("more than one follow-up pass ran for one burst of calls")
+	waitIdle(t, &wg)
+	if got := g.started.Load(); got != 2 {
+		t.Errorf("work ran %d times, want 2", got)
+	}
+}
 
-	if got := calls.Load(); got != 2 {
-		t.Errorf("work ran %d times, want 2 (the rejected middle call must not run work)", got)
+// TestNewReloadFn_CallDuringFollowUpQueuesAgain pins b/061: a call that
+// arrives while the queued pass runs queues one more pass.
+func TestNewReloadFn_CallDuringFollowUpQueuesAgain(t *testing.T) {
+	var wg sync.WaitGroup
+	g := newGatedWork(t)
+	reload := newReloadFn(context.Background(), discardLog(), &wg, g.run)
+
+	reload()
+	g.waitEntered()
+	reload() // queue pass 2
+	g.step()
+	g.waitEntered()
+	if reload() { // queue pass 3 while pass 2 runs
+		t.Error("call during the follow-up pass returned true, want false")
+	}
+	g.step()
+	g.waitEntered()
+	g.step()
+	waitIdle(t, &wg)
+	if got := g.started.Load(); got != 3 {
+		t.Errorf("work ran %d times, want 3", got)
+	}
+}
+
+// TestNewReloadFn_WaitGroupCoversFollowUp pins b/061: doStop waits on wg, so
+// wg.Wait must not return between the first pass and the queued pass. After
+// it returns the closure is idle, so a new call starts a pass.
+func TestNewReloadFn_WaitGroupCoversFollowUp(t *testing.T) {
+	var wg sync.WaitGroup
+	g := newGatedWork(t)
+	reload := newReloadFn(context.Background(), discardLog(), &wg, g.run)
+
+	reload()
+	g.waitEntered()
+	reload() // queue a follow-up
+
+	waited := make(chan struct{})
+	go func() { wg.Wait(); close(waited) }()
+
+	g.step() // finish pass 1; the follow-up starts
+	g.waitEntered()
+	select {
+	case <-waited:
+		t.Fatal("wg.Wait returned while the queued pass was still running")
+	case <-time.After(50 * time.Millisecond):
+	}
+	g.step()
+	select {
+	case <-waited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("wg.Wait did not return after the last pass finished")
+	}
+	if f := g.finished.Load(); f != 2 {
+		t.Errorf("finished passes at wg.Wait return = %d, want 2", f)
+	}
+
+	// Idle again: the next call must start its own pass.
+	if !reload() {
+		t.Fatal("reload() after wg.Wait = false, want true (closure not idle)")
+	}
+	g.waitEntered()
+	g.step()
+	waitIdle(t, &wg)
+	if got := g.started.Load(); got != 3 {
+		t.Errorf("work ran %d times, want 3", got)
+	}
+}
+
+// TestNewReloadFn_CancelDropsQueuedPass pins b/061: after shutdown cancels
+// ctx, a queued pass does not run, but the pass in flight completes.
+func TestNewReloadFn_CancelDropsQueuedPass(t *testing.T) {
+	var wg sync.WaitGroup
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	g := newGatedWork(t)
+	reload := newReloadFn(ctx, discardLog(), &wg, g.run)
+
+	reload()
+	g.waitEntered()
+	if reload() {
+		t.Fatal("second reload() = true, want false (queued)")
+	}
+	cancel()
+	g.step()
+	g.assertNoPassStarts("queued pass ran after ctx was cancelled")
+	waitIdle(t, &wg)
+	if got := g.started.Load(); got != 1 {
+		t.Errorf("work ran %d times, want 1", got)
+	}
+	if got := g.finished.Load(); got != 1 {
+		t.Errorf("in-flight pass finished %d times, want 1", got)
+	}
+}
+
+// TestNewReloadFn_LogsQueueOncePerPass pins the b/061 log lines: one
+// "queued" line per pass, however many calls queue it, and one "queued
+// reload started" line per follow-up pass.
+func TestNewReloadFn_LogsQueueOncePerPass(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	var wg sync.WaitGroup
+	g := newGatedWork(t)
+	reload := newReloadFn(context.Background(), log, &wg, g.run)
+
+	reload()
+	g.waitEntered()
+	reload()
+	reload()
+	reload() // three calls, one queue line
+	g.step()
+	g.waitEntered()
+	reload()
+	reload() // two calls during the follow-up, one more queue line
+	g.step()
+	g.waitEntered()
+	g.step()
+	waitIdle(t, &wg)
+
+	out := buf.String()
+	if n := strings.Count(out, `msg="reload queued until the running reload ends"`); n != 2 {
+		t.Errorf("queued lines = %d, want 2:\n%s", n, out)
+	}
+	if n := strings.Count(out, `msg="queued reload started"`); n != 2 {
+		t.Errorf("follow-up lines = %d, want 2:\n%s", n, out)
+	}
+	if !strings.Contains(out, "level=INFO") || strings.Contains(out, "level=WARN") {
+		t.Errorf("want the queue lines at INFO:\n%s", out)
+	}
+}
+
+// TestNewReloadFn_NoOverlapNoLostRequestUnderStress pins b/061 under load.
+// Many goroutines call the closure at once while short passes run. Passes
+// must never overlap, and every call must be followed by a pass that starts
+// after it: a call that lands just as a pass checks the queue must not be
+// lost. Each call bumps gen first; each pass records the gen it saw at start.
+// The last pass must see the final gen. Run with -race.
+func TestNewReloadFn_NoOverlapNoLostRequestUnderStress(t *testing.T) {
+	for iter := 0; iter < 200; iter++ {
+		var wg sync.WaitGroup
+		var gen, lastSeen, active atomic.Int64
+		work := func() {
+			if active.Add(1) != 1 {
+				t.Error("two reload passes ran at the same time")
+			}
+			lastSeen.Store(gen.Load())
+			runtime.Gosched()
+			active.Add(-1)
+		}
+		reload := newReloadFn(context.Background(), discardLog(), &wg, work)
+
+		var callers sync.WaitGroup
+		for c := 0; c < 8; c++ {
+			callers.Add(1)
+			go func() {
+				defer callers.Done()
+				for i := 0; i < 20; i++ {
+					gen.Add(1)
+					reload()
+					if i%4 == 0 {
+						runtime.Gosched()
+					}
+				}
+			}()
+		}
+		callers.Wait()
+		wg.Wait()
+		if got, want := lastSeen.Load(), gen.Load(); got != want {
+			t.Fatalf("iteration %d: last pass saw gen %d, want %d (a request was lost)", iter, got, want)
+		}
+		if !reload() {
+			t.Fatalf("iteration %d: reload() after wg.Wait = false, want true", iter)
+		}
+		wg.Wait()
 	}
 }
 
@@ -387,7 +663,7 @@ func TestShutdown_TeardownOrder(t *testing.T) {
 
 	shutdown(slog.With("pkg", "test"), 50*time.Millisecond, shutdownDeps{
 		cancelTickers: rec("cancel"),
-		printStats:    rec("stats"),
+		logStats:      rec("stats"),
 		stopDNS:       rec("dns"),
 		drainHTTP:     func(context.Context) error { order = append(order, "http"); return nil },
 		waitForReload: func(context.Context) { order = append(order, "reload") },
@@ -411,7 +687,7 @@ func TestShutdown_ContinuesAfterErrors(t *testing.T) {
 
 	shutdown(slog.With("pkg", "test"), 50*time.Millisecond, shutdownDeps{
 		cancelTickers: rec("cancel"),
-		printStats:    rec("stats"),
+		logStats:      rec("stats"),
 		stopDNS:       rec("dns"),
 		drainHTTP:     func(context.Context) error { order = append(order, "http"); return errors.New("drain failed") },
 		waitForReload: func(context.Context) { order = append(order, "reload") },
@@ -447,7 +723,7 @@ func TestBlockUntilStopped_WaitsForTeardown(t *testing.T) {
 	doStop := func() {
 		shutdown(slog.With("pkg", "test"), 50*time.Millisecond, shutdownDeps{
 			cancelTickers: func() { rec("cancel") },
-			printStats:    func() { rec("stats") },
+			logStats:      func() { rec("stats") },
 			stopDNS:       func() { rec("dns"); close(dnsStopped) },
 			drainHTTP:     func(context.Context) error { rec("http"); return nil },
 			waitForReload: func(context.Context) { rec("reload") },
@@ -495,7 +771,7 @@ func TestShutdown_ReloadGetsOwnBudget(t *testing.T) {
 
 	shutdown(slog.With("pkg", "test"), timeout, shutdownDeps{
 		cancelTickers: func() {},
-		printStats:    func() {},
+		logStats:      func() {},
 		stopDNS:       func() {},
 		drainHTTP: func(context.Context) error {
 			time.Sleep(120 * time.Millisecond) // burn most of the drain budget

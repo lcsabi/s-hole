@@ -102,6 +102,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 86](cls/CL-86.md) | DNS-over-TLS listener for LAN clients, with certificate reload and status (ROADMAP #36, DoT part) |
 | [CL 87](cls/CL-87.md) | Installer frees the systemd-resolved stub on current systemd (b/058); banner skips container and VPN addresses (b/059) |
 | [CL 88](cls/CL-88.md) | Blocklist `loaded` log line says whether a list came from a download or the cache; CLAUDE.md rule: a separate cold agent writes the tests |
+| [CL 89](cls/CL-89.md) | Every reload downloads the blocklists (b/060); a reload request during a reload is queued (b/061); correct log levels (b/062), journald priorities, clearer messages; `docs/TROUBLESHOOTING.md` |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

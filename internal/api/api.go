@@ -37,7 +37,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log/slog"
 	"math"
 	"net"
 	"net/http"
@@ -49,11 +48,12 @@ import (
 	"time"
 
 	"github.com/lcsabi/s-hole/internal/blocklist"
+	"github.com/lcsabi/s-hole/internal/logging"
 	"github.com/lcsabi/s-hole/internal/querylog"
 	"github.com/lcsabi/s-hole/internal/stats"
 )
 
-var logger = slog.With("pkg", "api")
+var logger = logging.For("api")
 
 //go:embed static
 var staticFiles embed.FS
@@ -73,9 +73,10 @@ type Server struct {
 	store    *blocklist.Store
 	dnsCache CacheStatser // nil when caching is disabled
 	// reloadFn is the single-flight reload (the DoT certificate when DoT is
-	// on, then the blocklists); the caller owns the mutex so the periodic
-	// timer, the API, and SIGHUP are serialised against the same gate.
-	// Returns false if a reload is already running.
+	// on, then the blocklists); the caller owns the gate so the periodic
+	// timer, the API, and SIGHUP are serialised against it. Returns false if
+	// a reload is already running; the request is then queued and runs when
+	// that reload finishes.
 	reloadFn func() bool
 	// httpServer is stored by Serve, which runs in a background goroutine in
 	// main, and read by Shutdown, which runs on the signal goroutine. It is an
@@ -231,7 +232,7 @@ func (s *Server) ListenAndServe(addr string) error {
 // can treat any returned error as an actual failure.
 func (s *Server) Serve(ln net.Listener) error {
 	addr := ln.Addr().String()
-	logger.Info("admin UI listening", "addr", addr, "url", "http://"+addr)
+	logger.Info("admin UI listening", "url", "http://"+addr)
 	hs := &http.Server{
 		Handler:           s.handler(),
 		ReadHeaderTimeout: readHeaderTimeout,
@@ -485,7 +486,7 @@ func (s *Server) handleQueries(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := s.db.Search(r.Context(), filter, limit)
 	if err != nil {
-		logger.Warn("recent query failed", "err", err)
+		logger.Warn("query log read failed", "route", "/api/queries", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -713,7 +714,7 @@ func (s *Server) handleTopBlocked(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := s.db.TopBlocked(r.Context(), limit)
 	if err != nil {
-		logger.Warn("top-blocked query failed", "err", err)
+		logger.Warn("query log read failed", "route", "/api/top-blocked", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -827,7 +828,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 
 	series, err := s.db.History(r.Context(), window, bucket)
 	if err != nil {
-		logger.Warn("history query failed", "err", err)
+		logger.Warn("query log read failed", "route", "/api/history", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -885,7 +886,7 @@ func (s *Server) handleWhitelistRemove(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
 	logger.Info("reload requested via API", "client", clientIP(r))
 	if !s.reloadFn() {
-		writeJSON(w, map[string]string{"status": "reload already in progress"})
+		writeJSON(w, map[string]string{"status": "reload queued"})
 		return
 	}
 	writeJSON(w, map[string]string{"status": "reload triggered"})
@@ -897,7 +898,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 		// Body may be half-written at this point; we cannot fix that, but
 		// at least surface the failure to the operator instead of letting
 		// the client see a silent truncation.
-		logger.Warn("json encode failed", "err", err)
+		logger.Warn("JSON response write failed", "err", err)
 	}
 }
 

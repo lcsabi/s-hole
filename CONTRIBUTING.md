@@ -164,11 +164,12 @@ and the router-setup banner. Then, in a second terminal:
    Do one add via the dashboard's actions panel to cover the UI path.
 5. **Reload single-flight.** Two immediate
    `curl -X POST localhost:8080/api/reload` calls: the first returns
-   `"reload triggered"`, the second `"reload already in progress"`.
+   `"reload triggered"`, the second `"reload queued"`. The log shows
+   `queued reload started` when the first reload finishes.
 6. **Stats vs. metrics.** `curl localhost:8080/api/stats` and
    `curl localhost:8080/metrics`; blocked/total/cache numbers must
    agree with what you just did.
-7. **Persistence + shutdown.** Ctrl+C: expect the final stats print
+7. **Persistence + shutdown.** Ctrl+C: expect a final `msg=stats` line
    and a clean exit. Restart: `/api/queries?limit=10` still shows the
    pre-restart rows, and startup is faster (blocklists load from the
    disk cache).
@@ -298,6 +299,7 @@ Every behaviour change needs a test. Coverage gates are not enforced
 strictly, but the per-package targets are:
 
 - `internal/stats`, `internal/config`, `internal/version`: 100 %
+- `internal/logging`: ≥ 95 %
 - `internal/cache`: ≥ 94 %
 - `internal/api`, `internal/blocklist`, `internal/dnsserver`,
   `internal/querylog`: ≥ 85 %

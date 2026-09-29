@@ -14,7 +14,7 @@
 //   - construct the single-flight reload closure and the admin API server
 //     (which exposes /healthz, /readyz, /metrics, and, opt-in via
 //     enable_pprof, /debug/pprof/* alongside the REST API)
-//   - launch background tickers for stats printing and blocklist refresh,
+//   - launch background tickers for the stats line and the blocklist reload,
 //     both panic-recovered
 //   - either enter the Windows SCM event loop (service mode) or run the DNS
 //     server in the background and block until doStop completes the ordered
@@ -52,15 +52,18 @@ import (
 	"github.com/lcsabi/s-hole/internal/cache"
 	"github.com/lcsabi/s-hole/internal/config"
 	"github.com/lcsabi/s-hole/internal/dnsserver"
+	"github.com/lcsabi/s-hole/internal/logging"
 	"github.com/lcsabi/s-hole/internal/querylog"
 	"github.com/lcsabi/s-hole/internal/service"
 	"github.com/lcsabi/s-hole/internal/stats"
 	"github.com/lcsabi/s-hole/internal/version"
 )
 
-// setupLogger installs the default slog handler. Format is text on a TTY
-// for human readability; switch to JSON via S_HOLE_LOG_FORMAT=json for
-// production / container deployments.
+// setupLogger installs the default slog handler. Format is text by default;
+// switch to JSON via S_HOLE_LOG_FORMAT=json for container and log-aggregation
+// deployments. Under systemd, stdout is the journal, so each line carries its
+// syslog priority and text lines drop the time field (see
+// logging.NewStdoutHandler).
 //
 // Under the Windows SCM the process has no console, so a stdout-bound handler
 // is discarded and every startup error, refresh failure, and audit line is
@@ -77,14 +80,8 @@ func setupLogger() {
 			return
 		}
 	}
-	var h slog.Handler
-	opts := &slog.HandlerOptions{Level: slog.LevelInfo}
-	if os.Getenv("S_HOLE_LOG_FORMAT") == "json" {
-		h = slog.NewJSONHandler(os.Stdout, opts)
-	} else {
-		h = slog.NewTextHandler(os.Stdout, opts)
-	}
-	slog.SetDefault(slog.New(h))
+	json := os.Getenv("S_HOLE_LOG_FORMAT") == "json"
+	slog.SetDefault(slog.New(logging.NewStdoutHandler(os.Stdout, json, logging.StdoutIsJournal())))
 }
 
 func main() {
@@ -115,29 +112,29 @@ func main() {
 	case "install":
 		absConfig, err := filepath.Abs(*cfgPath)
 		if err != nil {
-			mainLog.Error("config path", "err", err)
+			mainLog.Error("config path cannot be resolved", "err", err)
 			os.Exit(1)
 		}
 		if err := service.Install(absConfig); err != nil {
-			mainLog.Error("install", "err", err)
+			mainLog.Error("service install failed", "err", err)
 			os.Exit(1)
 		}
 		return
 	case "uninstall":
 		if err := service.Uninstall(); err != nil {
-			mainLog.Error("uninstall", "err", err)
+			mainLog.Error("service uninstall failed", "err", err)
 			os.Exit(1)
 		}
 		return
 	case "start":
 		if err := service.Start(); err != nil {
-			mainLog.Error("start", "err", err)
+			mainLog.Error("service start failed", "err", err)
 			os.Exit(1)
 		}
 		return
 	case "stop":
 		if err := service.Stop(); err != nil {
-			mainLog.Error("stop", "err", err)
+			mainLog.Error("service stop failed", "err", err)
 			os.Exit(1)
 		}
 		return
@@ -161,7 +158,7 @@ func main() {
 
 	cfg, refreshInterval, statsInterval, dbFlushInterval, err := config.LoadAndValidate(*cfgPath)
 	if err != nil {
-		mainLog.Error("config", "err", err)
+		mainLog.Error("config load failed", "err", err)
 		os.Exit(1)
 	}
 
@@ -189,8 +186,8 @@ func main() {
 	store := blocklist.NewStore()
 	store.SetWhitelist(cfg.Whitelist)
 
-	if err := blocklist.Update(store, cfg.Blocklists, cfg.CacheDir); err != nil {
-		mainLog.Warn("initial blocklist update", "err", err)
+	if err := blocklist.Update(store, cfg.Blocklists, cfg.CacheDir, blocklist.CacheFirst); err != nil {
+		mainLog.Warn("initial blocklist load failed", "err", err)
 	}
 
 	counter := stats.New()
@@ -201,7 +198,8 @@ func main() {
 	if cfg.QueryDB != "" {
 		db, err = querylog.NewDBLogger(cfg.QueryDB, cfg.LogQueries, dbFlushInterval, cfg.QueryDBRetentionDays)
 		if err != nil {
-			mainLog.Warn("SQLite logger disabled", "err", err)
+			mainLog.Warn("query log database open failed", "err", err,
+				"hint", "the dashboard history and recent queries stay empty. Check query_db")
 		} else {
 			mainLog.Info("query log database opened", "path", cfg.QueryDB)
 		}
@@ -220,29 +218,34 @@ func main() {
 		dnsServer.EnableDoT(dotLn)
 	}
 
-	// reloadMu single-flights reloads across the periodic timer, POST
+	// runCtx is the application-wide lifecycle context. doStop cancels
+	// it before tearing down subsystems so the background tickers exit
+	// promptly instead of running until os.Exit, and so a queued reload
+	// does not start a new pass during shutdown.
+	runCtx, runCancel := context.WithCancel(context.Background())
+
+	// reloadFn single-flights reloads across the periodic timer, POST
 	// /api/reload, and SIGHUP. A reload re-reads the DoT certificate (when DoT
 	// is on) and then refreshes the blocklists. Two concurrent goroutines
 	// downloading to the same cache files would race on file writes.
 	//
 	// reloadFn returns synchronously: true means the reload started, false
-	// means a prior reload is still running. The actual download work runs
-	// in a background goroutine so callers (including the HTTP handler)
-	// return quickly.
+	// means a reload is already running and this request is queued behind it
+	// (b/061). The actual download work runs in a background goroutine so
+	// callers (including the HTTP handler) return quickly.
 	//
 	// reloadWG lets doStop wait for any in-flight refresh to complete (or
 	// be cancelled by deadline) before the process exits; otherwise the
 	// goroutine could be killed mid-rename and leave a half-written
 	// cache .tmp file behind.
-	var reloadMu sync.Mutex
 	var reloadWG sync.WaitGroup
 	var certs certReloader
 	if dotCerts != nil {
 		certs = dotCerts
 	}
-	reloadFn := newReloadFn(&reloadMu, &reloadWG, reloadWork(mainLog, certs, func() {
+	reloadFn := newReloadFn(runCtx, mainLog, &reloadWG, reloadWork(mainLog, certs, func() {
 		mainLog.Info("refreshing blocklists")
-		if err := blocklist.Update(store, cfg.Blocklists, cfg.CacheDir); err != nil {
+		if err := blocklist.Update(store, cfg.Blocklists, cfg.CacheDir, blocklist.DownloadFirst); err != nil {
 			mainLog.Warn("blocklist refresh failed", "err", err)
 		}
 	}))
@@ -287,7 +290,7 @@ func main() {
 		apiUp = true
 		go func() {
 			if err := apiServer.Serve(apiLn); err != nil {
-				mainLog.Error("api server", "err", err)
+				mainLog.Error("admin UI server failed", "err", err)
 			}
 		}()
 	}
@@ -300,11 +303,7 @@ func main() {
 	apiHost, apiPort, _ := net.SplitHostPort(cfg.APIListen)
 	printNetworkHint(dnsPort, dotPort, apiHost, apiPort, apiUp)
 
-	// runCtx is the application-wide lifecycle context. doStop cancels
-	// it before tearing down subsystems so the background tickers exit
-	// promptly instead of running until os.Exit.
-	runCtx, runCancel := context.WithCancel(context.Background())
-	go runTicker(runCtx, statsInterval, counter.Print)
+	go runTicker(runCtx, statsInterval, counter.Log)
 	go runTicker(runCtx, refreshInterval, func() {
 		mainLog.Info("reload requested via timer")
 		reloadFn()
@@ -327,7 +326,7 @@ func main() {
 		stopOnce.Do(func() {
 			shutdown(mainLog, 5*time.Second, shutdownDeps{
 				cancelTickers: runCancel,
-				printStats:    counter.Print,
+				logStats:      counter.Log,
 				stopDNS:       dnsServer.Shutdown,
 				drainHTTP:     apiServer.Shutdown,
 				waitForReload: func(ctx context.Context) {
@@ -381,7 +380,7 @@ func main() {
 				mainLog.Warn("dns server stopped", "err", err)
 			}
 		}, doStop); err != nil {
-			mainLog.Error("service", "err", err)
+			mainLog.Error("windows service failed", "err", err)
 			os.Exit(1)
 		}
 		return
@@ -410,7 +409,7 @@ func blockUntilStopped(start func() error, done <-chan struct{}) int {
 	}()
 	select {
 	case err := <-serveErr:
-		slog.With("pkg", "main").Error("dns server", "err", err)
+		slog.With("pkg", "main").Error("dns server failed", "err", err)
 		return 1
 	case <-done:
 		return 0
@@ -590,7 +589,7 @@ func buildMultiLogger(fl *querylog.FileLogger, db *querylog.DBLogger) dnsserver.
 }
 
 // runTicker invokes fn on a fixed interval until ctx is cancelled. Used
-// for the stats printer and the periodic blocklist refresh. doStop
+// for the stats log line and the periodic reload. doStop
 // cancels the application-wide context before tearing down dependent
 // subsystems so these tickers exit cleanly. Without that, the goroutines
 // would have to be reclaimed implicitly by os.Exit, which is fragile if
@@ -618,7 +617,7 @@ func runTickerOnce(fn func()) {
 			// Include the full stack so a panic that fires in the field
 			// is diagnosable from the log stream alone. Without one,
 			// recover() swallows the only signal.
-			slog.Error("ticker fn panic recovered",
+			slog.With("pkg", "main").Error("ticker fn panic recovered",
 				"panic", r,
 				"stack", string(debug.Stack()))
 		}
@@ -647,7 +646,7 @@ func waitWithDeadline(ctx context.Context, wg *sync.WaitGroup, log *slog.Logger,
 func runCheckConfig(log *slog.Logger, path string) int {
 	cfg, _, _, _, err := config.LoadAndValidate(path)
 	if err != nil {
-		log.Error("config", "err", err)
+		log.Error("config load failed", "err", err)
 		return 1
 	}
 	if cfg.DoTListen != "" {
@@ -695,33 +694,60 @@ func warnCertExpiry(log *slog.Logger, certs certReloader) {
 }
 
 // newReloadFn builds the single-flight reload closure shared by the
-// periodic timer, POST /api/reload, and SIGHUP. It returns true if it acquired
-// the lock and started work (asynchronously, so callers return at once), or
-// false if a reload is already running. The shared mutex stops the three
-// callers from launching concurrent downloads that would race on the cache
-// files. Keeping the lock in this one closure, not in api.Server, is what
-// prevents the periodic timer from bypassing the gate (b/022).
+// periodic timer, POST /api/reload, and SIGHUP. It returns true if no reload
+// was running and it started one (asynchronously, so callers return at once).
+// It returns false if a reload is already running; the request is then queued,
+// and the running reload does one more pass when it finishes. Any number of
+// requests during one pass queue a single follow-up pass.
+//
+// Only one pass runs at a time, so the three callers never launch concurrent
+// downloads that would race on the cache files. Keeping this state in one
+// closure, not in api.Server, is what prevents the periodic timer from
+// bypassing the gate (b/022). The queue exists because a request that arrives
+// mid-pass may need work that the pass already did: a certbot deploy hook
+// that runs `systemctl reload` during a blocklist download installed the new
+// certificate after the pass read the old one. A dropped request left the old
+// certificate served until the next timer reload (b/061).
+//
+// Once ctx is cancelled (shutdown has started), a queued pass is dropped, so
+// the bounded reload wait in shutdown covers at most the pass in flight.
 //
 // wg lets doStop wait for an in-flight refresh to finish its os.Rename before
 // the process exits, so a refresh is never killed mid-write.
-func newReloadFn(mu *sync.Mutex, wg *sync.WaitGroup, work func()) func() bool {
+func newReloadFn(ctx context.Context, log *slog.Logger, wg *sync.WaitGroup, work func()) func() bool {
+	var mu sync.Mutex // guards running and queued
+	var running, queued bool
 	return func() bool {
-		if !mu.TryLock() {
+		mu.Lock()
+		defer mu.Unlock()
+		if running {
+			if !queued {
+				log.Info("reload queued until the running reload ends")
+			}
+			queued = true
 			return false
 		}
+		running = true
 		wg.Add(1)
 		go func() {
-			// Explicit, ordered cleanup: release the lock first so a
-			// subsequent caller is not gated on us, then signal Done so
-			// doStop's wg.Wait() returns only after the mutex is already
-			// free. Two separate defers would fire in LIFO order, which
-			// puts Done before Unlock and confuses readers who expect
-			// "release resources in reverse acquisition order."
-			defer func() {
+			defer wg.Done()
+			for {
+				work()
+				// Check and clear the queue under the same lock that callers
+				// take, so a request that arrives after this check sees
+				// running == false and starts its own pass: none is lost.
+				mu.Lock()
+				again := queued && ctx.Err() == nil
+				queued = false
+				if !again {
+					running = false
+				}
 				mu.Unlock()
-				wg.Done()
-			}()
-			work()
+				if !again {
+					return
+				}
+				log.Info("queued reload started")
+			}
 		}()
 		return true
 	}
@@ -732,7 +758,7 @@ func newReloadFn(mu *sync.Mutex, wg *sync.WaitGroup, work func()) func() bool {
 // the sequence.
 type shutdownDeps struct {
 	cancelTickers func()                      // stop scheduling new refresh/stats work
-	printStats    func()                      // final stats line
+	logStats      func()                      // final stats line
 	stopDNS       func()                      // after this, no query touches the cache or loggers
 	drainHTTP     func(context.Context) error // drain in-flight admin requests
 	waitForReload func(context.Context)       // let an in-flight refresh finish its rename
@@ -754,7 +780,7 @@ type shutdownDeps struct {
 func shutdown(log *slog.Logger, timeout time.Duration, d shutdownDeps) {
 	log.Info("shutting down")
 	d.cancelTickers()
-	d.printStats()
+	d.logStats()
 	d.stopDNS()
 	// Separate timeout budgets. A shared context let a slow HTTP drain eat into
 	// the reload wait; the reload wait protects an in-flight refresh from being
@@ -762,7 +788,7 @@ func shutdown(log *slog.Logger, timeout time.Duration, d shutdownDeps) {
 	// how long the drain took.
 	hctx, hcancel := context.WithTimeout(context.Background(), timeout)
 	if err := d.drainHTTP(hctx); err != nil {
-		log.Warn("api shutdown", "err", err)
+		log.Warn("admin UI shutdown failed", "err", err)
 	}
 	hcancel()
 	rctx, rcancel := context.WithTimeout(context.Background(), timeout)
@@ -770,9 +796,9 @@ func shutdown(log *slog.Logger, timeout time.Duration, d shutdownDeps) {
 	rcancel()
 	d.closeCache()
 	if err := d.closeFileLog(); err != nil {
-		log.Warn("file log close", "err", err)
+		log.Warn("query file log close failed", "err", err)
 	}
 	if err := d.closeDB(); err != nil {
-		log.Warn("db close", "err", err)
+		log.Warn("query log database close failed", "err", err)
 	}
 }

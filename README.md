@@ -20,6 +20,7 @@ s-hole is intentionally small: a single binary, a single YAML config file, no ru
 - [Configuration](#configuration) (incl. [env-var overrides](#environment-variable-overrides) and [DNS over TLS](#dns-over-tls-android-private-dns))
 - [REST API](#rest-api)
 - [Deployment](#deployment): [Linux/Pi](#raspberry-pi--linux-systemd), [Docker](#docker), [Windows](#windows-system-service)
+- [Troubleshooting](docs/TROUBLESHOOTING.md): which log lines to look for when something does not work
 - [Building from Source](#building-from-source)
 - [Engineering highlights](#engineering-highlights): the code and the process
 - [Architecture](#architecture)
@@ -119,7 +120,7 @@ sudo ./s-hole -config config.yaml          # Linux / macOS
 .\s-hole.exe -config config.yaml           # Windows (Administrator)
 ```
 
-On first run, s-hole downloads the blocklists (~80 000 domains with the default lists, and the exact count shifts as the upstream lists evolve) and caches them to disk. Later starts skip the download when the cache is less than 24 hours old.
+On first run, s-hole downloads the blocklists (~80 000 domains with the default lists, and the exact count shifts as the upstream lists evolve) and caches them to disk. Later starts skip the download when the cache is less than 24 hours old. Every reload (the `refresh_interval` timer, the dashboard's Reload button, `POST /api/reload`, SIGHUP) downloads again.
 
 Each source download is capped at 256 MiB. Real blocklists are far smaller, so hitting the cap means a wrong URL or a broken source. If a source exceeds the cap, s-hole logs a WARN, keeps serving the previous cached copy of that source (marked stale), and does not replace it with the truncated download.
 
@@ -196,7 +197,7 @@ All configuration lives in `config.yaml`. Every field has a safe default. An emp
 | `query_db` | _(off)_ | Path to the SQLite query log database; set a path to enable, empty disables it |
 | `db_flush_interval` | `30s` | How often buffered queries are committed to SQLite |
 | `cache_size` | `2000` | Maximum DNS responses held in the in-memory cache (0 to disable) |
-| `stats_interval` | `5m` | How often stats are printed to stdout |
+| `stats_interval` | `5m` | How often s-hole logs the `msg=stats` counters line |
 | `api_listen` | `127.0.0.1:8080` | Address for the admin web UI and REST API. Set to `0.0.0.0:8080` to expose to the LAN. |
 | `cache_dir` | `.` | Directory for cached blocklist files |
 | `query_db_retention_days` | `0` (forever) | Delete query-log rows older than this many days. `0` disables the prune. |
@@ -238,7 +239,7 @@ For container deployments where editing `config.yaml` requires a re-bind-mount, 
 | `S_HOLE_RETENTION_DAYS` | `query_db_retention_days` (integer) |
 | `S_HOLE_ENABLE_PPROF` | `enable_pprof` (`1`/`true`/`yes` enable, case-insensitive) |
 | `S_HOLE_LOCAL_PTR` | `local_ptr` (`1`/`true`/`yes` keep on; `0`/`false`/`no` opt out; case-insensitive) |
-| `S_HOLE_LOG_FORMAT` | Slog handler format: `text` (default) or `json` |
+| `S_HOLE_LOG_FORMAT` | Log format: `text` (default) or `json`. Under systemd, each line also starts with its syslog priority, and text lines have no `time=` field, because journald records the time |
 | `S_HOLE_ASCII_BANNER` | set to `1` to use ASCII box-drawing on the startup banner |
 
 ### Recommended config for Raspberry Pi
@@ -397,7 +398,7 @@ The admin web UI is served at **`http://127.0.0.1:8080`** by default. This is lo
 | `GET` | `/api/whitelist` | List all runtime-whitelisted domains |
 | `POST` | `/api/whitelist` | Add a domain. Body: `{"domain": "example.com"}` |
 | `DELETE` | `/api/whitelist?domain=…` | Remove a domain from the runtime whitelist |
-| `POST` | `/api/reload` | Trigger an immediate reload: re-read the DoT certificate (when DoT is on), then refresh the blocklists. De-duplicated via a single-flight mutex; returns `"reload already in progress"` if one is already running |
+| `POST` | `/api/reload` | Trigger an immediate reload: re-read the DoT certificate (when DoT is on), then refresh the blocklists. Single-flight: if a reload is already running, returns `"reload queued"`, and one more reload runs when the current one finishes |
 | `GET`  | `/healthz` | Liveness probe. Always 200 OK while the HTTP server is responsive |
 | `GET`  | `/readyz` | Readiness probe. 200 OK once the blocklist has loaded at least one entry, 503 otherwise |
 | `GET`  | `/metrics` | Prometheus text exposition of the `shole_*` series: query, cache, blocklist, upstream-failure, DoT certificate (when DoT is on), and Go-runtime metrics. See the [Metrics reference](docs/DESIGN.md#metrics-reference) for the full list. |
@@ -452,7 +453,10 @@ sudo systemctl restart s-hole    # restart (for example after editing config)
 sudo systemctl disable s-hole    # don't start on boot
 sudo systemctl enable s-hole     # re-enable autostart
 journalctl -u s-hole -f          # follow logs live
+journalctl -u s-hole -p warning  # show only warnings and errors
 ```
+
+If s-hole does not work as you expect, read [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). It lists the log lines for the common problems and what to do for each.
 
 To trigger an immediate reload without restarting (Linux/macOS):
 
@@ -795,6 +799,7 @@ All implementation packages live under `internal/` so they cannot be imported by
 | `internal/dnsserver` | UDP/TCP server and the optional DNS-over-TLS listener (certificate reload and status), per-query handler, upstream forwarding with health tracking |
 | `internal/querylog` | Async file and SQLite query loggers |
 | `internal/stats` | Atomic counters; top-N domain/client tracking |
+| `internal/logging` | Package loggers (`pkg=` field) and the stdout handler, with syslog priorities under systemd |
 | `internal/api` | HTTP handlers and embedded web UI |
 | `internal/config` | YAML loading with defaults and validation |
 | `internal/service` | Windows Service integration (build-tagged) |
@@ -837,6 +842,7 @@ Coverage targets (checked in review, not a strict CI gate; run
 | Package | Target |
 |---|---|
 | `internal/stats`, `internal/config`, `internal/version` | 100 % |
+| `internal/logging` | ≥ 95 % |
 | `internal/cache` | ≥ 94 % |
 | `internal/api`, `internal/blocklist`, `internal/dnsserver`, `internal/querylog` | ≥ 85 % |
 

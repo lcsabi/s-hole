@@ -96,6 +96,7 @@ journalctl -u s-hole -b -p err
 |---|---|---|
 | `msg="config load failed"` | The config file has an error. `err` names the setting. A DoT certificate that does not load also shows here, with `tls_cert/tls_key` in `err`. | Correct the setting. To check the file before a restart, run `s-hole -check-config -config /etc/s-hole/config.yaml`. |
 | `msg="dns listen failed"` with `address already in use` | Another program uses port 53. On many Linux systems, this is the `systemd-resolved` stub. | To find the program, run `sudo ss -lunp 'sport = :53'`. If the program is `systemd-resolved`, run the installer with `--free-port-53` to free the port. |
+| `msg="dns listen failed"` with `permission denied` | s-hole cannot open a port below 1024 without root or the `CAP_NET_BIND_SERVICE` capability. | Run s-hole through the systemd unit that the installer writes, or set `listen` to a port above 1024. |
 | `msg="DoT listener failed"` | `dot_listen` is set, but s-hole cannot open the DoT port. | Read `err` and `hint`. Look for another program on port 853, or correct `dot_listen`. |
 
 If the start fails, systemd tries again every 5 seconds. `systemctl status
@@ -107,12 +108,18 @@ s-hole` then shows `activating (auto-restart)`.
 journalctl -u s-hole -p err
 ```
 
+In Docker or on Windows, read the log as [Read the log](#read-the-log) shows.
+
 `msg="dns server failed"` means that a DNS listener stopped with an error
 after startup. s-hole then stops in order and exits with an error. systemd
-starts it again after 5 seconds. A Windows service also starts again after 5
-seconds, if its recovery actions are set. The README section "Windows
-(system service)" tells how to set them. Read `err`. If the error comes back after each start, correct its
-cause. If the error does not come back, the restart corrected the problem.
+starts it again after 5 seconds. Docker starts it again if the container has a
+restart policy, such as `--restart unless-stopped`. If its recovery actions
+are set, a Windows service also starts again after 5 seconds.
+[Windows (system service)](../README.md#windows-system-service) in the README
+tells how to set them.
+
+Read `err`. If the error comes back after each start, correct its cause. If
+the error does not come back, the restart corrected the problem.
 
 ## Nothing is blocked
 

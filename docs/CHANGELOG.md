@@ -60,7 +60,8 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   `dns server stopped` is now the ERROR `dns server failed`. (CL 90, b/063)
 - **The Windows service restarts after a failure.** `-service install` sets
   three restart actions, 5 seconds apart. An existing service does not get
-  them: run `-service uninstall`, then `-service install`. (CL 90, b/065)
+  them. To add them, run the two `sc.exe` commands in the README section
+  "Windows (system service)". (CL 90, b/065)
 - **The uninstaller lists extra files in `/etc/s-hole`.** Before it deletes the
   directory, its prompt names every entry there other than `config.yaml` (such as
   a DoT certificate and key), and its summary counts them. (CL 86)

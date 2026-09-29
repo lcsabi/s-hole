@@ -643,7 +643,14 @@ Run once as Administrator to register s-hole as an auto-start Windows Service:
 
 The service can also be managed through the standard Windows Services panel (`services.msc`) or `sc.exe`.
 
-`-service install` sets the service to restart 5 seconds after a failure, like `Restart=on-failure` in the systemd unit. A failure is a crash, or a DNS listener that stops with an error while s-hole runs. If you installed the service with an older version, it does not have these restart actions. To add them, run `-service uninstall`, then `-service install` again. To see them, run `sc.exe qfailure s-hole`.
+`-service install` sets the service to restart 5 seconds after a failure, like `Restart=on-failure` in the systemd unit. A failure is a crash, or a DNS listener that stops with an error while s-hole runs. If you installed the service with an older version, it does not have these restart actions. To add them without a reinstall, run these two commands as Administrator:
+
+```powershell
+sc.exe failure s-hole reset= 86400 actions= restart/5000/restart/5000/restart/5000
+sc.exe failureflag s-hole 1
+```
+
+To see the actions, run `sc.exe qfailure s-hole`.
 
 Windows has no SIGHUP. To reload the blocklists, or a renewed DNS-over-TLS certificate, use the dashboard reload button or `POST /api/reload`.
 

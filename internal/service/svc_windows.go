@@ -68,14 +68,21 @@ func (h *handler) Execute(_ []string, r <-chan svc.ChangeRequest, s chan<- svc.S
 				s <- svc.Status{State: svc.Stopped}
 				return false, 0
 			}
-		case <-served:
-			// The DNS server stopped without a stop request, so the service
-			// answers no queries. Before, the service still reported Running
-			// (b/065). Run the teardown, then return a failure code: svc.Run
-			// reports Stopped with it, and the SCM restarts the service
-			// through the recovery actions that Install sets.
+		case err := <-served:
+			// The DNS server stopped without an SCM stop request, so the
+			// service answers no queries. Before, the service still reported
+			// Running (b/065). Run the teardown (a no-op if it already ran).
 			s <- svc.Status{State: svc.StopPending}
 			h.stop()
+			if err == nil {
+				// Only Shutdown makes Start return nil, so doStop already ran
+				// outside the SCM loop: Go can deliver a Windows shutdown
+				// event to main's signal handler as SIGTERM. A clean stop.
+				return false, 0
+			}
+			// Return a failure code: svc.Run reports Stopped with it, and the
+			// SCM restarts the service through the recovery actions that
+			// Install sets.
 			return true, exitServeFailed
 		}
 	}

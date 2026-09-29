@@ -172,7 +172,7 @@ func main() {
 	dnsPC, dnsLn, err := dnsserver.Listen(cfg.Listen)
 	if err != nil {
 		mainLog.Error("dns listen failed", "listen", cfg.Listen, "err", err,
-			"hint", "another program uses the port, often the systemd-resolved stub on port 53. Stop it or change listen")
+			"hint", "check for another program on the port (often the systemd-resolved stub on port 53), or fix listen")
 		os.Exit(1)
 	}
 	var dotCerts *dnsserver.CertReloader
@@ -381,7 +381,9 @@ func main() {
 
 	// When launched by the Windows SCM, enter the service event loop instead
 	// of blocking directly on the DNS server. The SCM stop control calls doStop,
-	// which runs the same ordered teardown as the interactive path.
+	// which runs the same ordered teardown as the interactive path. If the DNS
+	// server fails first, Execute also calls doStop and reports a failure exit
+	// code, so the SCM recovery actions restart the service (b/065).
 	if service.IsWindowsService() {
 		if err := service.Run(func() error {
 			err := dnsServer.Start()
@@ -423,7 +425,7 @@ func blockUntilStopped(start func() error, stop func(), done <-chan struct{}) in
 	select {
 	case err := <-serveErr:
 		slog.With("pkg", "main").Error("dns server failed", "err", err,
-			"hint", "s-hole stops and exits with an error, so systemd can restart it")
+			"hint", "read err. If it comes back after each restart, fix its cause")
 		stop()
 		<-done
 		return 1

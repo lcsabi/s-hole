@@ -49,6 +49,24 @@ func TestHandleStats_DoTOffReportsDisabled(t *testing.T) {
 	}
 }
 
+// getDoT fetches /api/stats and returns its "dot" object as a raw map. The
+// tests read the wire keys by their literal names and not through the
+// production dotResponse type, so a renamed JSON tag fails them (the
+// dashboard reads these keys by name).
+func getDoT(t *testing.T, st *DoTStatus) map[string]any {
+	t.Helper()
+	var got struct {
+		DoT map[string]any `json:"dot"`
+	}
+	if err := json.Unmarshal([]byte(getBody(t, dotTestServer(t, st).URL+"/api/stats")), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.DoT == nil {
+		t.Fatal(`/api/stats has no "dot" object`)
+	}
+	return got.DoT
+}
+
 func TestHandleStats_DoTOnReportsCertificate(t *testing.T) {
 	// The dashboard badge reads these fields. expires_in_days is computed on
 	// the server, so the browser clock does not matter.
@@ -61,43 +79,51 @@ func TestHandleStats_DoTOnReportsCertificate(t *testing.T) {
 		LastReload:      time.Date(2026, 9, 23, 8, 0, 0, 0, time.UTC),
 		LastReloadError: "",
 	}
-	var got struct {
-		DoT dotResponse `json:"dot"`
+	d := getDoT(t, st)
+	if d["enabled"] != true {
+		t.Errorf("enabled = %v, want true", d["enabled"])
 	}
-	if err := json.Unmarshal([]byte(getBody(t, dotTestServer(t, st).URL+"/api/stats")), &got); err != nil {
-		t.Fatal(err)
+	if d["listen"] != ":853" {
+		t.Errorf("listen = %v, want :853", d["listen"])
 	}
-	d := got.DoT
-	if !d.Enabled || d.Listen != ":853" || d.State != "expiring" {
-		t.Errorf("dot = %+v, want enabled, :853, expiring", d)
+	if d["state"] != "expiring" {
+		t.Errorf("state = %v, want expiring", d["state"])
 	}
-	if len(d.Names) != 2 || d.Names[0] != "dns.home" {
-		t.Errorf("names = %v, want [dns.home 192.168.1.10]", d.Names)
+	names, ok := d["names"].([]any)
+	if !ok || len(names) != 2 || names[0] != "dns.home" || names[1] != "192.168.1.10" {
+		t.Errorf("names = %v, want [dns.home 192.168.1.10]", d["names"])
 	}
-	if d.ExpiresInDays == nil || *d.ExpiresInDays != 10 {
-		t.Errorf("expires_in_days = %v, want 10", d.ExpiresInDays)
+	// encoding/json decodes a JSON number into float64.
+	if days, ok := d["expires_in_days"].(float64); !ok || days != 10 {
+		t.Errorf("expires_in_days = %v, want 10", d["expires_in_days"])
 	}
-	if d.NotAfter != notAfter.UTC().Format(time.RFC3339) {
-		t.Errorf("not_after = %q, want RFC3339 UTC of the expiry", d.NotAfter)
+	if d["not_after"] != notAfter.UTC().Format(time.RFC3339) {
+		t.Errorf("not_after = %v, want RFC3339 UTC of the expiry", d["not_after"])
 	}
-	if d.LastReload != "2026-09-23T08:00:00Z" {
-		t.Errorf("last_reload = %q, want 2026-09-23T08:00:00Z", d.LastReload)
+	if d["last_reload"] != "2026-09-23T08:00:00Z" {
+		t.Errorf("last_reload = %v, want 2026-09-23T08:00:00Z", d["last_reload"])
+	}
+	// No reload error: the key is absent or empty, so the dashboard shows no
+	// error line.
+	if v, present := d["last_reload_error"]; present && v != "" {
+		t.Errorf("last_reload_error = %v, want absent or empty", v)
 	}
 }
 
 func TestHandleStats_DoTExpiredHasNegativeDays(t *testing.T) {
 	st := &DoTStatus{NotAfter: time.Now().Add(-49 * time.Hour), State: "expired", LastReloadError: "tls: bad pem"}
-	var got struct {
-		DoT dotResponse `json:"dot"`
+	d := getDoT(t, st)
+	if days, ok := d["expires_in_days"].(float64); !ok || days != -3 {
+		t.Errorf("expires_in_days = %v, want -3 (floor of -2.04 days)", d["expires_in_days"])
 	}
-	if err := json.Unmarshal([]byte(getBody(t, dotTestServer(t, st).URL+"/api/stats")), &got); err != nil {
-		t.Fatal(err)
+	if d["state"] != "expired" {
+		t.Errorf("state = %v, want expired", d["state"])
 	}
-	if got.DoT.ExpiresInDays == nil || *got.DoT.ExpiresInDays != -3 {
-		t.Errorf("expires_in_days = %v, want -3 (floor of -2.04 days)", got.DoT.ExpiresInDays)
+	if d["last_reload_error"] != "tls: bad pem" {
+		t.Errorf("last_reload_error = %v, want the error echoed", d["last_reload_error"])
 	}
-	if got.DoT.LastReloadError != "tls: bad pem" || got.DoT.LastReload != "" {
-		t.Errorf("dot = %+v, want the error echoed and no last_reload", got.DoT)
+	if v, present := d["last_reload"]; present && v != "" {
+		t.Errorf("last_reload = %v, want absent or empty for a zero time", v)
 	}
 }
 

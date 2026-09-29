@@ -50,6 +50,18 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   entry keeps a fallback. The DoH host must be an IP, not a hostname. (CL 85)
 
 ### Changed
+- **A port conflict on the DNS port stops startup with `dns listen failed`.**
+  s-hole now binds UDP and TCP right after it reads the config, before it
+  loads the blocklists. Before, the conflict showed later, as `dns server
+  failed`. `dns server failed` now means that a listener failed while
+  s-hole ran. The three `udp listener shutdown`, `tcp listener shutdown`,
+  and `dot listener shutdown` warnings are now one message, `dns listener
+  shutdown failed`, with a `net` field. Under the Windows service, the WARN
+  `dns server stopped` is now the ERROR `dns server failed`. (CL 90, b/063)
+- **The Windows service restarts after a failure.** `-service install` sets
+  three restart actions, 5 seconds apart. An existing service does not get
+  them. To add them, run the two `sc.exe` commands in the README section
+  "Windows (system service)". (CL 90, b/065)
 - **The uninstaller lists extra files in `/etc/s-hole`.** Before it deletes the
   directory, its prompt names every entry there other than `config.yaml` (such as
   a DoT certificate and key), and its summary counts them. (CL 86)
@@ -104,6 +116,18 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   (CL 89)
 
 ### Fixed
+- **The Windows service no longer shows Running when it answers nothing.**
+  If the DNS server stopped with an error, the service kept reporting
+  Running and nothing restarted it. Now it stops with an error code, and
+  the restart actions that `-service install` sets start it again. (CL 90,
+  b/065)
+- **A DNS listener that fails while s-hole runs no longer skips the
+  shutdown.** s-hole exited at once, so the query log lost its last entries.
+  Now it stops in order, then exits with an error, and systemd restarts it.
+  (CL 90, b/064)
+- **A stop right after the start no longer leaves the DNS port open.** If
+  s-hole stopped before its UDP or TCP server had started, that server kept
+  the port and served until the process exited. (CL 90, b/063)
 - **Warnings and errors from most of s-hole were logged as INFO.** Lines from
   the `api`, `blocklist`, `config`, `dns`, and `querylog` parts had the whole
   line inside `msg` and the level INFO, for example `level=INFO msg="WARN

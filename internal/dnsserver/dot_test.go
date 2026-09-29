@@ -84,10 +84,7 @@ func writePEM(t *testing.T, path, blockType string, der []byte) {
 // checks that Start returned cleanly.
 func startDoTServer(t *testing.T, certs *CertReloader) (dotAddr string, counter *stats.Counter) {
 	t.Helper()
-	addr, err := pickFreePort(t)
-	if err != nil {
-		t.Fatalf("pickFreePort: %v", err)
-	}
+	addr, pc, ln := pickFreePort(t)
 	dotLn, err := ListenDoT("127.0.0.1:0", certs)
 	if err != nil {
 		t.Fatalf("ListenDoT: %v", err)
@@ -98,7 +95,7 @@ func startDoTServer(t *testing.T, certs *CertReloader) (dotAddr string, counter 
 	counter = stats.New()
 	h := NewHandler(store, counter, nil, nullLogger{}, "zero", 60, nil, false, "raw")
 
-	srv := NewServer(addr, h)
+	srv := NewServer(pc, ln, h)
 	srv.EnableDoT(dotLn)
 	startErr := make(chan error, 1)
 	go func() { startErr <- srv.Start() }()
@@ -169,6 +166,14 @@ func TestDoT_UntrustedClientFailsHandshake(t *testing.T) {
 	_, _, err = dotClient(x509.NewCertPool()).Exchange(buildReq("ads.example.com"), dotAddr)
 	if err == nil {
 		t.Fatal("exchange succeeded with an untrusted certificate, want a handshake error")
+	}
+	// The failure must be the certificate check. Any other error (a listener
+	// that does not speak TLS, a closed port) would also fail the exchange,
+	// but it would not prove the client rejected the issuer.
+	var unknown x509.UnknownAuthorityError
+	var verify *tls.CertificateVerificationError
+	if !errors.As(err, &unknown) && !errors.As(err, &verify) {
+		t.Errorf("exchange error = %v (%T), want a certificate verification failure", err, err)
 	}
 }
 
@@ -306,43 +311,48 @@ func TestListenDoT_BindErrorIsReturned(t *testing.T) {
 }
 
 func TestServer_DoTShutdownBeforeStartClosesListener(t *testing.T) {
-	// The DoT listener is bound before Start. If Shutdown runs first, the
-	// port must still be released; dns.Server.Shutdown alone closes the
-	// listener only when the server has started.
+	// b/063: every listener is bound before Start. If Shutdown runs first,
+	// every port must still be released; dns.Server.Shutdown alone closes a
+	// socket only when the server has started. A later Start returns nil.
 	certFile, keyFile, _ := writeTestCert(t, t.TempDir(), 1, time.Now().Add(time.Hour))
 	certs, err := NewCertReloader(certFile, keyFile)
 	if err != nil {
 		t.Fatalf("NewCertReloader: %v", err)
 	}
-	ln, err := ListenDoT("127.0.0.1:0", certs)
+	dotLn, err := ListenDoT("127.0.0.1:0", certs)
 	if err != nil {
 		t.Fatalf("ListenDoT: %v", err)
 	}
-	addr := ln.Addr().String()
+	dotAddr := dotLn.Addr().String()
+	addr, pc, ln := pickFreePort(t)
 
 	h := dns.HandlerFunc(func(w dns.ResponseWriter, _ *dns.Msg) {})
-	s := NewServer("127.0.0.1:5302", h)
-	s.EnableDoT(ln)
+	s := NewServer(pc, ln, h)
+	s.EnableDoT(dotLn)
 	s.Shutdown()
 
-	rebind, err := net.Listen("tcp", addr)
-	if err != nil {
-		t.Fatalf("DoT port still bound after Shutdown: %v", err)
+	assertTCPFree(t, dotAddr)
+	assertPortsFree(t, addr)
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- s.Start() }()
+	if err := waitStart(t, startErr); err != nil {
+		t.Errorf("Start after Shutdown = %v, want nil", err)
 	}
-	rebind.Close()
 }
 
 func TestServer_EnableDoTSharesHandler(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	dotLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer dotLn.Close()
+	_, pc, ln := pickFreePort(t)
 	// A pointer handler, because a dns.HandlerFunc is not comparable.
 	h := &Handler{}
-	s := NewServer("127.0.0.1:5303", h)
-	s.EnableDoT(ln)
-	if s.dot == nil || s.dot.Net != "tcp-tls" || s.dot.Listener != ln {
+	s := NewServer(pc, ln, h)
+	s.EnableDoT(dotLn)
+	if s.dot == nil || s.dot.Net != "tcp-tls" || s.dot.Listener != dotLn {
 		t.Fatalf("dot server = %+v, want tcp-tls on the given listener", s.dot)
 	}
 	if s.dot.Handler != dns.Handler(h) || s.dot.Handler != s.udp.Handler {
@@ -353,48 +363,128 @@ func TestServer_EnableDoTSharesHandler(t *testing.T) {
 	}
 }
 
-func TestServer_StartDrainsEveryListenerOnError(t *testing.T) {
-	// With the UDP port taken, Start fails fast. The TCP and DoT goroutines
-	// are still running; Start must drain all of their slots once Shutdown
-	// stops them, or goleak (TestMain) fails the package.
-	addr, err := pickFreePort(t)
-	if err != nil {
-		t.Fatalf("pickFreePort: %v", err)
-	}
-	busy, err := net.ListenPacket("udp", addr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer busy.Close()
-
-	certFile, keyFile, _ := writeTestCert(t, t.TempDir(), 1, time.Now().Add(time.Hour))
+// startDoTOnly runs a Server with a DoT listener and returns the DoT address
+// and a trusting pool. It is startDoTServer with a plain answer handler.
+func startDoTOnly(t *testing.T) (string, *x509.CertPool) {
+	t.Helper()
+	certFile, keyFile, pool := writeTestCert(t, t.TempDir(), 1, time.Now().Add(90*24*time.Hour))
 	certs, err := NewCertReloader(certFile, keyFile)
 	if err != nil {
 		t.Fatalf("NewCertReloader: %v", err)
 	}
-	ln, err := ListenDoT("127.0.0.1:0", certs)
-	if err != nil {
-		t.Fatalf("ListenDoT: %v", err)
+	dotAddr, _ := startDoTServer(t, certs)
+	return dotAddr, pool
+}
+
+// serverClosesWithin reads from conn until the server closes it or limit
+// passes. It returns how long the close took, or fails the test when the
+// connection is still open at limit.
+func serverClosesWithin(t *testing.T, conn net.Conn, limit time.Duration) time.Duration {
+	t.Helper()
+	begin := time.Now()
+	if err := conn.SetReadDeadline(begin.Add(limit)); err != nil {
+		t.Fatal(err)
 	}
-
-	h := dns.HandlerFunc(func(w dns.ResponseWriter, _ *dns.Msg) {})
-	s := NewServer(addr, h)
-	s.EnableDoT(ln)
-
-	startErr := make(chan error, 1)
-	go func() { startErr <- s.Start() }()
-	select {
-	case err := <-startErr:
-		if err == nil || !strings.Contains(err.Error(), "dns:") {
-			t.Errorf("Start = %v, want a dns: bind error", err)
+	buf := make([]byte, 512)
+	for {
+		_, err := conn.Read(buf)
+		if err == nil {
+			continue // data (a TLS session ticket, for example); keep reading
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Start did not return after the UDP bind failed")
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			t.Fatalf("server did not close the connection within %v", limit)
+		}
+		return time.Since(begin)
 	}
-	// Give the TCP listener a moment to bind before stopping it, so Shutdown
-	// finds it started; either way every goroutine must exit.
-	time.Sleep(50 * time.Millisecond)
-	s.Shutdown()
+}
+
+func TestDoT_SilentTCPClientIsDisconnected(t *testing.T) {
+	// A client that opens TCP and sends nothing (no TLS ClientHello) must not
+	// hold one of the maxDoTConns slots. dotReadTimeout (2 s) covers the
+	// handshake, so the server closes the connection well within 5 s.
+	dotAddr, _ := startDoTOnly(t)
+	conn, err := net.DialTimeout("tcp", dotAddr, 3*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	serverClosesWithin(t, conn, 5*time.Second)
+}
+
+func TestDoT_SilentAfterHandshakeIsDisconnected(t *testing.T) {
+	// A client that completes the TLS handshake and then sends no query is
+	// closed after the first-read bound (dotReadTimeout, 2 s).
+	dotAddr, pool := startDoTOnly(t)
+	d := &net.Dialer{Timeout: 3 * time.Second}
+	conn, err := tls.DialWithDialer(d, "tcp", dotAddr, &tls.Config{RootCAs: pool, ServerName: testCertName, MinVersion: tls.VersionTLS12})
+	if err != nil {
+		t.Fatalf("tls dial: %v", err)
+	}
+	defer conn.Close()
+	serverClosesWithin(t, conn, 5*time.Second)
+}
+
+func TestDoT_IdleConnectionClosedAfterIdleTimeout(t *testing.T) {
+	// After one query, the connection stays open for later queries and is
+	// closed after dotIdleTimeout (8 s). The lower bound shows the idle
+	// timeout, not the 2 s first-read timeout, applies after a query.
+	if testing.Short() {
+		t.Skip("waits for the 8 s idle timeout")
+	}
+	dotAddr, pool := startDoTOnly(t)
+	c := dotClient(pool)
+	conn, err := c.Dial(dotAddr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if _, _, err := c.ExchangeWithConn(buildReq("example.com"), conn); err != nil {
+		t.Fatalf("exchange: %v", err)
+	}
+	took := serverClosesWithin(t, conn.Conn, 12*time.Second)
+	if took < 4*time.Second {
+		t.Errorf("idle connection closed after %v, want about %v", took, dotIdleTimeout)
+	}
+}
+
+func TestDoT_RejectsTLS11(t *testing.T) {
+	// The DoT listener accepts TLS 1.2 or later. The client allows TLS 1.0 and
+	// 1.1 only, so the handshake must fail on the server's version check.
+	dotAddr, pool := startDoTOnly(t)
+	d := &net.Dialer{Timeout: 3 * time.Second}
+	conn, err := tls.DialWithDialer(d, "tcp", dotAddr, &tls.Config{
+		RootCAs:    pool,
+		ServerName: testCertName,
+		MinVersion: tls.VersionTLS10,
+		MaxVersion: tls.VersionTLS11,
+	})
+	if err == nil {
+		v := conn.ConnectionState().Version
+		conn.Close()
+		t.Fatalf("TLS 1.1 client completed a handshake (version %#x), want a failure", v)
+	}
+	if !strings.Contains(err.Error(), "protocol version") {
+		t.Errorf("handshake error = %v, want a protocol version failure", err)
+	}
+}
+
+func TestDoT_AcceptsTLS12(t *testing.T) {
+	dotAddr, pool := startDoTOnly(t)
+	d := &net.Dialer{Timeout: 3 * time.Second}
+	conn, err := tls.DialWithDialer(d, "tcp", dotAddr, &tls.Config{
+		RootCAs:    pool,
+		ServerName: testCertName,
+		MinVersion: tls.VersionTLS12,
+		MaxVersion: tls.VersionTLS12,
+	})
+	if err != nil {
+		t.Fatalf("TLS 1.2 handshake: %v", err)
+	}
+	defer conn.Close()
+	if v := conn.ConnectionState().Version; v != tls.VersionTLS12 {
+		t.Errorf("negotiated version %#x, want TLS 1.2", v)
+	}
 }
 
 func TestLimitListener_CapsAndReleases(t *testing.T) {

@@ -707,7 +707,8 @@ func TestShutdown_ContinuesAfterErrors(t *testing.T) {
 // shutdown() with a doStop that closes done afterward, and asserts the last
 // teardown step (closeDB) has run by the time blockUntilStopped returns. The
 // pre-fix code returned as soon as stopDNS unblocked Start(), before http,
-// reload, cache, and db ran.
+// reload, cache, and db ran. On a clean stop, blockUntilStopped must not call
+// stop itself: the signal path already did.
 func TestBlockUntilStopped_WaitsForTeardown(t *testing.T) {
 	done := make(chan struct{})
 	var mu sync.Mutex
@@ -734,13 +735,16 @@ func TestBlockUntilStopped_WaitsForTeardown(t *testing.T) {
 		close(done)
 	}
 
-	go func() {
-		time.Sleep(5 * time.Millisecond)
-		doStop()
-	}()
+	// The stop callback given to blockUntilStopped only counts; the signal
+	// path below runs the real doStop.
+	var stopCalls atomic.Int32
+	go doStop()
 
-	if code := blockUntilStopped(start, done); code != 0 {
+	if code := blockUntilStopped(start, func() { stopCalls.Add(1) }, done); code != 0 {
 		t.Fatalf("blockUntilStopped code = %d, want 0", code)
+	}
+	if n := stopCalls.Load(); n != 0 {
+		t.Errorf("stop called %d times on a clean stop, want 0", n)
 	}
 
 	mu.Lock()
@@ -751,13 +755,130 @@ func TestBlockUntilStopped_WaitsForTeardown(t *testing.T) {
 	}
 }
 
-// TestBlockUntilStopped_StartupErrorExitsNonZero verifies a startup serve error
-// (a bind failure) returns exit code 1 without needing a stop signal.
-func TestBlockUntilStopped_StartupErrorExitsNonZero(t *testing.T) {
-	done := make(chan struct{}) // never closed: only the serve error should fire
-	start := func() error { return errors.New("bind failed") }
-	if code := blockUntilStopped(start, done); code != 1 {
-		t.Fatalf("blockUntilStopped code = %d, want 1", code)
+// TestBlockUntilStopped_StartErrorStopsThenWaits pins b/064: when the DNS
+// server fails at runtime, blockUntilStopped logs, calls stop exactly once,
+// and returns 1 only after done closes. Returning before done closes would
+// exit mid-teardown and break the b/043 guarantee.
+func TestBlockUntilStopped_StartErrorStopsThenWaits(t *testing.T) {
+	done := make(chan struct{})
+	stopCalled := make(chan struct{}, 4)
+	var stopCalls atomic.Int32
+	stop := func() {
+		stopCalls.Add(1)
+		stopCalled <- struct{}{}
+	}
+	start := func() error { return errors.New("dns: listener failed") }
+
+	result := make(chan int, 1)
+	go func() { result <- blockUntilStopped(start, stop, done) }()
+
+	select {
+	case <-stopCalled:
+	case code := <-result:
+		t.Fatalf("blockUntilStopped returned %d before it called stop", code)
+	case <-time.After(3 * time.Second):
+		t.Fatal("stop was not called after start failed")
+	}
+
+	// done is still open, so blockUntilStopped must still be waiting. A
+	// negative check needs a short wait; 100 ms is enough to catch an early
+	// return on any host.
+	select {
+	case code := <-result:
+		t.Fatalf("blockUntilStopped returned %d before done closed", code)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(done)
+	select {
+	case code := <-result:
+		if code != 1 {
+			t.Errorf("blockUntilStopped code = %d, want 1", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("blockUntilStopped did not return after done closed")
+	}
+	if n := stopCalls.Load(); n != 1 {
+		t.Errorf("stop called %d times, want exactly 1", n)
+	}
+}
+
+// TestBlockUntilStopped_StartErrorRunsFullTeardown composes the b/064 path
+// with the real shutdown(): a start error triggers doStop, and every teardown
+// step has run when blockUntilStopped returns 1 (b/043).
+func TestBlockUntilStopped_StartErrorRunsFullTeardown(t *testing.T) {
+	done := make(chan struct{})
+	var mu sync.Mutex
+	var order []string
+	rec := func(n string) { mu.Lock(); order = append(order, n); mu.Unlock() }
+
+	doStop := func() {
+		shutdown(slog.With("pkg", "test"), 50*time.Millisecond, shutdownDeps{
+			cancelTickers: func() { rec("cancel") },
+			logStats:      func() { rec("stats") },
+			stopDNS:       func() { rec("dns") },
+			drainHTTP:     func(context.Context) error { rec("http"); return nil },
+			waitForReload: func(context.Context) { rec("reload") },
+			closeCache:    func() { rec("cache") },
+			closeFileLog:  func() error { rec("filelog"); return nil },
+			closeDB:       func() error { rec("db"); return nil },
+		})
+		close(done)
+	}
+	start := func() error { return errors.New("dns: listener failed") }
+
+	result := make(chan int, 1)
+	go func() { result <- blockUntilStopped(start, doStop, done) }()
+	select {
+	case code := <-result:
+		if code != 1 {
+			t.Fatalf("blockUntilStopped code = %d, want 1", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("blockUntilStopped did not return; was stop called?")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"cancel", "stats", "dns", "http", "reload", "cache", "filelog", "db"}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("teardown incomplete at exit: order = %v, want %v", order, want)
+	}
+}
+
+// TestBlockUntilStopped_NilStartIgnored verifies that a nil return from start
+// is not a failure: blockUntilStopped does not call stop and does not return
+// until done closes, and then it returns 0.
+func TestBlockUntilStopped_NilStartIgnored(t *testing.T) {
+	done := make(chan struct{})
+	var stopCalls atomic.Int32
+	startReturned := make(chan struct{})
+	start := func() error { close(startReturned); return nil }
+
+	result := make(chan int, 1)
+	go func() { result <- blockUntilStopped(start, func() { stopCalls.Add(1) }, done) }()
+
+	select {
+	case <-startReturned:
+	case <-time.After(3 * time.Second):
+		t.Fatal("start was not called")
+	}
+	select {
+	case code := <-result:
+		t.Fatalf("blockUntilStopped returned %d after a nil start, want it to wait for done", code)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(done)
+	select {
+	case code := <-result:
+		if code != 0 {
+			t.Errorf("blockUntilStopped code = %d, want 0", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("blockUntilStopped did not return after done closed")
+	}
+	if n := stopCalls.Load(); n != 0 {
+		t.Errorf("stop called %d times after a nil start, want 0", n)
 	}
 }
 

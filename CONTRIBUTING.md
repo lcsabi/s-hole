@@ -165,7 +165,7 @@ and the router-setup banner. Then, in a second terminal:
 5. **Reload single-flight.** Two immediate
    `curl -X POST localhost:8080/api/reload` calls: the first returns
    `"reload triggered"`, the second `"reload queued"`. The log shows
-   `running the queued reload` when the first reload finishes.
+   `queued reload started` when the first reload finishes.
 6. **Stats vs. metrics.** `curl localhost:8080/api/stats` and
    `curl localhost:8080/metrics`; blocked/total/cache numbers must
    agree with what you just did.
@@ -299,6 +299,7 @@ Every behaviour change needs a test. Coverage gates are not enforced
 strictly, but the per-package targets are:
 
 - `internal/stats`, `internal/config`, `internal/version`: 100 %
+- `internal/logging`: ≥ 95 %
 - `internal/cache`: ≥ 94 %
 - `internal/api`, `internal/blocklist`, `internal/dnsserver`,
   `internal/querylog`: ≥ 85 %

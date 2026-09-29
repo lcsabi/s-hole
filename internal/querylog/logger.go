@@ -20,12 +20,13 @@ package querylog
 
 import (
 	"fmt"
-	"log/slog"
 	"os"
 	"time"
+
+	"github.com/lcsabi/s-hole/internal/logging"
 )
 
-var logger = slog.With("pkg", "querylog")
+var logger = logging.For("querylog")
 
 // FileLogger writes one line per query to a flat file, or to stdout when
 // the configured path is empty. The format is fixed for easy parsing by

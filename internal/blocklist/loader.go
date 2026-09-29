@@ -6,15 +6,16 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/lcsabi/s-hole/internal/logging"
 )
 
-var logger = slog.With("pkg", "blocklist")
+var logger = logging.For("blocklist")
 
 const cacheMaxAge = 24 * time.Hour
 
@@ -64,7 +65,7 @@ func Update(store *Store, urls []string, cacheDir string, mode Mode) error {
 		domains, meta, err := fetchList(u, cacheDir, mode)
 		if err != nil {
 			lastErr = err
-			logger.Warn("failed to load", "url", u, "err", err)
+			logger.Warn("blocklist load failed", "url", u, "err", err)
 			// Record the failure so a down source is visible by URL, instead
 			// of hiding behind a drop in the aggregate. Zero LastRefresh
 			// distinguishes a never-loaded source from a stale-cache fallback.
@@ -104,8 +105,8 @@ func Update(store *Store, urls []string, cacheDir string, mode Mode) error {
 // miss on a headless box, so the state is surfaced here at WARN as well.
 func warnIfEmpty(store *Store) {
 	if store.Len() == 0 {
-		logger.Warn("block set is EMPTY: s-hole is running but blocking no domains. " +
-			"Check the blocklist URLs and network connectivity")
+		logger.Warn("block set is empty",
+			"hint", "s-hole blocks no domains. Check the blocklist URLs and the network connection")
 	}
 }
 

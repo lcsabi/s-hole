@@ -571,8 +571,8 @@ func TestNewReloadFn_CancelDropsQueuedPass(t *testing.T) {
 }
 
 // TestNewReloadFn_LogsQueueOncePerPass pins the b/061 log lines: one
-// "queued" line per pass, however many calls queue it, and one "running the
-// queued reload" line per follow-up pass.
+// "queued" line per pass, however many calls queue it, and one "queued
+// reload started" line per follow-up pass.
 func TestNewReloadFn_LogsQueueOncePerPass(t *testing.T) {
 	var buf bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&buf, nil))
@@ -595,10 +595,10 @@ func TestNewReloadFn_LogsQueueOncePerPass(t *testing.T) {
 	waitIdle(t, &wg)
 
 	out := buf.String()
-	if n := strings.Count(out, `msg="reload already running; queued one more pass"`); n != 2 {
+	if n := strings.Count(out, `msg="reload queued until the running reload ends"`); n != 2 {
 		t.Errorf("queued lines = %d, want 2:\n%s", n, out)
 	}
-	if n := strings.Count(out, `msg="running the queued reload"`); n != 2 {
+	if n := strings.Count(out, `msg="queued reload started"`); n != 2 {
 		t.Errorf("follow-up lines = %d, want 2:\n%s", n, out)
 	}
 	if !strings.Contains(out, "level=INFO") || strings.Contains(out, "level=WARN") {
@@ -663,7 +663,7 @@ func TestShutdown_TeardownOrder(t *testing.T) {
 
 	shutdown(slog.With("pkg", "test"), 50*time.Millisecond, shutdownDeps{
 		cancelTickers: rec("cancel"),
-		printStats:    rec("stats"),
+		logStats:      rec("stats"),
 		stopDNS:       rec("dns"),
 		drainHTTP:     func(context.Context) error { order = append(order, "http"); return nil },
 		waitForReload: func(context.Context) { order = append(order, "reload") },
@@ -687,7 +687,7 @@ func TestShutdown_ContinuesAfterErrors(t *testing.T) {
 
 	shutdown(slog.With("pkg", "test"), 50*time.Millisecond, shutdownDeps{
 		cancelTickers: rec("cancel"),
-		printStats:    rec("stats"),
+		logStats:      rec("stats"),
 		stopDNS:       rec("dns"),
 		drainHTTP:     func(context.Context) error { order = append(order, "http"); return errors.New("drain failed") },
 		waitForReload: func(context.Context) { order = append(order, "reload") },
@@ -723,7 +723,7 @@ func TestBlockUntilStopped_WaitsForTeardown(t *testing.T) {
 	doStop := func() {
 		shutdown(slog.With("pkg", "test"), 50*time.Millisecond, shutdownDeps{
 			cancelTickers: func() { rec("cancel") },
-			printStats:    func() { rec("stats") },
+			logStats:      func() { rec("stats") },
 			stopDNS:       func() { rec("dns"); close(dnsStopped) },
 			drainHTTP:     func(context.Context) error { rec("http"); return nil },
 			waitForReload: func(context.Context) { rec("reload") },
@@ -771,7 +771,7 @@ func TestShutdown_ReloadGetsOwnBudget(t *testing.T) {
 
 	shutdown(slog.With("pkg", "test"), timeout, shutdownDeps{
 		cancelTickers: func() {},
-		printStats:    func() {},
+		logStats:      func() {},
 		stopDNS:       func() {},
 		drainHTTP: func(context.Context) error {
 			time.Sleep(120 * time.Millisecond) // burn most of the drain budget

@@ -20,6 +20,7 @@ s-hole is intentionally small: a single binary, a single YAML config file, no ru
 - [Configuration](#configuration) (incl. [env-var overrides](#environment-variable-overrides) and [DNS over TLS](#dns-over-tls-android-private-dns))
 - [REST API](#rest-api)
 - [Deployment](#deployment): [Linux/Pi](#raspberry-pi--linux-systemd), [Docker](#docker), [Windows](#windows-system-service)
+- [Troubleshooting](docs/TROUBLESHOOTING.md): which log lines to look for when something does not work
 - [Building from Source](#building-from-source)
 - [Engineering highlights](#engineering-highlights): the code and the process
 - [Architecture](#architecture)
@@ -238,7 +239,7 @@ For container deployments where editing `config.yaml` requires a re-bind-mount, 
 | `S_HOLE_RETENTION_DAYS` | `query_db_retention_days` (integer) |
 | `S_HOLE_ENABLE_PPROF` | `enable_pprof` (`1`/`true`/`yes` enable, case-insensitive) |
 | `S_HOLE_LOCAL_PTR` | `local_ptr` (`1`/`true`/`yes` keep on; `0`/`false`/`no` opt out; case-insensitive) |
-| `S_HOLE_LOG_FORMAT` | Slog handler format: `text` (default) or `json` |
+| `S_HOLE_LOG_FORMAT` | Log format: `text` (default) or `json`. Under systemd, each line also starts with its syslog priority, and text lines have no `time=` field, because journald records the time |
 | `S_HOLE_ASCII_BANNER` | set to `1` to use ASCII box-drawing on the startup banner |
 
 ### Recommended config for Raspberry Pi
@@ -452,7 +453,10 @@ sudo systemctl restart s-hole    # restart (for example after editing config)
 sudo systemctl disable s-hole    # don't start on boot
 sudo systemctl enable s-hole     # re-enable autostart
 journalctl -u s-hole -f          # follow logs live
+journalctl -u s-hole -p warning  # show only warnings and errors
 ```
+
+If s-hole does not work as you expect, read [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). It lists the log lines for the common problems and what to do for each.
 
 To trigger an immediate reload without restarting (Linux/macOS):
 
@@ -795,6 +799,7 @@ All implementation packages live under `internal/` so they cannot be imported by
 | `internal/dnsserver` | UDP/TCP server and the optional DNS-over-TLS listener (certificate reload and status), per-query handler, upstream forwarding with health tracking |
 | `internal/querylog` | Async file and SQLite query loggers |
 | `internal/stats` | Atomic counters; top-N domain/client tracking |
+| `internal/logging` | Package loggers (`pkg=` field) and the stdout handler, with syslog priorities under systemd |
 | `internal/api` | HTTP handlers and embedded web UI |
 | `internal/config` | YAML loading with defaults and validation |
 | `internal/service` | Windows Service integration (build-tagged) |
@@ -837,6 +842,7 @@ Coverage targets (checked in review, not a strict CI gate; run
 | Package | Target |
 |---|---|
 | `internal/stats`, `internal/config`, `internal/version` | 100 % |
+| `internal/logging` | ≥ 95 % |
 | `internal/cache` | ≥ 94 % |
 | `internal/api`, `internal/blocklist`, `internal/dnsserver`, `internal/querylog` | ≥ 85 % |
 

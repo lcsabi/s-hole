@@ -296,7 +296,7 @@ func TestUpdate_EmptyBlockSetWarns(t *testing.T) {
 	if store.Len() != 0 {
 		t.Fatalf("store should be empty, got Len=%d", store.Len())
 	}
-	if !strings.Contains(buf.String(), "block set is EMPTY") {
+	if !strings.Contains(buf.String(), "block set is empty") {
 		t.Errorf("expected empty-block-set alarm in logs, got: %q", buf.String())
 	}
 }
@@ -317,7 +317,7 @@ func TestUpdate_NonEmptyBlockSetDoesNotWarn(t *testing.T) {
 	if err := Update(store, []string{srv.URL}, t.TempDir(), CacheFirst); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	if strings.Contains(buf.String(), "block set is EMPTY") {
+	if strings.Contains(buf.String(), "block set is empty") {
 		t.Errorf("alarm fired on a non-empty refresh; logs: %q", buf.String())
 	}
 }
@@ -850,7 +850,7 @@ func TestUpdate_MixedOriginsOneLoadedLinePerSource(t *testing.T) {
 	if _, found := got[goneURL]; found {
 		t.Error("failed source with no cache logged a loaded line")
 	}
-	if !hasWarn(recs, "failed to load", goneURL) {
+	if !hasWarn(recs, "blocklist load failed", goneURL) {
 		t.Error("failed source with no cache did not log failed to load")
 	}
 	for _, d := range []string{"dl.example.com", "c.example.com", "s.example.com"} {
@@ -1046,7 +1046,7 @@ func TestUpdate_DownloadFirstFailureNoCacheIsHardFailure(t *testing.T) {
 	if got := loadedFrom(t, recs); len(got) != 0 {
 		t.Errorf("loaded lines = %v, want none", got)
 	}
-	if !hasWarn(recs, "failed to load", srv.URL) {
+	if !hasWarn(recs, "blocklist load failed", srv.URL) {
 		t.Error("missing failed to load WARN")
 	}
 	s := sourceByURL(store)[srv.URL]

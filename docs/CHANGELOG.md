@@ -9,6 +9,8 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 ## [Unreleased]
 
 ### Added
+- **A troubleshooting guide.** `docs/TROUBLESHOOTING.md` lists the common
+  problems, the log lines that each one produces, and what to do. (CL 89)
 - **The blocklist `loaded` log line says where each list came from.** A new
   `from` attribute is `download` (fetched now), `cache` (at startup, the on-disk
   cache was less than 24 hours old, so s-hole did not fetch), or `stale_cache` (the fetch
@@ -60,8 +62,55 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 - **`POST /api/reload` answers `"reload queued"` instead of `"reload already in
   progress"`.** A reload request that arrives during a reload is now queued, not
   dropped (see Fixed). Update any script that matches the old text. (CL 89, b/061)
+- **Under systemd, log lines carry their priority.** Each line starts with its
+  syslog priority, so `journalctl -u s-hole -p warning` shows only warnings and
+  errors. Text lines in the journal have no `time=` field, because journald
+  records the time. Terminal, Docker, and JSON output keep `time=`. (CL 89)
+- **The periodic stats are one log line.** The multi-line `[stats]` block is now
+  one `msg=stats pkg=stats` line with `queries`, `blocked`, `blocked_pct`,
+  `local_ptr`, `cache_hits`, `cache_hit_pct`, `forward_failures`, and
+  `upstream_errors`. The top-5 lists are no longer in the log; the dashboard
+  and `/api/stats` show them. (CL 89)
+- **Log messages say what happened.** Update any log search or alert that
+  matches an old message. Old message, then new message:
+  - `config` (at startup and in `-check-config`): `config load failed`
+  - `config path`: `config path cannot be resolved`
+  - `install`, `uninstall`, `start`, `stop`: `service install failed`,
+    `service uninstall failed`, `service start failed`, `service stop failed`
+  - `service`: `windows service failed`
+  - `initial blocklist update`: `initial blocklist load failed`
+  - `failed to load`: `blocklist load failed`
+  - `block set is EMPTY: s-hole is running but blocking no domains. Check the
+    blocklist URLs and network connectivity`: `block set is empty`, with the
+    advice in a `hint` field
+  - `SQLite logger disabled`: `query log database open failed`
+  - `api server`: `admin UI server failed`
+  - `dns server`: `dns server failed`
+  - `api shutdown`: `admin UI shutdown failed`
+  - `file log close`: `query file log close failed`
+  - `db close`: `query log database close failed`
+  - `recent query failed`, `top-blocked query failed`, `history query failed`:
+    `query log read failed`, with a `route` field
+  - `json encode failed`: `JSON response write failed`
+  - `db begin failed, dropping batch`, `db prepare failed, dropping batch`,
+    `db commit failed, dropping batch`: the same with `query log` in place
+    of `db`
+  - `db insert`: `query log insert failed`
+  - `retention prune failed`, `retention prune`: `query log retention prune
+    failed`, `query log retention prune done`
+  - `ignoring malformed upstream (want host:port ...)`: `ignoring malformed
+    upstream`, with the advice in a `hint` field
+  - `admin UI listening` no longer has an `addr` field; `url` has the address.
+  (CL 89)
 
 ### Fixed
+- **Warnings and errors from most of s-hole were logged as INFO.** Lines from
+  the `api`, `blocklist`, `config`, `dns`, and `querylog` parts had the whole
+  line inside `msg` and the level INFO, for example `level=INFO msg="WARN
+  download failed, using stale cache pkg=blocklist ..."`. A search for
+  `level=WARN` or `level=ERROR` missed them, and the Windows Event Log recorded
+  them as Information. Each line now has its real level and separate fields.
+  (CL 89, b/062)
 - **The blocklists now refresh every `refresh_interval`.** With the default 24h
   interval, s-hole downloaded its blocklists only every 48 hours: the first
   timer reload after a download found the cache just under 24 hours old and

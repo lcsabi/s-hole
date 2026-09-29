@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -27,12 +26,12 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/lcsabi/s-hole/internal/blocklist"
+	"github.com/lcsabi/s-hole/internal/logging"
+	"gopkg.in/yaml.v3"
 )
 
-var logger = slog.With("pkg", "config")
+var logger = logging.For("config")
 
 // Config is the in-memory representation of config.yaml. All fields have
 // safe defaults applied by applyDefaults; enumerated fields are checked
@@ -175,7 +174,8 @@ func Load(path string) (*Config, error) {
 	var droppedUp []string
 	cfg.Upstreams, droppedUp = filterUpstreams(cfg.Upstreams)
 	for _, u := range droppedUp {
-		logger.Warn("ignoring malformed upstream (want host:port such as 1.1.1.1:53, or a DoH URL with an IP host such as https://1.1.1.1/dns-query)", "upstream", u)
+		logger.Warn("ignoring malformed upstream", "upstream", u,
+			"hint", "use host:port, such as 1.1.1.1:53, or a DoH URL with an IP host, such as https://1.1.1.1/dns-query")
 	}
 	return cfg, nil
 }

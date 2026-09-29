@@ -24,7 +24,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/lcsabi/s-hole/internal/logging"
 )
+
+var logger = logging.For("stats")
 
 // topNMaxEntries caps the per-domain and per-client tally maps so a
 // long-running process does not accumulate every unique key forever.
@@ -289,23 +293,22 @@ func (c *Counter) topN(target topNTarget, n int) []Entry {
 	return entries
 }
 
-// Print writes a human-readable one-line summary plus the top-5 blocked
-// domains and top-5 clients to stdout. Called periodically by cmd/s-hole/main.go
-// (stats_interval) and once at shutdown.
-func (c *Counter) Print() {
-	s := c.Snapshot(5)
-	fmt.Printf("[stats] uptime=%s total=%d blocked=%d (%.1f%%) local-ptr=%d cache-hits=%d (%.1f%%)\n",
-		s.Uptime, s.TotalQueries, s.BlockedCount, s.BlockedPct, s.LocalPTRCount, s.CacheHits, s.CacheHitPct)
-	if len(s.TopDomains) > 0 {
-		fmt.Println("[stats] top blocked domains:")
-		for i, e := range s.TopDomains {
-			fmt.Printf("[stats]   %d. %s (%d)\n", i+1, e.Name, e.Count)
-		}
-	}
-	if len(s.TopClients) > 0 {
-		fmt.Println("[stats] top clients:")
-		for i, e := range s.TopClients {
-			fmt.Printf("[stats]   %d. %s (%d queries)\n", i+1, e.Name, e.Count)
-		}
-	}
+// Log writes the counters as one INFO line (msg=stats). Called periodically
+// by cmd/s-hole/main.go (stats_interval) and once at shutdown. The top-N
+// lists are not logged; the dashboard and /api/stats show them. One line with
+// fields replaces an older multi-line block that had no level and no pkg, so
+// a log filter could not select it.
+func (c *Counter) Log() {
+	s := c.Snapshot(1) // the top-N lists are not logged; 1 keeps their sort small
+	logger.Info("stats",
+		"uptime", s.Uptime,
+		"queries", s.TotalQueries,
+		"blocked", s.BlockedCount,
+		"blocked_pct", fmt.Sprintf("%.1f", s.BlockedPct),
+		"local_ptr", s.LocalPTRCount,
+		"cache_hits", s.CacheHits,
+		"cache_hit_pct", fmt.Sprintf("%.1f", s.CacheHitPct),
+		"forward_failures", s.ForwardFailures,
+		"upstream_errors", s.UpstreamErrors,
+	)
 }

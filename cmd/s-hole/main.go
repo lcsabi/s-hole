@@ -52,15 +52,18 @@ import (
 	"github.com/lcsabi/s-hole/internal/cache"
 	"github.com/lcsabi/s-hole/internal/config"
 	"github.com/lcsabi/s-hole/internal/dnsserver"
+	"github.com/lcsabi/s-hole/internal/logging"
 	"github.com/lcsabi/s-hole/internal/querylog"
 	"github.com/lcsabi/s-hole/internal/service"
 	"github.com/lcsabi/s-hole/internal/stats"
 	"github.com/lcsabi/s-hole/internal/version"
 )
 
-// setupLogger installs the default slog handler. Format is text on a TTY
-// for human readability; switch to JSON via S_HOLE_LOG_FORMAT=json for
-// production / container deployments.
+// setupLogger installs the default slog handler. Format is text by default;
+// switch to JSON via S_HOLE_LOG_FORMAT=json for container and log-aggregation
+// deployments. Under systemd, stdout is the journal, so each line carries its
+// syslog priority and text lines drop the time field (see
+// logging.NewStdoutHandler).
 //
 // Under the Windows SCM the process has no console, so a stdout-bound handler
 // is discarded and every startup error, refresh failure, and audit line is
@@ -77,14 +80,8 @@ func setupLogger() {
 			return
 		}
 	}
-	var h slog.Handler
-	opts := &slog.HandlerOptions{Level: slog.LevelInfo}
-	if os.Getenv("S_HOLE_LOG_FORMAT") == "json" {
-		h = slog.NewJSONHandler(os.Stdout, opts)
-	} else {
-		h = slog.NewTextHandler(os.Stdout, opts)
-	}
-	slog.SetDefault(slog.New(h))
+	json := os.Getenv("S_HOLE_LOG_FORMAT") == "json"
+	slog.SetDefault(slog.New(logging.NewStdoutHandler(os.Stdout, json, logging.StdoutIsJournal())))
 }
 
 func main() {
@@ -115,29 +112,29 @@ func main() {
 	case "install":
 		absConfig, err := filepath.Abs(*cfgPath)
 		if err != nil {
-			mainLog.Error("config path", "err", err)
+			mainLog.Error("config path cannot be resolved", "err", err)
 			os.Exit(1)
 		}
 		if err := service.Install(absConfig); err != nil {
-			mainLog.Error("install", "err", err)
+			mainLog.Error("service install failed", "err", err)
 			os.Exit(1)
 		}
 		return
 	case "uninstall":
 		if err := service.Uninstall(); err != nil {
-			mainLog.Error("uninstall", "err", err)
+			mainLog.Error("service uninstall failed", "err", err)
 			os.Exit(1)
 		}
 		return
 	case "start":
 		if err := service.Start(); err != nil {
-			mainLog.Error("start", "err", err)
+			mainLog.Error("service start failed", "err", err)
 			os.Exit(1)
 		}
 		return
 	case "stop":
 		if err := service.Stop(); err != nil {
-			mainLog.Error("stop", "err", err)
+			mainLog.Error("service stop failed", "err", err)
 			os.Exit(1)
 		}
 		return
@@ -161,7 +158,7 @@ func main() {
 
 	cfg, refreshInterval, statsInterval, dbFlushInterval, err := config.LoadAndValidate(*cfgPath)
 	if err != nil {
-		mainLog.Error("config", "err", err)
+		mainLog.Error("config load failed", "err", err)
 		os.Exit(1)
 	}
 
@@ -190,7 +187,7 @@ func main() {
 	store.SetWhitelist(cfg.Whitelist)
 
 	if err := blocklist.Update(store, cfg.Blocklists, cfg.CacheDir, blocklist.CacheFirst); err != nil {
-		mainLog.Warn("initial blocklist update", "err", err)
+		mainLog.Warn("initial blocklist load failed", "err", err)
 	}
 
 	counter := stats.New()
@@ -201,7 +198,8 @@ func main() {
 	if cfg.QueryDB != "" {
 		db, err = querylog.NewDBLogger(cfg.QueryDB, cfg.LogQueries, dbFlushInterval, cfg.QueryDBRetentionDays)
 		if err != nil {
-			mainLog.Warn("SQLite logger disabled", "err", err)
+			mainLog.Warn("query log database open failed", "err", err,
+				"hint", "the dashboard history and recent queries stay empty. Check query_db")
 		} else {
 			mainLog.Info("query log database opened", "path", cfg.QueryDB)
 		}
@@ -292,7 +290,7 @@ func main() {
 		apiUp = true
 		go func() {
 			if err := apiServer.Serve(apiLn); err != nil {
-				mainLog.Error("api server", "err", err)
+				mainLog.Error("admin UI server failed", "err", err)
 			}
 		}()
 	}
@@ -305,7 +303,7 @@ func main() {
 	apiHost, apiPort, _ := net.SplitHostPort(cfg.APIListen)
 	printNetworkHint(dnsPort, dotPort, apiHost, apiPort, apiUp)
 
-	go runTicker(runCtx, statsInterval, counter.Print)
+	go runTicker(runCtx, statsInterval, counter.Log)
 	go runTicker(runCtx, refreshInterval, func() {
 		mainLog.Info("reload requested via timer")
 		reloadFn()
@@ -328,7 +326,7 @@ func main() {
 		stopOnce.Do(func() {
 			shutdown(mainLog, 5*time.Second, shutdownDeps{
 				cancelTickers: runCancel,
-				printStats:    counter.Print,
+				logStats:      counter.Log,
 				stopDNS:       dnsServer.Shutdown,
 				drainHTTP:     apiServer.Shutdown,
 				waitForReload: func(ctx context.Context) {
@@ -382,7 +380,7 @@ func main() {
 				mainLog.Warn("dns server stopped", "err", err)
 			}
 		}, doStop); err != nil {
-			mainLog.Error("service", "err", err)
+			mainLog.Error("windows service failed", "err", err)
 			os.Exit(1)
 		}
 		return
@@ -411,7 +409,7 @@ func blockUntilStopped(start func() error, done <-chan struct{}) int {
 	}()
 	select {
 	case err := <-serveErr:
-		slog.With("pkg", "main").Error("dns server", "err", err)
+		slog.With("pkg", "main").Error("dns server failed", "err", err)
 		return 1
 	case <-done:
 		return 0
@@ -648,7 +646,7 @@ func waitWithDeadline(ctx context.Context, wg *sync.WaitGroup, log *slog.Logger,
 func runCheckConfig(log *slog.Logger, path string) int {
 	cfg, _, _, _, err := config.LoadAndValidate(path)
 	if err != nil {
-		log.Error("config", "err", err)
+		log.Error("config load failed", "err", err)
 		return 1
 	}
 	if cfg.DoTListen != "" {
@@ -724,7 +722,7 @@ func newReloadFn(ctx context.Context, log *slog.Logger, wg *sync.WaitGroup, work
 		defer mu.Unlock()
 		if running {
 			if !queued {
-				log.Info("reload already running; queued one more pass")
+				log.Info("reload queued until the running reload ends")
 			}
 			queued = true
 			return false
@@ -748,7 +746,7 @@ func newReloadFn(ctx context.Context, log *slog.Logger, wg *sync.WaitGroup, work
 				if !again {
 					return
 				}
-				log.Info("running the queued reload")
+				log.Info("queued reload started")
 			}
 		}()
 		return true
@@ -760,7 +758,7 @@ func newReloadFn(ctx context.Context, log *slog.Logger, wg *sync.WaitGroup, work
 // the sequence.
 type shutdownDeps struct {
 	cancelTickers func()                      // stop scheduling new refresh/stats work
-	printStats    func()                      // final stats line
+	logStats      func()                      // final stats line
 	stopDNS       func()                      // after this, no query touches the cache or loggers
 	drainHTTP     func(context.Context) error // drain in-flight admin requests
 	waitForReload func(context.Context)       // let an in-flight refresh finish its rename
@@ -782,7 +780,7 @@ type shutdownDeps struct {
 func shutdown(log *slog.Logger, timeout time.Duration, d shutdownDeps) {
 	log.Info("shutting down")
 	d.cancelTickers()
-	d.printStats()
+	d.logStats()
 	d.stopDNS()
 	// Separate timeout budgets. A shared context let a slow HTTP drain eat into
 	// the reload wait; the reload wait protects an in-flight refresh from being
@@ -790,7 +788,7 @@ func shutdown(log *slog.Logger, timeout time.Duration, d shutdownDeps) {
 	// how long the drain took.
 	hctx, hcancel := context.WithTimeout(context.Background(), timeout)
 	if err := d.drainHTTP(hctx); err != nil {
-		log.Warn("api shutdown", "err", err)
+		log.Warn("admin UI shutdown failed", "err", err)
 	}
 	hcancel()
 	rctx, rcancel := context.WithTimeout(context.Background(), timeout)
@@ -798,9 +796,9 @@ func shutdown(log *slog.Logger, timeout time.Duration, d shutdownDeps) {
 	rcancel()
 	d.closeCache()
 	if err := d.closeFileLog(); err != nil {
-		log.Warn("file log close", "err", err)
+		log.Warn("query file log close failed", "err", err)
 	}
 	if err := d.closeDB(); err != nil {
-		log.Warn("db close", "err", err)
+		log.Warn("query log database close failed", "err", err)
 	}
 }

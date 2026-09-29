@@ -1992,7 +1992,50 @@ also threw away requests whose work the running reload had not done.
 The closure now queues a request that arrives during a reload, and the running
 reload does one more pass when it finishes. Any number of requests during one
 pass queue a single follow-up pass, so passes still never overlap. The queue
-is logged (`reload already running; queued one more pass`, then `running the
-queued reload`), and `POST /api/reload` answers `"reload queued"`. A queued
+is logged (`reload queued until the running reload ends`, then `queued reload
+started`), and `POST /api/reload` answers `"reload queued"`. A queued
 pass is dropped once shutdown has started, so the bounded reload wait in
 `shutdown` covers at most the pass in flight.
+
+## b/062: log: package log lines are formatted twice and always logged at INFO
+
+**Priority:** P2
+**Component:** logging
+**Status:** Fixed in CL 89
+**Filed:** 2026-09-29
+
+### Description
+
+Every log line from the `api`, `blocklist`, `config`, `dns`, and `querylog`
+packages had the whole record inside `msg`, at level INFO:
+
+```
+level=INFO msg="WARN download failed, using stale cache pkg=blocklist url=https://..."
+```
+
+The real level was lost, so `level=WARN` and `level=ERROR` searches, JSON level
+filters, and the Windows Event Log severity missed every warning and error
+from these packages, including "all sources failed" and "db commit failed,
+dropping batch". The fields were not searchable as fields. Only the `main`
+lines were correct. Found by the maintainer in the journal during the CL 89 VM
+test.
+
+### Root Cause
+
+Each package declared `var logger = slog.With("pkg", "<name>")`. Package-level
+vars are set at init, before `main` runs `setupLogger`, so each logger bound
+slog's initial default handler. That handler writes through the `log` package.
+When `setupLogger` called `slog.SetDefault` with the real handler, slog
+redirected the `log` package into the new handler. A package record was then
+formatted by the initial handler (`WARN msg attrs`) and logged again by the new
+handler as the message of an INFO record. `main` built its logger after
+`setupLogger`, so its lines were correct.
+
+### Fix
+
+A new package, `internal/logging`, gives `For(pkg)`, a logger whose handler
+looks up `slog.Default()` for each record. Every package logger now uses it.
+The same CL cleans up the log output: under systemd, lines carry their syslog
+priority and text lines drop `time=`; the messages that named only a thing
+(`msg=config`, `msg=service`) now say what happened; and the multi-line
+`[stats]` block is one `msg=stats` line.

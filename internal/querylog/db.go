@@ -213,11 +213,11 @@ func (d *DBLogger) prune() {
 	cutoff := time.Now().Add(-time.Duration(d.retentionDays) * 24 * time.Hour).Format(time.RFC3339)
 	res, err := d.db.Exec("DELETE FROM queries WHERE ts < ?", cutoff)
 	if err != nil {
-		logger.Warn("retention prune failed", "err", err, "cutoff", cutoff)
+		logger.Warn("query log retention prune failed", "err", err, "cutoff", cutoff)
 		return
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
-		logger.Info("retention prune", "deleted", n, "cutoff", cutoff)
+		logger.Info("query log retention prune done", "deleted", n, "cutoff", cutoff)
 	}
 }
 
@@ -311,12 +311,12 @@ func (d *DBLogger) flush(batch []entry) {
 	// number of lost rows.
 	tx, err := d.db.Begin()
 	if err != nil {
-		logger.Error("db begin failed, dropping batch", "entries", len(batch), "err", err)
+		logger.Error("query log begin failed, dropping batch", "entries", len(batch), "err", err)
 		return
 	}
 	stmt, err := tx.Prepare("INSERT INTO queries(ts,client_ip,domain,blocked,cache_hit,rcode,synthesized) VALUES(?,?,?,?,?,?,?)")
 	if err != nil {
-		logger.Error("db prepare failed, dropping batch", "entries", len(batch), "err", err)
+		logger.Error("query log prepare failed, dropping batch", "entries", len(batch), "err", err)
 		_ = tx.Rollback() // the Prepare error above is the actionable one
 		return
 	}
@@ -324,11 +324,11 @@ func (d *DBLogger) flush(batch []entry) {
 
 	for _, e := range batch {
 		if _, err := stmt.Exec(e.ts.Format(time.RFC3339), e.clientIP, e.domain, b2i(e.blocked), b2i(e.cacheHit), e.rcode, b2i(e.synthesized)); err != nil {
-			logger.Warn("db insert", "err", err)
+			logger.Warn("query log insert failed", "err", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		logger.Error("db commit failed, dropping batch", "entries", len(batch), "err", err)
+		logger.Error("query log commit failed, dropping batch", "entries", len(batch), "err", err)
 	}
 }
 

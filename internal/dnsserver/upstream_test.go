@@ -91,15 +91,27 @@ func startMockUpstreamRcode(t *testing.T, rcode int) (addr string, hits *atomic.
 // on the same port that returns the full answer. This is the shape of a
 // real resolver handling an answer too large for the UDP buffer: UDP
 // truncates, TCP carries the payload.
+//
+// With TCP, the port comes from pickFreePort, which binds both transports on
+// one port. A UDP port from "127.0.0.1:0" says nothing about TCP: another test
+// package that runs at the same time can hold that TCP port, and the TCP bind
+// then failed with "address already in use" (b/071).
 func startTruncatingUpstream(t *testing.T, ip net.IP, withTCP bool) (addr string, udpHits, tcpHits *atomic.Int64) {
 	t.Helper()
 	udpHits, tcpHits = new(atomic.Int64), new(atomic.Int64)
 
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen udp: %v", err)
+	var pc net.PacketConn
+	var ln net.Listener
+	if withTCP {
+		addr, pc, ln = pickFreePort(t)
+	} else {
+		var err error
+		pc, err = net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen udp: %v", err)
+		}
+		addr = pc.LocalAddr().String()
 	}
-	addr = pc.LocalAddr().String()
 
 	udpSrv := &dns.Server{
 		PacketConn: pc,
@@ -115,12 +127,8 @@ func startTruncatingUpstream(t *testing.T, ip net.IP, withTCP bool) (addr string
 	t.Cleanup(func() { udpSrv.Shutdown() })
 
 	if withTCP {
-		l, err := net.Listen("tcp", addr)
-		if err != nil {
-			t.Fatalf("listen tcp on %s: %v", addr, err)
-		}
 		tcpSrv := &dns.Server{
-			Listener: l,
+			Listener: ln,
 			Handler: dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
 				tcpHits.Add(1)
 				resp := new(dns.Msg)

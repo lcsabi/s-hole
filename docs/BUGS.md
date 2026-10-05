@@ -2288,7 +2288,7 @@ before that wait.
 
 **Priority:** P3
 **Component:** dns (tests)
-**Status:** Open
+**Status:** Fixed in CL 92
 **Filed:** 2026-10-05
 
 ### Description
@@ -2308,5 +2308,5 @@ random probing over both transports.
 
 ### Fix
 
-Not fixed yet. Make `startTruncatingUpstream` get its port pair the way
-`pickFreePort` does.
+When the test needs TCP, `startTruncatingUpstream` takes its port and both
+sockets from `pickFreePort`. A UDP-only caller keeps `127.0.0.1:0`.

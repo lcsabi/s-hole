@@ -230,7 +230,8 @@ func filterWhitelist(entries []string) (valid, dropped []string) {
 // accepts two shapes: a plain "host:port" resolver (checked with
 // net.SplitHostPort and a non-empty host and port, so a bare "1.1.1.1" (no
 // port), ":53" (no host), and "1.1.1.1:" (no port) are all rejected), and a
-// DoH endpoint URL "https://<IP>/dns-query" (checked by isValidDoHURL). It is a
+// DoH endpoint URL "https://<IP>/dns-query" (checked and normalized by
+// normalizeDoHURL). It is a
 // shape check, not a reachability check: a well-formed but dead or typo'd
 // address stays a runtime concern that the upstream cooldown tracker already
 // handles. It resolves no name and dials nothing, so it adds no network call
@@ -243,11 +244,13 @@ func filterUpstreams(upstreams []string) (valid, dropped []string) {
 	for _, u := range upstreams {
 		// A URL-shaped entry (any "scheme://") is validated as a DoH endpoint,
 		// so a plain-DNS host:port never contains "://". This also routes a
-		// non-https URL (e.g. "http://...") through isValidDoHURL, which rejects
-		// it, instead of letting net.SplitHostPort mis-read it as a host:port.
+		// non-https URL (e.g. "http://...") through normalizeDoHURL, which
+		// rejects it, instead of letting net.SplitHostPort mis-read it as a
+		// host:port. The normalized form goes into the list, because the
+		// forwarder picks DoH by the exact "https://" prefix (b/067).
 		if strings.Contains(u, "://") {
-			if isValidDoHURL(u) {
-				valid = append(valid, u)
+			if norm, ok := normalizeDoHURL(u); ok {
+				valid = append(valid, norm)
 			} else {
 				dropped = append(dropped, u)
 			}
@@ -263,20 +266,34 @@ func filterUpstreams(upstreams []string) (valid, dropped []string) {
 	return valid, dropped
 }
 
-// isValidDoHURL reports whether u is a usable DoH upstream for this first cut:
-// an https URL whose host is an IP literal, e.g. "https://1.1.1.1/dns-query".
+// normalizeDoHURL reports whether u is a usable DoH upstream for this first
+// cut and returns its normalized form: an https URL whose host is an IP
+// literal and that has a path, e.g. "https://1.1.1.1/dns-query".
 // The IP requirement is deliberate. s-hole is often the box's own resolver, so
 // resolving a DoH hostname could loop back into s-hole; an IP host removes the
 // bootstrap lookup entirely, and the major providers (Cloudflare, Google,
 // Quad9) ship certificates with IP SANs so TLS still verifies. A hostname DoH
 // URL is rejected here (support for it needs a bootstrap resolver, a later CL).
 // Like the host:port check, this parses only and dials nothing.
-func isValidDoHURL(u string) bool {
+//
+// url.Parse lowercases the scheme, so "HTTPS://..." parses as https. The
+// caller stores the normalized string, so the forwarder's "https://" prefix
+// check sees the same scheme that this check accepted (b/067). User info is
+// rejected because the upstream string is a label on the unauthenticated
+// /metrics page. A URL with no path is rejected because the DoH endpoint is a
+// path on the server (/dns-query for the major providers).
+func normalizeDoHURL(u string) (string, bool) {
 	parsed, err := url.Parse(u)
-	if err != nil || parsed.Scheme != "https" {
-		return false
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil {
+		return "", false
 	}
-	return net.ParseIP(parsed.Hostname()) != nil
+	if parsed.Path == "" || parsed.Path == "/" {
+		return "", false
+	}
+	if net.ParseIP(parsed.Hostname()) == nil {
+		return "", false
+	}
+	return parsed.String(), true
 }
 
 // applyEnvOverrides reads S_HOLE_* environment variables and overrides

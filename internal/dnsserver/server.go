@@ -1,6 +1,7 @@
 package dnsserver
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -125,6 +126,12 @@ func serve(srv *dns.Server) error {
 		return err
 	}
 	return nil
+}
+
+// isClosedListener reports whether err means the socket was closed. serve
+// treats that as a clean stop on every transport (UDP, TCP, and DoT).
+func isClosedListener(err error) bool {
+	return errors.Is(err, net.ErrClosed)
 }
 
 // Shutdown stops every listener. After Shutdown returns, any goroutine

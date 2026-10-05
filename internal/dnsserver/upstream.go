@@ -230,8 +230,11 @@ func exchange(ctx context.Context, req *dns.Msg, upstream string) (*dns.Msg, err
 // wire-format reply (RFC 8484). It needs no TC/TCP retry: an HTTP body is never
 // DNS-truncated. A non-200 status, a transport error, or an unparsable body all
 // return an error, so forwardWith records a transport failure and fails over to
-// the next upstream, exactly as a UDP failure does. The query ID is left as
-// sent; a compliant server echoes it.
+// the next upstream, exactly as a UDP failure does. The reply gets the query's
+// ID, as a cache hit does. TLS already authenticates the server, so the ID is
+// not a spoofing check here, and a DoH server or HTTP proxy that does not echo
+// the ID (RFC 8484 lets a client send ID 0) must not reach the client with an
+// ID it rejects.
 func exchangeDoH(ctx context.Context, req *dns.Msg, upstream string) (*dns.Msg, error) {
 	packed, err := req.Pack()
 	if err != nil {
@@ -267,5 +270,6 @@ func exchangeDoH(ctx context.Context, req *dns.Msg, upstream string) (*dns.Msg, 
 	if err := out.Unpack(body); err != nil {
 		return nil, fmt.Errorf("unpacking DoH response from %s: %w", upstream, err)
 	}
+	out.Id = req.Id
 	return &out, nil
 }

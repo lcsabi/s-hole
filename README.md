@@ -184,7 +184,7 @@ All configuration lives in `config.yaml`. Every field has a safe default. An emp
 | `dot_listen` | _(off)_ | Address and port for the DNS-over-TLS listener, usually `:853`. Empty turns DoT off. When set, `tls_cert` and `tls_key` are required, and a port conflict or a bad certificate stops startup. See [DNS over TLS](#dns-over-tls-android-private-dns) |
 | `tls_cert` | _(none)_ | Path to the PEM certificate the DoT listener presents. Re-read on every reload. Ignored while `dot_listen` is empty |
 | `tls_key` | _(none)_ | Path to the PEM private key for `tls_cert`. Re-read on every reload. Ignored while `dot_listen` is empty |
-| `upstreams` | `[1.1.1.1:53, 8.8.8.8:53]` | Upstream resolvers, tried in order. Each is a plain `host:port` or a DNS-over-HTTPS (DoH) endpoint with an IP host (`https://1.1.1.1/dns-query`; also `8.8.8.8`, `9.9.9.9`). DoH encrypts the upstream hop, which defeats an ISP that intercepts plain port-53 traffic; list a plain resolver after a DoH entry to keep a fallback. A DoH host must be an IP, not a hostname (a hostname-only provider is not supported yet). A malformed entry is dropped with a warning at startup, and a config where every entry is malformed fails to start |
+| `upstreams` | `[1.1.1.1:53, 8.8.8.8:53]` | Upstream resolvers, tried in order. Each is a plain `host:port` or a DNS-over-HTTPS (DoH) endpoint with an IP host (`https://1.1.1.1/dns-query`; also `8.8.8.8`, `9.9.9.9`). DoH encrypts the upstream hop, which defeats an ISP that intercepts plain port-53 traffic; list a plain resolver after a DoH entry to keep a fallback. A DoH host must be an IP, not a hostname (a hostname-only provider is not supported yet). A DoH entry needs a path, such as `/dns-query`, and must not contain a user name or password. A malformed entry is dropped with a warning at startup, and a config where every entry is malformed fails to start |
 | `blocklists` | StevenBlack + AdAway | List of URLs to download (hosts-file or plain-domain format) |
 | `whitelist` | `[]` | Domains that are never blocked, regardless of blocklist membership. Matched by suffix and wins at every level: a whitelisted domain exempts its whole subtree, even past a more specific blocked parent |
 | `refresh_interval` | `24h` | How often to re-download blocklists |
@@ -276,7 +276,7 @@ sudo install -m 644 -o root -g s-hole cert.pem /etc/s-hole/cert.pem
 sudo install -m 640 -o root -g s-hole key.pem  /etc/s-hole/key.pem
 ```
 
-**3. Turn DoT on** in `/etc/s-hole/config.yaml`, then validate the file and restart:
+**3. Turn DoT on** in `/etc/s-hole/config.yaml`, then validate the file and restart. Run the check as the `s-hole` user: only root and the `s-hole` group can read the config and the key, and the check then also proves that the service can read them.
 
 ```yaml
 dot_listen: ":853"
@@ -285,7 +285,7 @@ tls_key: "/etc/s-hole/key.pem"
 ```
 
 ```bash
-s-hole -check-config -config /etc/s-hole/config.yaml
+sudo -u s-hole s-hole -check-config -config /etc/s-hole/config.yaml
 sudo systemctl restart s-hole
 ```
 
@@ -473,7 +473,7 @@ The systemd unit runs with `CAP_NET_BIND_SERVICE` so it can bind port 53 (and 85
 
 A few things to know once s-hole runs as a systemd service:
 
-- **Config is *copied*, not live-linked.** The installer copies your config to `/etc/s-hole/config.yaml` on the **first** install only. It never overwrites an existing one (it prints `config already exists, skipping`), and re-running the installer or `scp`-ing a new file to your home directory does **not** update it. To apply a config change on an installed host, edit `/etc/s-hole/config.yaml` directly (or `sudo cp your-config.yaml /etc/s-hole/config.yaml`), then `sudo systemctl restart s-hole`. To catch a mistake before the restart, validate the file first with `s-hole -check-config -config /etc/s-hole/config.yaml`, which loads and validates it exactly the way startup does and exits non-zero on any error. A reload (`POST /api/reload` or SIGHUP) does not apply a config edit. It re-downloads from the URLs read at startup and re-reads the certificate files at the `tls_cert` and `tls_key` paths read at startup, so a changed blocklist URL or a changed certificate path also needs a restart to take effect.
+- **Config is *copied*, not live-linked.** The installer copies your config to `/etc/s-hole/config.yaml` on the **first** install only. It never overwrites an existing one (it prints `config already exists, skipping`), and re-running the installer or `scp`-ing a new file to your home directory does **not** update it. To apply a config change on an installed host, edit `/etc/s-hole/config.yaml` directly (or `sudo cp your-config.yaml /etc/s-hole/config.yaml`), then `sudo systemctl restart s-hole`. To catch a mistake before the restart, validate the file first with `sudo -u s-hole s-hole -check-config -config /etc/s-hole/config.yaml`, which loads and validates it exactly the way startup does and exits non-zero on any error. A reload (`POST /api/reload` or SIGHUP) does not apply a config edit. It re-downloads from the URLs read at startup and re-reads the certificate files at the `tls_cert` and `tls_key` paths read at startup, so a changed blocklist URL or a changed certificate path also needs a restart to take effect.
 - **`S_HOLE_*` environment overrides do not reach the service.** The systemd unit runs with a clean environment, so shell env vars only take effect when you run the binary directly. On the service, put values in `/etc/s-hole/config.yaml` (or add `Environment=` lines to the unit).
 - **`query_db` and `cache_dir` are relative to `/var/lib/s-hole`.** Relative paths resolve against the service's working directory. Because the unit sets `ProtectSystem=strict` with `ReadWritePaths=/var/lib/s-hole`, the rest of the filesystem is read-only to the service. Keep both paths under `/var/lib/s-hole` (the defaults `queries.db` and `.` already do). Pointing them at `/tmp` or a home directory will silently fail to write.
 - **The query log flushes on an interval.** Newly logged queries appear in `/api/queries` and the dashboard's "All time" panel only after the next SQLite flush (`db_flush_interval`, default `30s`), not instantly. Lower it for a more responsive view.

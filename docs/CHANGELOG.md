@@ -50,6 +50,17 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   entry keeps a fallback. The DoH host must be an IP, not a hostname. (CL 85)
 
 ### Changed
+- **A DoH upstream with user info or with no path is dropped.** An entry such
+  as `https://user:pass@1.1.1.1/dns-query` or `https://1.1.1.1` now gets the
+  `ignoring malformed upstream` warning at startup, like any other malformed
+  entry. User info would show on the unauthenticated `/metrics` page, and a
+  DoH endpoint is a path on the server (`/dns-query`). (CL 91)
+- **The pprof warning has its advice in a `hint` field.** The message
+  `pprof endpoints enabled; bind api_listen to localhost only` is now
+  `pprof endpoints enabled`. Update a log search that matches the old text.
+  (CL 91)
+- **A Windows service tells Windows how long a stop can take.** The stop
+  state now carries a 15-second wait hint. (CL 91)
 - **A port conflict on the DNS port stops startup with `dns listen failed`.**
   s-hole now binds UDP and TCP right after it reads the config, before it
   loads the blocklists. Before, the conflict showed later, as `dns server
@@ -116,6 +127,26 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   (CL 89)
 
 ### Fixed
+- **A DoH upstream with an uppercase scheme now works.** An entry such as
+  `HTTPS://1.1.1.1/dns-query` passed the config check, but s-hole did not send
+  queries to it over DoH, so every query to it failed. (CL 91, b/067)
+- **A blocklist download that breaks during the transfer now uses the cache.**
+  If the connection closed or timed out while s-hole read the list, s-hole
+  dropped the list's domains from the block set until the next good download,
+  although a cache file was on disk. Now it uses the cache file, as it does
+  when it cannot connect, and logs `download failed, using stale cache`.
+  (CL 91, b/068)
+- **A Windows service with a relative `-config` path in a subfolder now
+  starts.** The service changed to the config folder and then looked for the
+  relative path again from there. `-service install` stores an absolute path,
+  so a service that it installed was not affected. (CL 91, b/069)
+- **A reload request during shutdown no longer starts a reload.** A SIGHUP or
+  an API request after the stop began could start a blocklist download that
+  shutdown did not wait for. s-hole now logs `reload refused during shutdown`.
+  (CL 91, b/070)
+- **A DoH reply always carries the query's ID.** A DoH server or proxy that
+  answered with a different DNS ID made the client discard the answer and
+  retry. (CL 91)
 - **A Windows service no longer writes its files into `C:\Windows\System32`.**
   Windows starts every service in that folder. The sample config's relative
   `query_db` and `cache_dir` put the query database and the blocklist cache

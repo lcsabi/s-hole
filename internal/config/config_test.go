@@ -1,13 +1,17 @@
 package config
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
+	"log/slog"
 	"math/big"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -305,8 +309,9 @@ func TestFilterUpstreams_Empty(t *testing.T) {
 
 func TestFilterUpstreams_DoH(t *testing.T) {
 	// A DoH endpoint with an IP host is accepted and kept in the mixed list; a
-	// DoH URL with a hostname, a non-https scheme, or a malformed URL is
-	// dropped. Order (DoH first, plain fallback) is preserved.
+	// DoH URL with a hostname or a non-https scheme is dropped. Order (DoH
+	// first, plain fallback) is preserved. TestFilterUpstreams_DoHNormalizationAndDrops
+	// covers the other drop cases, a malformed URL among them.
 	in := []string{
 		"https://1.1.1.1/dns-query",                // IP host: accepted
 		"1.1.1.1:53",                               // plain fallback: accepted
@@ -767,5 +772,104 @@ func TestValidate_DoT(t *testing.T) {
 				t.Errorf("Validate = %v, want an error containing %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestFilterUpstreams_DoHNormalizationAndDrops(t *testing.T) {
+	// b/067: the forwarder picks DoH by the exact "https://" prefix, so an
+	// accepted DoH entry must be stored with a lowercase scheme. Entries with
+	// user info, no path, a root path, a hostname, a non-https scheme, or a
+	// URL that url.Parse rejects are dropped.
+	cases := []struct {
+		in       string
+		wantNorm string // "" means dropped
+	}{
+		{"HTTPS://1.1.1.1/dns-query", "https://1.1.1.1/dns-query"},
+		{"Https://1.1.1.1/dns-query", "https://1.1.1.1/dns-query"},
+		{"https://1.1.1.1/dns-query", "https://1.1.1.1/dns-query"},
+		{"HTTPS://[2606:4700:4700::1111]/dns-query", "https://[2606:4700:4700::1111]/dns-query"},
+		{"https://user:pass@1.1.1.1/dns-query", ""},
+		{"https://user@1.1.1.1/dns-query", ""},
+		{"https://1.1.1.1", ""},
+		{"https://1.1.1.1/", ""},
+		{"HTTPS://1.1.1.1/", ""},
+		{"https://dns.google/dns-query", ""},
+		{"http://1.1.1.1/dns-query", ""},
+		{"HTTP://1.1.1.1/dns-query", ""},
+		{"tls://1.1.1.1/dns-query", ""},
+		{"https://[::1", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			valid, dropped := filterUpstreams([]string{tc.in})
+			if tc.wantNorm == "" {
+				if len(valid) != 0 || !reflect.DeepEqual(dropped, []string{tc.in}) {
+					t.Errorf("filterUpstreams(%q) = (%v, %v), want dropped", tc.in, valid, dropped)
+				}
+				return
+			}
+			if !reflect.DeepEqual(valid, []string{tc.wantNorm}) || len(dropped) != 0 {
+				t.Errorf("filterUpstreams(%q) = (%v, %v), want valid [%s]", tc.in, valid, dropped, tc.wantNorm)
+			}
+			if !strings.HasPrefix(valid[0], "https://") {
+				t.Errorf("stored %q does not start with the forwarder's DoH prefix", valid[0])
+			}
+		})
+	}
+}
+
+func TestFilterUpstreams_MalformedURLReallyFailsParse(t *testing.T) {
+	// Guard the malformed-URL case above: "https://[::1" must make url.Parse
+	// fail, so the drop comes from the parse error and not a later check.
+	malformed := "https://[::1"
+	if _, err := url.Parse(malformed); err == nil { //nolint:staticcheck // SA1007: malformed on purpose
+		t.Fatal("url.Parse(\"https://[::1\") succeeded; pick another malformed URL")
+	}
+	_, dropped := filterUpstreams([]string{malformed})
+	if !reflect.DeepEqual(dropped, []string{malformed}) {
+		t.Errorf("dropped = %v, want [https://[::1]", dropped)
+	}
+}
+
+func TestLoad_NormalizesDoHAndWarnsOnDrops(t *testing.T) {
+	// b/067: Load stores the normalized DoH URL and WARNs once for each
+	// dropped DoH entry. Plain host:port entries pass through unchanged.
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	path := writeTemp(t, "upstreams:\n"+
+		"  - HTTPS://1.1.1.1/dns-query\n"+
+		"  - https://user:pass@1.1.1.1/dns-query\n"+
+		"  - https://1.1.1.1/\n"+
+		"  - \"https://[::1\"\n"+
+		"  - 9.9.9.9:53\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load = %v", err)
+	}
+	want := []string{"https://1.1.1.1/dns-query", "9.9.9.9:53"}
+	if !reflect.DeepEqual(cfg.Upstreams, want) {
+		t.Errorf("cfg.Upstreams = %v, want %v", cfg.Upstreams, want)
+	}
+	warned := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		var rec map[string]any
+		if json.Unmarshal([]byte(line), &rec) != nil {
+			continue
+		}
+		if rec["msg"] == "ignoring malformed upstream" && rec["level"] == "WARN" {
+			u, _ := rec["upstream"].(string)
+			warned[u] = true
+		}
+	}
+	for _, d := range []string{"https://user:pass@1.1.1.1/dns-query", "https://1.1.1.1/", "https://[::1"} {
+		if !warned[d] {
+			t.Errorf("no drop WARN for %q; log:\n%s", d, buf.String())
+		}
+	}
+	if len(warned) != 3 {
+		t.Errorf("got WARNs for %v, want exactly the 3 dropped entries", warned)
 	}
 }

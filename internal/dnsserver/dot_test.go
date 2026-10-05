@@ -9,11 +9,15 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -254,28 +258,41 @@ func TestNewCertReloader_RejectsBadPairs(t *testing.T) {
 }
 
 func TestExpiryWarning(t *testing.T) {
+	// The messages are exact: TROUBLESHOOTING.md and log searches quote them.
+	// The expiring hint states the window in days from certExpiryWarnWindow.
 	now := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
+	windowDays := fmt.Sprintf("%d days", int(certExpiryWarnWindow/(24*time.Hour)))
 	cases := []struct {
 		name     string
 		notAfter time.Time
-		want     string // substring; "" means no warning
+		wantMsg  string // "" means no warning
+		wantHint string // substring of the hint
 	}{
-		{"valid for months", now.Add(60 * 24 * time.Hour), ""},
-		{"inside 14 days", now.Add(3 * 24 * time.Hour), "expires within 14 days"},
-		{"expired", now.Add(-time.Minute), "has expired"},
-		{"expires exactly now", now, "has expired"},
+		{"valid for months", now.Add(60 * 24 * time.Hour), "", ""},
+		{"exactly the window away", now.Add(certExpiryWarnWindow), "", ""},
+		{"just inside the window", now.Add(certExpiryWarnWindow - time.Second), "DoT certificate expires soon", windowDays},
+		{"inside the window", now.Add(3 * 24 * time.Hour), "DoT certificate expires soon", windowDays},
+		{"one second left", now.Add(time.Second), "DoT certificate expires soon", windowDays},
+		{"expires exactly now", now, "DoT certificate expired", ""},
+		{"expired", now.Add(-time.Minute), "DoT certificate expired", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := expiryWarning(tc.notAfter, now)
-			if tc.want == "" {
-				if got != "" {
-					t.Errorf("warning = %q, want none", got)
+			msg, hint := expiryWarning(tc.notAfter, now)
+			if msg != tc.wantMsg {
+				t.Errorf("msg = %q, want %q", msg, tc.wantMsg)
+			}
+			if tc.wantMsg == "" {
+				if hint != "" {
+					t.Errorf("hint = %q, want empty", hint)
 				}
 				return
 			}
-			if !strings.Contains(got, tc.want) {
-				t.Errorf("warning = %q, want it to contain %q", got, tc.want)
+			if hint == "" {
+				t.Error("hint is empty")
+			}
+			if !strings.Contains(hint, tc.wantHint) {
+				t.Errorf("hint = %q, want it to contain %q", hint, tc.wantHint)
 			}
 		})
 	}
@@ -287,7 +304,7 @@ func TestCertReloader_ExpiryWarningUsesLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCertReloader: %v", err)
 	}
-	if msg := certs.ExpiryWarning(time.Now()); msg == "" {
+	if msg, _ := certs.ExpiryWarning(time.Now()); msg == "" {
 		t.Error("certificate expiring in 2 days produced no warning")
 	}
 }
@@ -546,17 +563,12 @@ func TestLimitListener_CapsAndReleases(t *testing.T) {
 
 func TestLimitListener_CloseUnblocksWaitingAccept(t *testing.T) {
 	// With the cap full, Accept waits for a slot. Close must wake it with
-	// net.ErrClosed, or Shutdown would hang on a saturated DoT listener.
-	inner, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	// net.ErrClosed, or Shutdown would hang on a saturated DoT listener. The
+	// test waits until the goroutine dump shows Accept blocked in its select,
+	// and a counting inner listener proves the wait was for a slot: the inner
+	// Accept is called only for the held connection.
+	inner := newCountingListener()
 	l := newLimitListener(inner, 1)
-	c, err := net.Dial("tcp", inner.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
 	held, err := l.Accept()
 	if err != nil {
 		t.Fatal(err)
@@ -568,7 +580,7 @@ func TestLimitListener_CloseUnblocksWaitingAccept(t *testing.T) {
 		_, err := l.Accept()
 		result <- err
 	}()
-	time.Sleep(50 * time.Millisecond)
+	waitForBlockedSlotWait(t)
 	l.Close()
 
 	select {
@@ -579,6 +591,59 @@ func TestLimitListener_CloseUnblocksWaitingAccept(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("Close did not unblock the waiting Accept")
 	}
+	if n := inner.accepts.Load(); n != 1 {
+		t.Errorf("inner Accept called %d times, want 1 (the second Accept must wait for a slot)", n)
+	}
+}
+
+// countingListener hands out one end of a net.Pipe per Accept and counts the
+// calls. After Close, Accept returns net.ErrClosed.
+type countingListener struct {
+	accepts atomic.Int32
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func newCountingListener() *countingListener {
+	return &countingListener{closed: make(chan struct{})}
+}
+
+func (c *countingListener) Accept() (net.Conn, error) {
+	c.accepts.Add(1)
+	select {
+	case <-c.closed:
+		return nil, net.ErrClosed
+	default:
+	}
+	a, b := net.Pipe()
+	b.Close()
+	return a, nil
+}
+
+func (c *countingListener) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return nil
+}
+
+func (c *countingListener) Addr() net.Addr { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)} }
+
+// waitForBlockedSlotWait polls the goroutine dump until a goroutine is
+// blocked in the select inside (*limitListener).Accept. The poll is bounded.
+func waitForBlockedSlotWait(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	buf := make([]byte, 1<<20)
+	for time.Now().Before(deadline) {
+		n := runtime.Stack(buf, true)
+		for _, g := range strings.Split(string(buf[:n]), "\n\n") {
+			if strings.Contains(g, "[select") && strings.Contains(g, "(*limitListener).Accept") {
+				return
+			}
+		}
+		runtime.Gosched()
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("Accept never blocked waiting for a slot")
 }
 
 func TestCertReloader_ConcurrentReloadAndHandshakes(t *testing.T) {

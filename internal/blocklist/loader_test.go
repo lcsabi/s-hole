@@ -1094,3 +1094,128 @@ func TestUpdate_DownloadFirstNeverLogsFromCache(t *testing.T) {
 		}
 	}
 }
+
+// midBodyResetServer answers 200 with a Content-Length larger than the bytes
+// it sends, then closes the connection, so the client sees the body break
+// after the status line. The partial body holds a valid hosts line.
+func midBodyResetServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "100000")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("0.0.0.0 partial.example.com\n"))
+		w.(http.Flusher).Flush()
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		conn.Close()
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// warnRecord returns the first WARN record with message msg for url.
+func warnRecord(recs []map[string]any, msg, url string) map[string]any {
+	for _, r := range recs {
+		if r["level"] == "WARN" && r["msg"] == msg && r["url"] == url {
+			return r
+		}
+	}
+	return nil
+}
+
+func TestUpdate_MidBodyFailureServesStaleCache(t *testing.T) {
+	// b/068: a 200 response whose body breaks partway is a failed download.
+	// With a cache file on disk, the list comes from the cache in both modes,
+	// the source is stale with the cache mtime, and no .tmp is left behind.
+	for _, mode := range []struct {
+		name string
+		mode Mode
+		age  time.Duration
+	}{
+		{"CacheFirst", CacheFirst, 48 * time.Hour},         // old cache, so it downloads
+		{"DownloadFirst", DownloadFirst, 10 * time.Second}, // fresh cache, still downloads
+		{"DownloadFirst/old", DownloadFirst, 48 * time.Hour},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			srv := midBodyResetServer(t)
+			dir := t.TempDir()
+			seedCache(t, dir, srv.URL, "0.0.0.0 cached.example.com\n", mode.age)
+			info, err := os.Stat(filepath.Join(dir, cacheFilename(srv.URL)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			records := captureLogs(t)
+			store := NewStore()
+			if err := Update(store, []string{srv.URL}, dir, mode.mode); err != nil {
+				t.Fatalf("Update: %v", err)
+			}
+			recs := records()
+			w := warnRecord(recs, "download failed, using stale cache", srv.URL)
+			if w == nil {
+				t.Fatalf("missing stale-cache WARN; logs: %v", recs)
+			}
+			if e, _ := w["err"].(string); e == "" {
+				t.Errorf("stale-cache WARN has no err field: %v", w)
+			}
+			if got := loadedFrom(t, recs)[srv.URL]; got != "stale_cache" {
+				t.Errorf("from = %q, want stale_cache", got)
+			}
+			if !store.IsBlocked("cached.example.com") {
+				t.Error("cached domain not in the store after Update")
+			}
+			if store.IsBlocked("partial.example.com") {
+				t.Error("domain from the broken body was loaded")
+			}
+			s := sourceByURL(store)[srv.URL]
+			if !s.Stale {
+				t.Error("source not flagged stale")
+			}
+			if s.LastRefresh.IsZero() || !s.LastRefresh.Equal(info.ModTime()) {
+				t.Errorf("LastRefresh = %v, want cache mtime %v", s.LastRefresh, info.ModTime())
+			}
+			if _, err := os.Stat(filepath.Join(dir, cacheFilename(srv.URL)+".tmp")); !os.IsNotExist(err) {
+				t.Errorf(".tmp file left behind (stat err = %v)", err)
+			}
+			got, err := os.ReadFile(filepath.Join(dir, cacheFilename(srv.URL)))
+			if err != nil || string(got) != "0.0.0.0 cached.example.com\n" {
+				t.Errorf("cache file changed: %q, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestUpdate_MidBodyFailureNoCacheFails(t *testing.T) {
+	// b/068: with no cache file, a broken body still fails the source: the
+	// load-failed WARN, zero LastRefresh, no loaded line, no .tmp left.
+	for name, mode := range map[string]Mode{"CacheFirst": CacheFirst, "DownloadFirst": DownloadFirst} {
+		t.Run(name, func(t *testing.T) {
+			srv := midBodyResetServer(t)
+			dir := t.TempDir()
+			records := captureLogs(t)
+			store := NewStore()
+			store.Replace([]string{"kept.example.com"})
+			if err := Update(store, []string{srv.URL}, dir, mode); err == nil {
+				t.Fatal("Update succeeded with a broken body and no cache")
+			}
+			recs := records()
+			if !hasWarn(recs, "blocklist load failed", srv.URL) {
+				t.Errorf("missing blocklist load failed WARN; logs: %v", recs)
+			}
+			if got := loadedFrom(t, recs); len(got) != 0 {
+				t.Errorf("loaded lines = %v, want none", got)
+			}
+			if s := sourceByURL(store)[srv.URL]; !s.LastRefresh.IsZero() {
+				t.Errorf("LastRefresh = %v, want zero", s.LastRefresh)
+			}
+			if store.IsBlocked("partial.example.com") {
+				t.Error("domain from the broken body was loaded")
+			}
+			if _, err := os.Stat(filepath.Join(dir, cacheFilename(srv.URL)+".tmp")); !os.IsNotExist(err) {
+				t.Errorf(".tmp file left behind (stat err = %v)", err)
+			}
+		})
+	}
+}

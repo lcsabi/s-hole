@@ -104,6 +104,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 88](cls/CL-88.md) | Blocklist `loaded` log line says whether a list came from a download or the cache; CLAUDE.md rule: a separate cold agent writes the tests |
 | [CL 89](cls/CL-89.md) | Every reload downloads the blocklists (b/060); a reload request during a reload is queued (b/061); correct log levels (b/062), journald priorities, clearer messages; `docs/TROUBLESHOOTING.md` |
 | [CL 90](cls/CL-90.md) | DNS sockets bound before Start (b/063); orderly exit on a runtime listener failure (b/064); Windows service reports the failure and restarts (b/065), and starts in its config directory (b/066); explicit DoT timeouts; DoT test fixes |
+| [CL 91](cls/CL-91.md) | Fixes from the code review of CL 85 to CL 90: DoH URL normalization (b/067), stale-cache fallback on a broken download (b/068), Windows relative `-config` (b/069), no reload after shutdown starts (b/070); hint fields, comment and doc sync, test hygiene |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

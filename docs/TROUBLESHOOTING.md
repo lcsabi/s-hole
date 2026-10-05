@@ -165,7 +165,7 @@ A `from=stale_cache` line comes after a warning that gives the reason:
 
 | You see | What it means |
 |---|---|
-| `msg="download failed, using stale cache"` | s-hole cannot connect to the server, or the download stopped before the end of the list. Read `err`. |
+| `msg="download failed, using stale cache"` | s-hole cannot connect to the server, the download stopped before the end of the list, or s-hole cannot write the cache file. Read `err`. |
 | `msg="non-200 response, using stale cache"` | The server answered with an error. `status` gives the HTTP status. |
 | `msg="response truncated at cap, using stale cache"` | The list is larger than 256 MiB. s-hole does not use a partial list. |
 
@@ -263,7 +263,7 @@ journalctl -u s-hole -b | grep 'msg="ignoring'
 |---|---|
 | `msg="ignoring invalid whitelist entry"` | The `whitelist` entry is not a valid domain. |
 | `msg="ignoring client_names entry with invalid key"` | The `client_names` key is not an IP address or a CIDR. |
-| `msg="ignoring malformed upstream"` | The `upstreams` entry is not `host:port` or a DoH URL. `hint` shows the correct form. |
+| `msg="ignoring malformed upstream"` | The `upstreams` entry is not `host:port` or a usable DoH URL. A DoH URL needs an IP host and a path, and must not contain a user name or password. `upstream` shows the entry, with a user name and password replaced by `redacted`. `hint` shows the correct form. |
 
 s-hole reads the config file only at startup. After you change it, run
 `sudo systemctl restart s-hole`. A reload does not read the file again. The
@@ -284,7 +284,7 @@ running reload ends"` once and queues one more reload. More requests during
 the same reload add nothing. When the running reload ends, s-hole writes
 `msg="queued reload started"` and does the reload again.
 
-When s-hole stops, it does not start a new reload. A request then writes
+After s-hole starts to shut down, it does not start a new reload. A request then writes
 `msg="reload refused during shutdown"`, and a queued reload does not run.
 
 `msg="blocklist refresh failed"` means that no list loaded in that reload.

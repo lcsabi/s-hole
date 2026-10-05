@@ -166,12 +166,12 @@ func main() {
 
 	// Under the Windows SCM the working directory is C:\Windows\System32, so
 	// the sample config's relative query_db and cache_dir, and any relative
-	// log_file, put s-hole's files in the system folder (b/066). Change to the config file's
-	// directory first, so relative paths resolve next to config.yaml, as they
-	// resolve in /var/lib/s-hole under systemd and in /app in Docker.
-	// The config is then loaded through its absolute path: a relative -config
-	// path such as conf\config.yaml, read again from inside conf, would name
-	// conf\conf\config.yaml (b/069).
+	// log_file, put s-hole's files in the system folder (b/066). Change to the
+	// config file's directory first, so relative paths resolve next to
+	// config.yaml, as they resolve in /var/lib/s-hole under systemd and in /app
+	// in Docker. The config is then loaded through its absolute path: a
+	// relative -config path such as conf\config.yaml, read again from inside
+	// conf, would name conf\conf\config.yaml (b/069).
 	if service.IsWindowsService() {
 		absCfg, err := chdirToConfigDir(*cfgPath, os.Chdir)
 		if err != nil {
@@ -308,7 +308,7 @@ func main() {
 	if cfg.EnablePprof {
 		apiServer.EnablePprof(true)
 		mainLog.Warn("pprof endpoints enabled", "api_listen", cfg.APIListen,
-			"hint", "the pprof endpoints have no authentication. Set api_listen to a localhost address, or set enable_pprof to false")
+			"hint", "the pprof endpoints have no authentication. Keep api_listen on a localhost address, or set enable_pprof to false")
 	}
 	// Bind the admin listener synchronously so a bad api_listen or a port
 	// conflict is caught here, in order, before the banner. DNS is the critical
@@ -417,7 +417,8 @@ func main() {
 		if err := service.Run(func() error {
 			err := dnsServer.Start()
 			if err != nil {
-				mainLog.Error("dns server failed", "err", err)
+				mainLog.Error("dns server failed", "err", err,
+					"hint", "the service stops with a failure exit code, so the recovery actions restart it. If the error comes back after each restart, see 's-hole stopped while it ran' in docs/TROUBLESHOOTING.md")
 			}
 			return err
 		}, doStop); err != nil {
@@ -757,9 +758,9 @@ func warnCertExpiry(log *slog.Logger, certs certReloader) {
 }
 
 // newReloadFn builds the single-flight reload closure shared by the
-// periodic timer, POST /api/reload, and SIGHUP. It returns true if no reload
-// was running and it started one (asynchronously, so callers return at once).
-// It returns false if a reload is already running; the request is then queued,
+// periodic timer, POST /api/reload, and SIGHUP. The reload func returns true
+// if no reload was running and it started one (asynchronously, so callers
+// return at once). It returns false if a reload is already running; the request is then queued,
 // and the running reload does one more pass when it finishes. Any number of
 // requests during one pass queue a single follow-up pass.
 //
@@ -772,9 +773,10 @@ func warnCertExpiry(log *slog.Logger, certs certReloader) {
 // certificate after the pass read the old one. A dropped request left the old
 // certificate served until the next timer reload (b/061).
 //
-// Once ctx is cancelled (shutdown has started) or stop has run, a queued pass
-// is dropped and a new request starts no pass, so the bounded reload wait in shutdown covers at
-// most the pass in flight (b/070). A new request then returns false.
+// Once ctx is cancelled (shutdown has started) or stop has run, a queued
+// pass is dropped and a new request starts no pass, so the bounded reload
+// wait in shutdown covers at most the pass in flight (b/070). A new request
+// then returns false.
 //
 // wg lets doStop wait for an in-flight refresh to finish its os.Rename before
 // the process exits, so a refresh is never killed mid-write. The returned stop

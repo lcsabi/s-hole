@@ -233,8 +233,8 @@ func exchange(ctx context.Context, req *dns.Msg, upstream string) (*dns.Msg, err
 // the next upstream, exactly as a UDP failure does. The reply gets the query's
 // ID, as a cache hit does. TLS already authenticates the server, so the ID is
 // not a spoofing check here, and a DoH server or HTTP proxy that does not echo
-// the ID (RFC 8484 lets a client send ID 0) must not reach the client with an
-// ID it rejects.
+// the ID (RFC 8484 recommends ID 0 in a DoH request, so a server or HTTP cache
+// can return ID 0) must not reach the client with an ID it rejects.
 func exchangeDoH(ctx context.Context, req *dns.Msg, upstream string) (*dns.Msg, error) {
 	packed, err := req.Pack()
 	if err != nil {

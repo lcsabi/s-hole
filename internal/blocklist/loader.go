@@ -173,15 +173,15 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 	tee := io.TeeReader(io.LimitReader(resp.Body, maxBodyBytes), f)
 	domains, parseErr := parseHostsFormat(tee)
 	closeErr := f.Close()
-	// The .tmp removals below are best-effort cleanup on paths that
-	// already return an error; a leftover .tmp is harmless (ignored by
-	// loads, overwritten by the next download).
+	// The .tmp removals below are best-effort cleanup on failure paths; a
+	// leftover .tmp is harmless (ignored by loads, overwritten by the next
+	// download).
 	//
-	// A read error here means the download broke after the 200 status: a
-	// connection reset, or the client timeout during the body. A write error
-	// on the .tmp file also shows up here, through the TeeReader. Either way
-	// the download failed, so take the same stale-cache fallback as a
-	// connection error. Before, this returned an error, and a reload dropped
+	// parseErr or closeErr here means the download broke after the 200
+	// status (a connection reset, or the client timeout during the body), or
+	// the write to the .tmp file failed (the TeeReader returns a write error
+	// as a read error). Either way the download failed, so take the same
+	// stale-cache fallback as a connection error. Before, this returned an error, and a reload dropped
 	// the list's domains from the block set although a cache file was on
 	// disk (b/068).
 	readErr := parseErr

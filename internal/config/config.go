@@ -175,7 +175,7 @@ func Load(path string) (*Config, error) {
 	cfg.Upstreams, droppedUp = filterUpstreams(cfg.Upstreams)
 	for _, u := range droppedUp {
 		logger.Warn("ignoring malformed upstream", "upstream", redactUserInfo(u),
-			"hint", "use host:port, such as 1.1.1.1:53, or a DoH URL with an IP host and a path and no user name or password, such as https://1.1.1.1/dns-query")
+			"hint", "use host:port, such as 1.1.1.1:53, or a DoH URL such as https://1.1.1.1/dns-query. A DoH URL needs an IP host and a path, and must not contain a user name or password")
 	}
 	return cfg, nil
 }
@@ -231,10 +231,9 @@ func filterWhitelist(entries []string) (valid, dropped []string) {
 // net.SplitHostPort and a non-empty host and port, so a bare "1.1.1.1" (no
 // port), ":53" (no host), and "1.1.1.1:" (no port) are all rejected), and a
 // DoH endpoint URL "https://<IP>/dns-query" (checked and normalized by
-// normalizeDoHURL). It is a
-// shape check, not a reachability check: a well-formed but dead or typo'd
-// address stays a runtime concern that the upstream cooldown tracker already
-// handles. It resolves no name and dials nothing, so it adds no network call
+// normalizeDoHURL). It is a shape check, not a reachability check: a
+// well-formed but dead or typo'd address stays a runtime concern that the
+// upstream cooldown tracker already handles. It resolves no name and dials nothing, so it adds no network call
 // and cannot be turned into an SSRF or LAN-scan primitive via the config path.
 // Load drops the invalid entries (with a WARN) instead of forwarding to them,
 // so one bad address does not add a failed dial per query; if every entry is
@@ -268,14 +267,33 @@ func filterUpstreams(upstreams []string) (valid, dropped []string) {
 
 // redactUserInfo replaces the user info of a URL-shaped upstream with
 // "redacted", so the WARN for a dropped entry does not write a user name or
-// password into the log. Any other string is returned unchanged.
+// password into the log. A URL that url.Parse rejects (a bad port, an open
+// IPv6 bracket) can still hold user info, so that case is redacted by hand:
+// everything before the last "@" in the authority is replaced. A string with
+// no user info is returned unchanged.
 func redactUserInfo(u string) string {
 	parsed, err := url.Parse(u)
-	if err != nil || parsed.User == nil {
+	if err == nil {
+		if parsed.User == nil {
+			return u
+		}
+		parsed.User = url.User("redacted")
+		return parsed.String()
+	}
+	scheme, rest, ok := strings.Cut(u, "://")
+	if !ok {
 		return u
 	}
-	parsed.User = url.User("redacted")
-	return parsed.String()
+	authority, path, hasPath := strings.Cut(rest, "/")
+	at := strings.LastIndex(authority, "@")
+	if at < 0 {
+		return u
+	}
+	out := scheme + "://redacted" + authority[at:]
+	if hasPath {
+		out += "/" + path
+	}
+	return out
 }
 
 // normalizeDoHURL reports whether u is a usable DoH upstream for this first
@@ -492,7 +510,7 @@ func (c *Config) Validate() error {
 	}
 	switch len(c.Upstreams) {
 	case 0:
-		return errors.New("no usable upstream: every configured upstream was malformed (want host:port such as 1.1.1.1:53, or a DoH URL with an IP host and a path such as https://1.1.1.1/dns-query)")
+		return errors.New("no usable upstream: every configured upstream was malformed (want host:port such as 1.1.1.1:53, or a DoH URL such as https://1.1.1.1/dns-query, with an IP host, a path, and no user name or password)")
 	case 1:
 		logger.Info("single upstream configured; no forwarding fallback if it fails", "upstream", c.Upstreams[0])
 	}

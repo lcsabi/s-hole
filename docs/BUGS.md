@@ -2283,3 +2283,30 @@ the context is cancelled or the gate is closed. `newReloadFn` also returns a
 stop function that closes the gate under the closure's mutex. Shutdown calls
 it before it waits for the in-flight reload, so every `wg.Add` happens
 before that wait.
+
+## b/071: test: TestForward_TruncatedUDPRetriesOverTCP can fail to bind its TCP port
+
+**Priority:** P3
+**Component:** dns (tests)
+**Status:** Open
+**Filed:** 2026-10-05
+
+### Description
+
+During the CL 91 checks, one `CGO_ENABLED=1 go test -race -count=1 ./...`
+run failed with `listen tcp 127.0.0.1:36798: bind: address already in use`
+in `TestForward_TruncatedUDPRetriesOverTCP`. Three later runs of the package
+passed. The test is from CL 22, not from CL 91.
+
+### Root Cause
+
+`startTruncatingUpstream` binds UDP on `127.0.0.1:0` and then binds TCP on
+the same port number. Nothing reserves that TCP port, so another test
+package that runs at the same time can hold it. This is the cross-protocol
+collision that b/029 describes, and `pickFreePort` already avoids it with
+random probing over both transports.
+
+### Fix
+
+Not fixed yet. Make `startTruncatingUpstream` get its port pair the way
+`pickFreePort` does.

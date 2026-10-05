@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -835,8 +836,10 @@ func TestLoad_NormalizesDoHAndWarnsOnDrops(t *testing.T) {
 	// b/067: Load stores the normalized DoH URL and WARNs once for each
 	// dropped DoH entry. Plain host:port entries pass through unchanged. The
 	// WARN must not write user info: it is replaced by "redacted", and the
-	// user name and password appear nowhere in the log. Entries without user
-	// info, and unparsable ones, are logged as written.
+	// user name and password appear nowhere in the log. This holds for an
+	// entry that url.Parse rejects too. Entries with no user info, parsable or
+	// not, are logged as written.
+	noUserInfoHint := regexp.MustCompile(`(no|must not contain a) user name or password`)
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
@@ -846,6 +849,9 @@ func TestLoad_NormalizesDoHAndWarnsOnDrops(t *testing.T) {
 		"  - HTTPS://1.1.1.1/dns-query\n"+
 		"  - https://s3cretuser:hunter2pw@1.1.1.1/dns-query\n"+
 		"  - https://onlyuserx@8.8.8.8/dns-query\n"+
+		"  - \"https://u1sec:p1sec@1.1.1.1:bad/dns-query\"\n"+
+		"  - \"https://u2sec:p2sec@[::1/x\"\n"+
+		"  - \"https://us er:p3sec@1.1.1.1/x\"\n"+
 		"  - https://1.1.1.1/\n"+
 		"  - \"https://[::1\"\n"+
 		"  - 9.9.9.9:53\n")
@@ -859,7 +865,7 @@ func TestLoad_NormalizesDoHAndWarnsOnDrops(t *testing.T) {
 	}
 
 	out := buf.String()
-	for _, secret := range []string{"s3cretuser", "hunter2pw", "onlyuserx"} {
+	for _, secret := range []string{"s3cretuser", "hunter2pw", "onlyuserx", "u1sec", "p1sec", "u2sec", "p2sec", "us er", "p3sec"} {
 		if strings.Contains(out, secret) {
 			t.Errorf("log contains user info %q:\n%s", secret, out)
 		}
@@ -880,17 +886,47 @@ func TestLoad_NormalizesDoHAndWarnsOnDrops(t *testing.T) {
 		u, _ := rec["upstream"].(string)
 		warned = append(warned, u)
 		hint, _ := rec["hint"].(string)
-		if !strings.Contains(hint, "path") || !strings.Contains(hint, "no user name or password") {
-			t.Errorf("hint = %q, want it to say a DoH URL needs a path and no user name or password", hint)
+		if !strings.Contains(hint, "path") || !noUserInfoHint.MatchString(hint) {
+			t.Errorf("hint = %q, want it to say a DoH URL needs a path and must not hold a user name or password", hint)
 		}
 	}
 	wantWarned := []string{
 		"https://redacted@1.1.1.1/dns-query",
 		"https://redacted@8.8.8.8/dns-query",
+		"https://redacted@1.1.1.1:bad/dns-query",
+		"https://redacted@[::1/x",
+		"https://redacted@1.1.1.1/x",
 		"https://1.1.1.1/",
 		"https://[::1",
 	}
 	if !reflect.DeepEqual(warned, wantWarned) {
 		t.Errorf("drop WARN upstream fields = %q, want %q", warned, wantWarned)
+	}
+}
+
+func TestRedactUserInfo_UnparsableURL(t *testing.T) {
+	// For a URL-shaped entry that url.Parse rejects, everything before the
+	// last "@" in the authority becomes "redacted" and the rest is kept. An
+	// unparsable entry with no "@" in the authority, or with no "://", is
+	// returned unchanged.
+	cases := []struct{ in, want string }{
+		{"https://user:pass@1.1.1.1:bad/dns-query", "https://redacted@1.1.1.1:bad/dns-query"},
+		{"https://user:pass@[::1/x", "https://redacted@[::1/x"},
+		{"https://us er:pass@1.1.1.1/x", "https://redacted@1.1.1.1/x"},
+		{"https://a@b:pass@[::1", "https://redacted@[::1"},
+		{"https://[::1", "https://[::1"},
+		{"https://[::1/a@b", "https://[::1/a@b"},
+		{"1.1.1.1:", "1.1.1.1:"}, // no "://": logged unchanged
+		{"a@b:c:53", "a@b:c:53"}, // no "://", "@" is not in an authority
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			if _, err := url.Parse(tc.in); err == nil {
+				t.Fatalf("url.Parse(%q) succeeded; this case must be unparsable", tc.in)
+			}
+			if got := redactUserInfo(tc.in); got != tc.want {
+				t.Errorf("redactUserInfo(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }

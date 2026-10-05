@@ -75,8 +75,10 @@ type Server struct {
 	// reloadFn is the single-flight reload (the DoT certificate when DoT is
 	// on, then the blocklists); the caller owns the gate so the periodic
 	// timer, the API, and SIGHUP are serialised against it. Returns false if
-	// a reload is already running; the request is then queued and runs when
-	// that reload finishes.
+	// a reload is already running (the request is then queued and runs when
+	// that reload finishes) or if shutdown has started (the request is
+	// refused, b/070). handleReload answers "reload queued" in both cases; a
+	// refusal can happen only while the admin server drains.
 	reloadFn func() bool
 	// httpServer is stored by Serve, which runs in a background goroutine in
 	// main, and read by Shutdown, which runs on the signal goroutine. It is an

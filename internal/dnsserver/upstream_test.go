@@ -590,9 +590,10 @@ func TestUpstreamTracker_TransportFailureCountsAccumulate(t *testing.T) {
 }
 
 func TestForward_DoHReplyIDMismatchGetsQueryID(t *testing.T) {
-	// A DoH server may answer with ID 0 (RFC 8484 lets a client send 0). The
-	// reply must still reach the client with the query's ID, and it counts as
-	// a success: no failover and no cooldown for the DoH upstream.
+	// A DoH server may answer with ID 0 (RFC 8484 recommends ID 0 in a DoH
+	// request, so a server or HTTP cache can return ID 0). The reply must
+	// still reach the client with the query's ID, and it counts as a success:
+	// no failover and no cooldown for the DoH upstream.
 	endpoint, dohHits := startDoHUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var req dns.Msg

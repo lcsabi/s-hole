@@ -661,6 +661,10 @@ install` registers the event source and `-service uninstall` removes it. The
 per-query `ALLOW`/`BLOCK` log is separate: set `log_file` to keep it, since
 stdout is discarded under the service.
 
+The service starts in the directory of its config file. Relative paths in the
+config (`query_db`, `cache_dir`, `log_file`) are therefore next to
+`config.yaml`, for example `C:\s-hole\queries.db`.
+
 ### Monitoring (Prometheus + Grafana)
 
 s-hole serves Prometheus metrics at `/metrics`, and the built-in dashboard covers

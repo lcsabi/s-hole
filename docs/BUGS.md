@@ -2129,3 +2129,34 @@ records the service as stopped with an error. `-service install` sets three
 restart actions 5 seconds apart and turns them on for a non-zero exit code
 (`SetRecoveryActionsOnNonCrashFailures`), because the SCM otherwise applies
 them only to a crash.
+
+## b/066: service: a Windows service wrote its files into C:\Windows\System32
+
+**Priority:** P2
+**Component:** main
+**Status:** Fixed in CL 90
+**Filed:** 2026-10-05
+
+### Description
+
+With the sample config, an s-hole Windows service wrote `queries.db`,
+`queries.log`, and the blocklist cache files into `C:\Windows\System32`.
+The README said nothing about it. Found while testing CL 90 on the
+maintainer's Windows 10 host: a test service with the sample's relative
+`query_db: "queries.db"` and `cache_dir: "."` and a relative `log_file`
+created all four files in `System32` and none in its own folder.
+
+### Root Cause
+
+The SCM starts every service with `C:\Windows\System32` as its working
+directory, and s-hole never changed it. The sample config uses relative
+paths, which suit the systemd unit (`WorkingDirectory=/var/lib/s-hole`) and
+Docker (`/app`), but resolve against `System32` under a Windows service.
+
+### Fix
+
+When the SCM starts s-hole, main changes the working directory to the config
+file's directory (`chdirToConfigDir`) before it loads the config.
+`-service install` already requires an absolute config path, so this
+directory is known. Relative paths then resolve next to `config.yaml`. An
+interactive run keeps the current directory, as before.

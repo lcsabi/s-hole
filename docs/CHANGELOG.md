@@ -116,6 +116,13 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   (CL 89)
 
 ### Fixed
+- **A Windows service no longer writes its files into `C:\Windows\System32`.**
+  Windows starts every service in that folder, so the sample config's relative
+  `query_db`, `cache_dir`, and `log_file` put the query database, the blocklist
+  cache, and the query log there. The service now starts in the directory of
+  its config file. If you ran s-hole as a Windows service with relative paths,
+  move `queries.db` from `C:\Windows\System32` next to your `config.yaml` to
+  keep the query history. (CL 90, b/066)
 - **The Windows service no longer shows Running when it answers nothing.**
   If the DNS server stopped with an error, the service kept reporting
   Running and nothing restarted it. Now it stops with an error code, and

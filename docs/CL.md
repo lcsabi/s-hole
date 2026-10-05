@@ -103,7 +103,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 87](cls/CL-87.md) | Installer frees the systemd-resolved stub on current systemd (b/058); banner skips container and VPN addresses (b/059) |
 | [CL 88](cls/CL-88.md) | Blocklist `loaded` log line says whether a list came from a download or the cache; CLAUDE.md rule: a separate cold agent writes the tests |
 | [CL 89](cls/CL-89.md) | Every reload downloads the blocklists (b/060); a reload request during a reload is queued (b/061); correct log levels (b/062), journald priorities, clearer messages; `docs/TROUBLESHOOTING.md` |
-| [CL 90](cls/CL-90.md) | DNS sockets bound before Start (b/063); orderly exit on a runtime listener failure (b/064); Windows service reports the failure and restarts (b/065); explicit DoT timeouts; DoT test fixes |
+| [CL 90](cls/CL-90.md) | DNS sockets bound before Start (b/063); orderly exit on a runtime listener failure (b/064); Windows service reports the failure and restarts (b/065), and starts in its config directory (b/066); explicit DoT timeouts; DoT test fixes |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

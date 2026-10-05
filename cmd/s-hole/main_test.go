@@ -1159,3 +1159,143 @@ func TestRunCheckConfig(t *testing.T) {
 		})
 	}
 }
+
+// recordChdir returns a fake chdir that records each directory it gets and
+// returns err.
+func recordChdir(err error) (func(string) error, *[]string) {
+	var calls []string
+	return func(dir string) error {
+		calls = append(calls, dir)
+		return err
+	}, &calls
+}
+
+// TestChdirToConfigDir_AbsolutePath: an absolute config path makes chdir get
+// the directory of that path, once (b/066).
+func TestChdirToConfigDir_AbsolutePath(t *testing.T) {
+	cfgDir := filepath.Join(t.TempDir(), "etc")
+	cfgPath := filepath.Join(cfgDir, "s-hole.yaml")
+	chdir, calls := recordChdir(nil)
+
+	dir, err := chdirToConfigDir(cfgPath, chdir)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if dir != cfgDir {
+		t.Errorf("dir = %q, want %q", dir, cfgDir)
+	}
+	if want := []string{cfgDir}; !reflect.DeepEqual(*calls, want) {
+		t.Errorf("chdir calls = %q, want %q", *calls, want)
+	}
+}
+
+// TestChdirToConfigDir_RelativePath: a relative config path resolves against
+// the working directory at call time, and chdir gets an absolute directory
+// (b/066). The test changes the process working directory, so it must not
+// run in parallel.
+func TestChdirToConfigDir_RelativePath(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfgPath string
+		subdir  string // directory under the working directory that chdir must get
+	}{
+		{"nested", filepath.Join("conf", "s-hole.yaml"), "conf"},
+		{"bare file name", "config.yaml", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			wd, err := os.Getwd()
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := filepath.Join(wd, tc.subdir)
+			chdir, calls := recordChdir(nil)
+
+			dir, err := chdirToConfigDir(tc.cfgPath, chdir)
+			if err != nil {
+				t.Fatalf("err = %v, want nil", err)
+			}
+			if !filepath.IsAbs(dir) {
+				t.Errorf("dir = %q, want an absolute path", dir)
+			}
+			if dir != want {
+				t.Errorf("dir = %q, want %q", dir, want)
+			}
+			if !reflect.DeepEqual(*calls, []string{want}) {
+				t.Errorf("chdir calls = %q, want [%q]", *calls, want)
+			}
+		})
+	}
+}
+
+// TestChdirToConfigDir_ChdirError: when chdir fails, the function returns
+// chdir's error and still returns the directory, so main can log it (b/066).
+func TestChdirToConfigDir_ChdirError(t *testing.T) {
+	sentinel := errors.New("access denied")
+	cfgDir := filepath.Join(t.TempDir(), "missing")
+	chdir, calls := recordChdir(sentinel)
+
+	dir, err := chdirToConfigDir(filepath.Join(cfgDir, "s-hole.yaml"), chdir)
+	if !errors.Is(err, sentinel) {
+		t.Errorf("err = %v, want %v", err, sentinel)
+	}
+	if dir != cfgDir {
+		t.Errorf("dir = %q, want %q", dir, cfgDir)
+	}
+	if len(*calls) != 1 {
+		t.Errorf("chdir called %d times, want 1", len(*calls))
+	}
+}
+
+// TestChdirToConfigDir_RealChdir: with os.Chdir, the working directory becomes
+// the config directory, and a relative data file such as queries.db lands
+// there and not in the old working directory (b/066: under the Windows SCM
+// the old working directory is C:\Windows\System32). The test changes the
+// process working directory, so it must not run in parallel.
+func TestChdirToConfigDir_RealChdir(t *testing.T) {
+	startDir := t.TempDir()
+	t.Chdir(startDir) // t.Chdir restores the original directory at cleanup
+	cfgDir := t.TempDir()
+	cfgPath := filepath.Join(cfgDir, "s-hole.yaml")
+
+	dir, err := chdirToConfigDir(cfgPath, os.Chdir)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if dir != cfgDir {
+		t.Errorf("dir = %q, want %q", dir, cfgDir)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameDir(t, wd, cfgDir) {
+		t.Errorf("working directory = %q, want %q", wd, cfgDir)
+	}
+
+	if err := os.WriteFile("queries.db", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(cfgDir, "queries.db")); err != nil {
+		t.Errorf("queries.db is not in the config directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(startDir, "queries.db")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("queries.db is in the start directory (stat err = %v)", err)
+	}
+}
+
+// sameDir reports whether a and b name the same directory after symlinks
+// resolve (a temp dir can sit behind a symlink, for example on macOS).
+func sameDir(t *testing.T, a, b string) bool {
+	t.Helper()
+	ra, err := filepath.EvalSymlinks(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rb, err := filepath.EvalSymlinks(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ra == rb
+}

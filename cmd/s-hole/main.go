@@ -156,6 +156,20 @@ func main() {
 		return
 	}
 
+	// Under the Windows SCM the working directory is C:\Windows\System32, so
+	// the sample config's relative query_db, cache_dir, and log_file put
+	// s-hole's files in the system folder (b/066). Change to the config file's
+	// directory first, so relative paths resolve next to config.yaml, as they
+	// resolve in /var/lib/s-hole under systemd and in /app in Docker.
+	if service.IsWindowsService() {
+		dir, err := chdirToConfigDir(*cfgPath, os.Chdir)
+		if err != nil {
+			mainLog.Error("working directory change failed", "dir", dir, "err", err)
+			os.Exit(1)
+		}
+		mainLog.Info("working directory set to the config directory", "dir", dir)
+	}
+
 	cfg, refreshInterval, statsInterval, dbFlushInterval, err := config.LoadAndValidate(*cfgPath)
 	if err != nil {
 		mainLog.Error("config load failed", "err", err)
@@ -653,6 +667,18 @@ func waitWithDeadline(ctx context.Context, wg *sync.WaitGroup, log *slog.Logger,
 	case <-ctx.Done():
 		log.Warn("shutdown deadline exceeded waiting for "+what, "err", ctx.Err())
 	}
+}
+
+// chdirToConfigDir changes the working directory to the directory that holds
+// cfgPath and returns that directory. main passes os.Chdir; a test passes a
+// fake, so the Windows-service path is testable on any platform.
+func chdirToConfigDir(cfgPath string, chdir func(string) error) (string, error) {
+	abs, err := filepath.Abs(cfgPath)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Dir(abs)
+	return dir, chdir(dir)
 }
 
 // runCheckConfig is the -check-config dry run: it loads and validates the

@@ -3,7 +3,6 @@ package dnsserver
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -159,20 +158,24 @@ func (r *CertReloader) NotAfter() time.Time {
 	return r.current.Load().Leaf.NotAfter
 }
 
-// ExpiryWarning returns a warning message when the current certificate has
-// expired or expires within certExpiryWarnWindow of now, and "" otherwise.
-func (r *CertReloader) ExpiryWarning(now time.Time) string {
+// ExpiryWarning returns a log message and a hint when the current certificate
+// has expired or expires within certExpiryWarnWindow of now. It returns two
+// empty strings otherwise.
+func (r *CertReloader) ExpiryWarning(now time.Time) (msg, hint string) {
 	return expiryWarning(r.NotAfter(), now)
 }
 
-func expiryWarning(notAfter, now time.Time) string {
+func expiryWarning(notAfter, now time.Time) (msg, hint string) {
 	switch certState(notAfter, false, now) {
 	case CertExpired:
-		return "the DoT certificate has expired; clients will reject it"
+		return "DoT certificate expired",
+			"clients that check the certificate reject it. Renew the certificate, then reload s-hole"
 	case CertExpiring:
-		return "the DoT certificate expires within 14 days; renew it and reload"
+		days := int(certExpiryWarnWindow / (24 * time.Hour))
+		return "DoT certificate expires soon",
+			fmt.Sprintf("the certificate expires within %d days. Renew it, then reload s-hole", days)
 	default:
-		return ""
+		return "", ""
 	}
 }
 
@@ -244,10 +247,4 @@ func (c *limitConn) Close() error {
 	err := c.Conn.Close()
 	c.once.Do(c.release)
 	return err
-}
-
-// isClosedListener reports whether err means the listener was closed, which
-// the DoT serve loop treats as a clean stop.
-func isClosedListener(err error) bool {
-	return errors.Is(err, net.ErrClosed)
 }

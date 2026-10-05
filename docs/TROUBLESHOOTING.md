@@ -94,7 +94,7 @@ journalctl -u s-hole -b -p err
 
 | You see | What it means | What to do |
 |---|---|---|
-| `msg="config load failed"` | The config file has an error. `err` names the setting. A DoT certificate that does not load also shows here, with `tls_cert/tls_key` in `err`. | Correct the setting. To check the file before a restart, run `s-hole -check-config -config /etc/s-hole/config.yaml`. |
+| `msg="config load failed"` | The config file has an error. `err` names the setting. A DoT certificate that does not load also shows here, with `tls_cert/tls_key` in `err`. | Correct the setting. To check the file before a restart, run `sudo -u s-hole s-hole -check-config -config /etc/s-hole/config.yaml`. |
 | `msg="dns listen failed"` with `address already in use` (on Windows: `Only one usage of each socket address`) | Another program uses port 53. On many Linux systems, this is the `systemd-resolved` stub. | To find the program, run `sudo ss -lunp 'sport = :53'`. If the program is `systemd-resolved`, run the installer with `--free-port-53` to free the port. |
 | `msg="dns listen failed"` with `permission denied` | s-hole cannot open a port below 1024 without root or the `CAP_NET_BIND_SERVICE` capability. | Run s-hole through the systemd unit that the installer writes, or set `listen` to a port above 1024. |
 | `msg="DoT listener failed"` | `dot_listen` is set, but s-hole cannot open the DoT port. | Read `err` and `hint`. Look for another program on port 853, or correct `dot_listen`. |
@@ -165,7 +165,7 @@ A `from=stale_cache` line comes after a warning that gives the reason:
 
 | You see | What it means |
 |---|---|
-| `msg="download failed, using stale cache"` | s-hole cannot connect to the server. Read `err`. |
+| `msg="download failed, using stale cache"` | s-hole cannot connect to the server, the download stopped before the end of the list, or s-hole cannot write the cache file. Read `err`. |
 | `msg="non-200 response, using stale cache"` | The server answered with an error. `status` gives the HTTP status. |
 | `msg="response truncated at cap, using stale cache"` | The list is larger than 256 MiB. s-hole does not use a partial list. |
 
@@ -235,8 +235,8 @@ To keep it, also add it to `whitelist` in the config file.
 
 | You see | What it means | What to do |
 |---|---|---|
-| `msg="the DoT certificate expires within 14 days; renew it and reload"` | The certificate expires soon. | Renew the certificate. Then run `sudo systemctl reload s-hole`. |
-| `msg="the DoT certificate has expired; clients will reject it"` | Clients that check the certificate cannot connect. | Renew the certificate. Then reload. |
+| `msg="DoT certificate expires soon"` | The certificate expires within 14 days. `expires` gives the date. | Renew the certificate. Then run `sudo systemctl reload s-hole`. |
+| `msg="DoT certificate expired"` | Clients that check the certificate cannot connect. | Renew the certificate. Then reload. |
 | `msg="DoT certificate reload failed; keeping the current certificate"` | A reload cannot read the new files, or the certificate and key do not match. s-hole still uses the old certificate. | Read `err`. Correct the files. Then reload. |
 | `msg="DoT certificate reloaded"` | The reload loaded the files. `expires` gives the new expiry. | Nothing. |
 
@@ -263,7 +263,7 @@ journalctl -u s-hole -b | grep 'msg="ignoring'
 |---|---|
 | `msg="ignoring invalid whitelist entry"` | The `whitelist` entry is not a valid domain. |
 | `msg="ignoring client_names entry with invalid key"` | The `client_names` key is not an IP address or a CIDR. |
-| `msg="ignoring malformed upstream"` | The `upstreams` entry is not `host:port` or a DoH URL. `hint` shows the correct form. |
+| `msg="ignoring malformed upstream"` | The `upstreams` entry is not `host:port` or a usable DoH URL. A DoH URL needs an IP host and a path, and must not contain a user name or password. `upstream` shows the entry, with a user name and password replaced by `redacted`. `hint` shows the correct form. |
 
 s-hole reads the config file only at startup. After you change it, run
 `sudo systemctl restart s-hole`. A reload does not read the file again. The
@@ -283,6 +283,9 @@ If a reload is running already, s-hole writes `msg="reload queued until the
 running reload ends"` once and queues one more reload. More requests during
 the same reload add nothing. When the running reload ends, s-hole writes
 `msg="queued reload started"` and does the reload again.
+
+After s-hole starts to shut down, it does not start a new reload. A request then writes
+`msg="reload refused during shutdown"`, and a queued reload does not run.
 
 `msg="blocklist refresh failed"` means that no list loaded in that reload.
 Read [Nothing is blocked](#nothing-is-blocked).

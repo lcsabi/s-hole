@@ -31,7 +31,8 @@ listen: ":53"
 #   - "https://9.9.9.9/dns-query"   # Quad9 DoH
 # List a plain resolver after a DoH entry to keep a fallback if DoH fails. A DoH
 # URL with a hostname host is not supported yet, so use a provider that answers
-# on an IP.
+# on an IP. A DoH entry needs a path (such as /dns-query) and must not contain
+# a user name or password.
 upstreams:
   - "1.1.1.1:53"
   - "8.8.8.8:53"

@@ -2,7 +2,10 @@ package dnsserver
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -583,5 +586,81 @@ func TestUpstreamTracker_TransportFailureCountsAccumulate(t *testing.T) {
 	counts := tr.TransportFailureCounts()
 	if counts["up:53"] != 2 || counts["other:53"] != 1 {
 		t.Errorf("per-upstream counts = %v, want up:53=2 other:53=1", counts)
+	}
+}
+
+func TestForward_DoHReplyIDMismatchGetsQueryID(t *testing.T) {
+	// A DoH server may answer with ID 0 (RFC 8484 recommends ID 0 in a DoH
+	// request, so a server or HTTP cache can return ID 0). The reply must
+	// still reach the client with the query's ID, and it counts as a success:
+	// no failover and no cooldown for the DoH upstream.
+	endpoint, dohHits := startDoHUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req dns.Msg
+		if err := req.Unpack(body); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		resp := new(dns.Msg)
+		resp.SetReply(&req)
+		resp.Id = 0
+		resp.Answer = []dns.RR{&dns.A{
+			Hdr: dns.RR_Header{Name: req.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+			A:   net.IPv4(9, 9, 9, 9),
+		}}
+		packed, _ := resp.Pack()
+		w.Header().Set("Content-Type", dohMediaType)
+		w.Write(packed)
+	})
+	plain, plainHits := startMockUpstream(t, net.IPv4(8, 8, 8, 8))
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	req.Id = 0x4242
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tracker := newUpstreamTracker()
+	resp, err := forwardWith(ctx, req, []string{endpoint, plain}, tracker)
+	if err != nil {
+		t.Fatalf("forwardWith: %v", err)
+	}
+	if resp.Id != req.Id {
+		t.Errorf("reply ID = %#x, want the query ID %#x", resp.Id, req.Id)
+	}
+	if dohHits.Load() != 1 || plainHits.Load() != 0 {
+		t.Errorf("DoH hits = %d, plain hits = %d, want 1 and 0 (no failover)", dohHits.Load(), plainHits.Load())
+	}
+	if tracker.shouldSkip(endpoint, time.Now()) {
+		t.Error("DoH upstream was recorded as a failure")
+	}
+	if a := resp.Answer[0].(*dns.A); !a.A.Equal(net.IPv4(9, 9, 9, 9)) {
+		t.Errorf("answer A = %v, want 9.9.9.9 from the DoH server", a.A)
+	}
+}
+
+func TestExchangeDoH_ProductionClientVerifiesTLS(t *testing.T) {
+	// The production dohClient must verify the server certificate. The
+	// httptest certificate is not in the system roots, so the exchange must
+	// fail with a verification error. dohClient is not swapped here.
+	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("request reached a server with an untrusted certificate")
+	}))
+	ts.Config.ErrorLog = log.New(io.Discard, "", 0)
+	ts.StartTLS()
+	t.Cleanup(func() {
+		dohClient.CloseIdleConnections()
+		ts.Close()
+	})
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := exchangeDoH(ctx, req, ts.URL+"/dns-query")
+	var verr *tls.CertificateVerificationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("exchangeDoH err = %v, want a certificate verification error", err)
 	}
 }

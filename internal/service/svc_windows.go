@@ -35,6 +35,12 @@ func IsWindowsService() bool {
 // makes the SCM apply the recovery actions that Install sets.
 const exitServeFailed = 1
 
+// stopWaitHint tells the SCM how long the StopPending state can last, in
+// milliseconds. main's teardown gives the admin HTTP drain and the reload wait
+// 5 s each, and then flushes the query log. Without a hint, the SCM gets no
+// estimate for a stop that can take more than 10 s.
+const stopWaitHint = 15000
+
 // Run starts fn (the DNS server) in a goroutine and blocks in the Windows SCM
 // event loop. stop (the ordered teardown) is called when the SCM sends a
 // Stop or Shutdown control code, or when fn returns first.
@@ -59,7 +65,7 @@ func (h *handler) Execute(_ []string, r <-chan svc.ChangeRequest, s chan<- svc.S
 			case svc.Interrogate:
 				s <- c.CurrentStatus
 			case svc.Stop, svc.Shutdown:
-				s <- svc.Status{State: svc.StopPending}
+				s <- svc.Status{State: svc.StopPending, WaitHint: stopWaitHint}
 				// doStop runs the ordered teardown and returns; it no longer
 				// calls os.Exit (b/043). Report Stopped so the SCM does not
 				// hang in StopPending, then return. After Execute returns,
@@ -72,7 +78,7 @@ func (h *handler) Execute(_ []string, r <-chan svc.ChangeRequest, s chan<- svc.S
 			// The DNS server stopped without an SCM stop request, so the
 			// service answers no queries. Before, the service still reported
 			// Running (b/065). Run the teardown (a no-op if it already ran).
-			s <- svc.Status{State: svc.StopPending}
+			s <- svc.Status{State: svc.StopPending, WaitHint: stopWaitHint}
 			h.stop()
 			if err == nil {
 				// Only Shutdown makes Start return nil, so doStop already ran

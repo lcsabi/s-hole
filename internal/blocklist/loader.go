@@ -173,16 +173,29 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 	tee := io.TeeReader(io.LimitReader(resp.Body, maxBodyBytes), f)
 	domains, parseErr := parseHostsFormat(tee)
 	closeErr := f.Close()
-	// The .tmp removals below are best-effort cleanup on paths that
-	// already return an error; a leftover .tmp is harmless (ignored by
-	// loads, overwritten by the next download).
-	if parseErr != nil {
-		_ = os.Remove(tmpPath)
-		return nil, sourceMeta{}, parseErr
+	// The .tmp removals below are best-effort cleanup on failure paths; a
+	// leftover .tmp is harmless (ignored by loads, overwritten by the next
+	// download).
+	//
+	// parseErr or closeErr here means the download broke after the 200
+	// status (a connection reset, or the client timeout during the body), or
+	// the write to the .tmp file failed (the TeeReader returns a write error
+	// as a read error). Either way the download failed, so take the same
+	// stale-cache fallback as a connection error. Before, this returned an error, and a reload dropped
+	// the list's domains from the block set although a cache file was on
+	// disk (b/068).
+	readErr := parseErr
+	if readErr == nil {
+		readErr = closeErr
 	}
-	if closeErr != nil {
+	if readErr != nil {
 		_ = os.Remove(tmpPath)
-		return nil, sourceMeta{}, closeErr
+		if info, statErr := os.Stat(cachePath); statErr == nil {
+			logger.Warn("download failed, using stale cache", "url", url, "err", readErr)
+			domains, loadErr := loadFromFile(cachePath)
+			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime()}, loadErr
+		}
+		return nil, sourceMeta{}, readErr
 	}
 	// Detect a source that exceeded the cap. parseHostsFormat drained the
 	// LimitReader, so any byte still readable from resp.Body means the body was

@@ -1,16 +1,20 @@
 // Command s-hole is the network-level DNS sinkhole entry point.
 //
 // Lifecycle:
-//   - install the default slog handler (text on a TTY, JSON when
+//   - install the default slog handler (text by default, JSON when
 //     S_HOLE_LOG_FORMAT=json, or the Windows Event Log when launched by the
 //     SCM, where stdout is discarded)
 //   - parse flags; if -service is set, perform the SCM action and exit
+//   - when launched by the Windows SCM, change to the config file's
+//     directory, so relative paths resolve next to config.yaml (b/066)
 //   - load and validate config (YAML + S_HOLE_* env-var overrides); bail
 //     on any duration/enum failure
+//   - bind the plain DNS UDP and TCP sockets (dnsserver.Listen); a failure
+//     here is fatal, and Shutdown can always close them (b/063)
 //   - if dot_listen is set, load the DoT certificate and bind the
 //     DNS-over-TLS listener; a failure here is fatal
 //   - construct the blocklist store, stats counter, query loggers, DNS
-//     response cache, DNS handler, and DNS server
+//     response cache, DNS handler, and the DNS server on the bound sockets
 //   - construct the single-flight reload closure and the admin API server
 //     (which exposes /healthz, /readyz, /metrics, and, opt-in via
 //     enable_pprof, /debug/pprof/* alongside the REST API)
@@ -25,11 +29,15 @@
 // the blocklists) through the same single-flight closure used by the
 // periodic timer and POST /api/reload. See signals_unix.go.
 //
-// Shutdown is funnelled through a single doStop closure used by both the
-// signal handler and the Windows SCM stop control; this keeps the
-// cleanup order consistent across the two entry points. An in-flight
-// blocklist refresh is waited on (with a 5 s deadline) so the atomic
-// rename can complete before the process exits.
+// Shutdown is funnelled through a single doStop closure. Four paths call it:
+// the signal handler, the Windows SCM stop control, blockUntilStopped when
+// the DNS server fails while s-hole runs (b/064), and the Windows service
+// loop when the DNS server returns first (b/065). This keeps the cleanup
+// order the same on every path. After a DNS server failure, the process exits
+// non-zero once the teardown is done, so the service manager restarts it. An
+// in-flight blocklist refresh is waited on (with a 5 s deadline) so the
+// atomic rename can complete before the process exits; no new reload pass
+// starts once shutdown has begun (b/070).
 package main
 
 import (
@@ -158,16 +166,20 @@ func main() {
 
 	// Under the Windows SCM the working directory is C:\Windows\System32, so
 	// the sample config's relative query_db and cache_dir, and any relative
-	// log_file, put s-hole's files in the system folder (b/066). Change to the config file's
-	// directory first, so relative paths resolve next to config.yaml, as they
-	// resolve in /var/lib/s-hole under systemd and in /app in Docker.
+	// log_file, put s-hole's files in the system folder (b/066). Change to the
+	// config file's directory first, so relative paths resolve next to
+	// config.yaml, as they resolve in /var/lib/s-hole under systemd and in /app
+	// in Docker. The config is then loaded through its absolute path: a
+	// relative -config path such as conf\config.yaml, read again from inside
+	// conf, would name conf\conf\config.yaml (b/069).
 	if service.IsWindowsService() {
-		dir, err := chdirToConfigDir(*cfgPath, os.Chdir)
+		absCfg, err := chdirToConfigDir(*cfgPath, os.Chdir)
 		if err != nil {
-			mainLog.Error("working directory change failed", "dir", dir, "err", err)
+			mainLog.Error("working directory change failed", "config", *cfgPath, "err", err)
 			os.Exit(1)
 		}
-		mainLog.Info("working directory set to the config directory", "dir", dir)
+		*cfgPath = absCfg
+		mainLog.Info("working directory set to the config directory", "dir", filepath.Dir(absCfg))
 	}
 
 	cfg, refreshInterval, statsInterval, dbFlushInterval, err := config.LoadAndValidate(*cfgPath)
@@ -253,7 +265,8 @@ func main() {
 	//
 	// reloadFn returns synchronously: true means the reload started, false
 	// means a reload is already running and this request is queued behind it
-	// (b/061). The actual download work runs in a background goroutine so
+	// (b/061), or that shutdown has started and the request is refused
+	// (b/070). The actual download work runs in a background goroutine so
 	// callers (including the HTTP handler) return quickly.
 	//
 	// reloadWG lets doStop wait for any in-flight refresh to complete (or
@@ -265,7 +278,7 @@ func main() {
 	if dotCerts != nil {
 		certs = dotCerts
 	}
-	reloadFn := newReloadFn(runCtx, mainLog, &reloadWG, reloadWork(mainLog, certs, func() {
+	reloadFn, stopReloads := newReloadFn(runCtx, mainLog, &reloadWG, reloadWork(mainLog, certs, func() {
 		mainLog.Info("refreshing blocklists")
 		if err := blocklist.Update(store, cfg.Blocklists, cfg.CacheDir, blocklist.DownloadFirst); err != nil {
 			mainLog.Warn("blocklist refresh failed", "err", err)
@@ -294,8 +307,8 @@ func main() {
 	}
 	if cfg.EnablePprof {
 		apiServer.EnablePprof(true)
-		mainLog.Warn("pprof endpoints enabled; bind api_listen to localhost only",
-			"api_listen", cfg.APIListen)
+		mainLog.Warn("pprof endpoints enabled", "api_listen", cfg.APIListen,
+			"hint", "the pprof endpoints have no authentication. Keep api_listen on a localhost address, or set enable_pprof to false")
 	}
 	// Bind the admin listener synchronously so a bad api_listen or a port
 	// conflict is caught here, in order, before the banner. DNS is the critical
@@ -338,9 +351,10 @@ func main() {
 	// let main() return before the later teardown steps ran (b/043).
 	done := make(chan struct{})
 
-	// doStop is the single shutdown path used by both the signal handler
-	// (interactive) and the Windows SCM stop event (service mode). It wires the
-	// running subsystems into shutdown(); shutdown() owns the teardown order.
+	// doStop is the single shutdown path. The signal handler, the Windows SCM
+	// stop control, and a DNS server failure (blockUntilStopped, or Execute
+	// under the SCM) all call it. It wires the running subsystems into
+	// shutdown(); shutdown() owns the teardown order.
 	// stopOnce guards against a second stop request re-running teardown. The
 	// old os.Exit(0) made re-entry impossible; without it, guard explicitly.
 	var stopOnce sync.Once
@@ -352,6 +366,7 @@ func main() {
 				stopDNS:       dnsServer.Shutdown,
 				drainHTTP:     apiServer.Shutdown,
 				waitForReload: func(ctx context.Context) {
+					stopReloads()
 					waitWithDeadline(ctx, &reloadWG, mainLog, "blocklist refresh")
 				},
 				closeCache: func() {
@@ -402,7 +417,8 @@ func main() {
 		if err := service.Run(func() error {
 			err := dnsServer.Start()
 			if err != nil {
-				mainLog.Error("dns server failed", "err", err)
+				mainLog.Error("dns server failed", "err", err,
+					"hint", "the service stops with a failure exit code, so the recovery actions restart it. If the error comes back after each restart, see 's-hole stopped while it ran' in docs/TROUBLESHOOTING.md")
 			}
 			return err
 		}, doStop); err != nil {
@@ -439,7 +455,7 @@ func blockUntilStopped(start func() error, stop func(), done <-chan struct{}) in
 	select {
 	case err := <-serveErr:
 		slog.With("pkg", "main").Error("dns server failed", "err", err,
-			"hint", "read err. If it comes back after each restart, fix its cause")
+			"hint", "s-hole stops and exits 1, so the service manager restarts it. If the error comes back after each restart, see 's-hole stopped while it ran' in docs/TROUBLESHOOTING.md")
 		stop()
 		<-done
 		return 1
@@ -670,15 +686,19 @@ func waitWithDeadline(ctx context.Context, wg *sync.WaitGroup, log *slog.Logger,
 }
 
 // chdirToConfigDir changes the working directory to the directory that holds
-// cfgPath and returns that directory. main passes os.Chdir; a test passes a
-// fake, so the Windows-service path is testable on any platform.
+// cfgPath and returns the absolute config path. The caller loads the config
+// through that path, because a relative cfgPath no longer names the file once
+// the working directory has changed (b/069). main passes os.Chdir; a test
+// passes a fake, so the Windows-service path is testable on any platform.
 func chdirToConfigDir(cfgPath string, chdir func(string) error) (string, error) {
 	abs, err := filepath.Abs(cfgPath)
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Dir(abs)
-	return dir, chdir(dir)
+	if err := chdir(filepath.Dir(abs)); err != nil {
+		return "", err
+	}
+	return abs, nil
 }
 
 // runCheckConfig is the -check-config dry run: it loads and validates the
@@ -707,7 +727,7 @@ func runCheckConfig(log *slog.Logger, path string) int {
 type certReloader interface {
 	Reload() error
 	NotAfter() time.Time
-	ExpiryWarning(now time.Time) string
+	ExpiryWarning(now time.Time) (msg, hint string)
 }
 
 // reloadWork returns the body of one reload: re-read the DoT certificate
@@ -732,15 +752,15 @@ func reloadWork(log *slog.Logger, certs certReloader, refresh func()) func() {
 // warnCertExpiry logs a WARN when the DoT certificate has expired or expires
 // soon, so a failed renewal shows up in the log before clients reject it.
 func warnCertExpiry(log *slog.Logger, certs certReloader) {
-	if msg := certs.ExpiryWarning(time.Now()); msg != "" {
-		log.Warn(msg, "expires", certs.NotAfter().Format(time.RFC3339))
+	if msg, hint := certs.ExpiryWarning(time.Now()); msg != "" {
+		log.Warn(msg, "expires", certs.NotAfter().Format(time.RFC3339), "hint", hint)
 	}
 }
 
 // newReloadFn builds the single-flight reload closure shared by the
-// periodic timer, POST /api/reload, and SIGHUP. It returns true if no reload
-// was running and it started one (asynchronously, so callers return at once).
-// It returns false if a reload is already running; the request is then queued,
+// periodic timer, POST /api/reload, and SIGHUP. The reload func returns true
+// if no reload was running and it started one (asynchronously, so callers
+// return at once). It returns false if a reload is already running; the request is then queued,
 // and the running reload does one more pass when it finishes. Any number of
 // requests during one pass queue a single follow-up pass.
 //
@@ -753,17 +773,32 @@ func warnCertExpiry(log *slog.Logger, certs certReloader) {
 // certificate after the pass read the old one. A dropped request left the old
 // certificate served until the next timer reload (b/061).
 //
-// Once ctx is cancelled (shutdown has started), a queued pass is dropped, so
-// the bounded reload wait in shutdown covers at most the pass in flight.
+// Once ctx is cancelled (shutdown has started) or stop has run, a queued
+// pass is dropped and a new request starts no pass, so the bounded reload
+// wait in shutdown covers at most the pass in flight (b/070). A new request
+// then returns false.
 //
 // wg lets doStop wait for an in-flight refresh to finish its os.Rename before
-// the process exits, so a refresh is never killed mid-write.
-func newReloadFn(ctx context.Context, log *slog.Logger, wg *sync.WaitGroup, work func()) func() bool {
-	var mu sync.Mutex // guards running and queued
-	var running, queued bool
-	return func() bool {
+// the process exits, so a refresh is never killed mid-write. The returned stop
+// function closes the gate under the same mutex that guards wg.Add. shutdown
+// calls it before wg.Wait, so every wg.Add happens before that Wait, and no
+// request after it starts a pass. The ctx check alone does not give that
+// order, because cancel does not take the mutex.
+func newReloadFn(ctx context.Context, log *slog.Logger, wg *sync.WaitGroup, work func()) (reload func() bool, stop func()) {
+	var mu sync.Mutex // guards running, queued, and closed
+	var running, queued, closed bool
+	stop = func() {
+		mu.Lock()
+		closed = true
+		mu.Unlock()
+	}
+	reload = func() bool {
 		mu.Lock()
 		defer mu.Unlock()
+		if closed || ctx.Err() != nil {
+			log.Info("reload refused during shutdown")
+			return false
+		}
 		if running {
 			if !queued {
 				log.Info("reload queued until the running reload ends")
@@ -781,7 +816,7 @@ func newReloadFn(ctx context.Context, log *slog.Logger, wg *sync.WaitGroup, work
 				// take, so a request that arrives after this check sees
 				// running == false and starts its own pass: none is lost.
 				mu.Lock()
-				again := queued && ctx.Err() == nil
+				again := queued && !closed && ctx.Err() == nil
 				queued = false
 				if !again {
 					running = false
@@ -795,6 +830,7 @@ func newReloadFn(ctx context.Context, log *slog.Logger, wg *sync.WaitGroup, work
 		}()
 		return true
 	}
+	return reload, stop
 }
 
 // shutdownDeps holds the teardown actions so the order in shutdown() can be

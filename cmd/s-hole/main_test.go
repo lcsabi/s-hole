@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -18,13 +19,16 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/lcsabi/s-hole/internal/config"
 	"github.com/lcsabi/s-hole/internal/querylog"
 )
 
@@ -429,7 +433,7 @@ func discardLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard,
 func TestNewReloadFn_SingleFlight(t *testing.T) {
 	var wg sync.WaitGroup
 	g := newGatedWork(t)
-	reload := newReloadFn(context.Background(), discardLog(), &wg, g.run)
+	reload, _ := newReloadFn(context.Background(), discardLog(), &wg, g.run)
 
 	if !reload() {
 		t.Fatal("first reload() = false, want true")
@@ -455,7 +459,7 @@ func TestNewReloadFn_SingleFlight(t *testing.T) {
 func TestNewReloadFn_ManyCallsQueueOnePass(t *testing.T) {
 	var wg sync.WaitGroup
 	g := newGatedWork(t)
-	reload := newReloadFn(context.Background(), discardLog(), &wg, g.run)
+	reload, _ := newReloadFn(context.Background(), discardLog(), &wg, g.run)
 
 	if !reload() {
 		t.Fatal("first reload() = false, want true")
@@ -481,7 +485,7 @@ func TestNewReloadFn_ManyCallsQueueOnePass(t *testing.T) {
 func TestNewReloadFn_CallDuringFollowUpQueuesAgain(t *testing.T) {
 	var wg sync.WaitGroup
 	g := newGatedWork(t)
-	reload := newReloadFn(context.Background(), discardLog(), &wg, g.run)
+	reload, _ := newReloadFn(context.Background(), discardLog(), &wg, g.run)
 
 	reload()
 	g.waitEntered()
@@ -506,7 +510,7 @@ func TestNewReloadFn_CallDuringFollowUpQueuesAgain(t *testing.T) {
 func TestNewReloadFn_WaitGroupCoversFollowUp(t *testing.T) {
 	var wg sync.WaitGroup
 	g := newGatedWork(t)
-	reload := newReloadFn(context.Background(), discardLog(), &wg, g.run)
+	reload, _ := newReloadFn(context.Background(), discardLog(), &wg, g.run)
 
 	reload()
 	g.waitEntered()
@@ -551,7 +555,7 @@ func TestNewReloadFn_CancelDropsQueuedPass(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	g := newGatedWork(t)
-	reload := newReloadFn(ctx, discardLog(), &wg, g.run)
+	reload, _ := newReloadFn(ctx, discardLog(), &wg, g.run)
 
 	reload()
 	g.waitEntered()
@@ -578,7 +582,7 @@ func TestNewReloadFn_LogsQueueOncePerPass(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(&buf, nil))
 	var wg sync.WaitGroup
 	g := newGatedWork(t)
-	reload := newReloadFn(context.Background(), log, &wg, g.run)
+	reload, _ := newReloadFn(context.Background(), log, &wg, g.run)
 
 	reload()
 	g.waitEntered()
@@ -624,7 +628,7 @@ func TestNewReloadFn_NoOverlapNoLostRequestUnderStress(t *testing.T) {
 			runtime.Gosched()
 			active.Add(-1)
 		}
-		reload := newReloadFn(context.Background(), discardLog(), &wg, work)
+		reload, _ := newReloadFn(context.Background(), discardLog(), &wg, work)
 
 		var callers sync.WaitGroup
 		for c := 0; c < 8; c++ {
@@ -640,15 +644,15 @@ func TestNewReloadFn_NoOverlapNoLostRequestUnderStress(t *testing.T) {
 				}
 			}()
 		}
-		callers.Wait()
-		wg.Wait()
+		waitIdle(t, &callers)
+		waitIdle(t, &wg)
 		if got, want := lastSeen.Load(), gen.Load(); got != want {
 			t.Fatalf("iteration %d: last pass saw gen %d, want %d (a request was lost)", iter, got, want)
 		}
 		if !reload() {
 			t.Fatalf("iteration %d: reload() after wg.Wait = false, want true", iter)
 		}
-		wg.Wait()
+		waitIdle(t, &wg)
 	}
 }
 
@@ -998,11 +1002,11 @@ type fakeCertReloader struct {
 
 func (f *fakeCertReloader) Reload() error       { f.reloads++; return f.reloadErr }
 func (f *fakeCertReloader) NotAfter() time.Time { return f.notAfter }
-func (f *fakeCertReloader) ExpiryWarning(now time.Time) string {
+func (f *fakeCertReloader) ExpiryWarning(now time.Time) (msg, hint string) {
 	if now.After(f.notAfter) {
-		return "the DoT certificate has expired; clients will reject it"
+		return "DoT certificate expired", "renew the certificate, then reload s-hole"
 	}
-	return ""
+	return "", ""
 }
 
 func TestReloadWork_ReloadsCertificateThenRefreshes(t *testing.T) {
@@ -1060,7 +1064,7 @@ func TestReloadWork_WarnsOnExpiredCertificate(t *testing.T) {
 
 	reloadWork(log, certs, func() {})()
 
-	if !strings.Contains(buf.String(), "has expired") {
+	if !strings.Contains(buf.String(), "DoT certificate expired") {
 		t.Errorf("want an expiry WARN after reloading an expired certificate:\n%s", buf.String())
 	}
 }
@@ -1142,7 +1146,7 @@ func TestRunCheckConfig(t *testing.T) {
 		{"invalid config", "block_mode: bogus\n", 1, []string{"level=ERROR"}},
 		{"expired DoT certificate warns but passes",
 			"dot_listen: \":853\"\ntls_cert: \"" + certFile + "\"\ntls_key: \"" + keyFile + "\"\n",
-			0, []string{"has expired", "level=WARN", "config OK"}},
+			0, []string{"DoT certificate expired", "level=WARN", "config OK"}},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1170,19 +1174,19 @@ func recordChdir(err error) (func(string) error, *[]string) {
 	}, &calls
 }
 
-// TestChdirToConfigDir_AbsolutePath verifies that an absolute config path makes
-// chdir get the directory of that path, once (b/066).
+// TestChdirToConfigDir_AbsolutePath verifies that an absolute config path
+// comes back unchanged and chdir gets its directory, once (b/066, b/069).
 func TestChdirToConfigDir_AbsolutePath(t *testing.T) {
 	cfgDir := filepath.Join(t.TempDir(), "etc")
 	cfgPath := filepath.Join(cfgDir, "s-hole.yaml")
 	chdir, calls := recordChdir(nil)
 
-	dir, err := chdirToConfigDir(cfgPath, chdir)
+	got, err := chdirToConfigDir(cfgPath, chdir)
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
-	if dir != cfgDir {
-		t.Errorf("dir = %q, want %q", dir, cfgDir)
+	if got != cfgPath {
+		t.Errorf("returned path = %q, want the config file %q", got, cfgPath)
 	}
 	if want := []string{cfgDir}; !reflect.DeepEqual(*calls, want) {
 		t.Errorf("chdir calls = %q, want %q", *calls, want)
@@ -1190,9 +1194,10 @@ func TestChdirToConfigDir_AbsolutePath(t *testing.T) {
 }
 
 // TestChdirToConfigDir_RelativePath verifies that a relative config path
-// resolves against the working directory at call time, and chdir gets an
-// absolute directory (b/066). The test changes the process working directory,
-// so it must not run in parallel.
+// resolves against the working directory at call time. The function returns
+// the absolute file path, not the directory, and chdir gets the absolute
+// directory once (b/066, b/069). The test changes the process working
+// directory, so it must not run in parallel.
 func TestChdirToConfigDir_RelativePath(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -1200,7 +1205,7 @@ func TestChdirToConfigDir_RelativePath(t *testing.T) {
 		subdir  string // directory under the working directory that chdir must get
 	}{
 		{"nested", filepath.Join("conf", "s-hole.yaml"), "conf"},
-		{"bare file name", "config.yaml", ""},
+		{"bare file name", "s-hole.yaml", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1209,43 +1214,43 @@ func TestChdirToConfigDir_RelativePath(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := filepath.Join(wd, tc.subdir)
+			wantDir := filepath.Join(wd, tc.subdir)
+			wantPath := filepath.Join(wd, tc.cfgPath)
 			chdir, calls := recordChdir(nil)
 
-			dir, err := chdirToConfigDir(tc.cfgPath, chdir)
+			got, err := chdirToConfigDir(tc.cfgPath, chdir)
 			if err != nil {
 				t.Fatalf("err = %v, want nil", err)
 			}
-			if !filepath.IsAbs(dir) {
-				t.Errorf("dir = %q, want an absolute path", dir)
+			if !filepath.IsAbs(got) {
+				t.Errorf("returned path = %q, want an absolute path", got)
 			}
-			if dir != want {
-				t.Errorf("dir = %q, want %q", dir, want)
+			if got != wantPath {
+				t.Errorf("returned path = %q, want %q", got, wantPath)
 			}
-			if !reflect.DeepEqual(*calls, []string{want}) {
-				t.Errorf("chdir calls = %q, want [%q]", *calls, want)
+			if !reflect.DeepEqual(*calls, []string{wantDir}) {
+				t.Errorf("chdir calls = %q, want [%q]", *calls, wantDir)
 			}
 		})
 	}
 }
 
-// TestChdirToConfigDir_ChdirError verifies that when chdir fails, the function
-// returns chdir's error and still returns the directory, so main can log it
-// (b/066).
+// TestChdirToConfigDir_ChdirError verifies that when chdir fails, the
+// function returns "" and chdir's error, and calls chdir once (b/069).
 func TestChdirToConfigDir_ChdirError(t *testing.T) {
 	sentinel := errors.New("access denied")
 	cfgDir := filepath.Join(t.TempDir(), "missing")
 	chdir, calls := recordChdir(sentinel)
 
-	dir, err := chdirToConfigDir(filepath.Join(cfgDir, "s-hole.yaml"), chdir)
+	got, err := chdirToConfigDir(filepath.Join(cfgDir, "s-hole.yaml"), chdir)
 	if !errors.Is(err, sentinel) {
 		t.Errorf("err = %v, want %v", err, sentinel)
 	}
-	if dir != cfgDir {
-		t.Errorf("dir = %q, want %q", dir, cfgDir)
+	if got != "" {
+		t.Errorf("returned path = %q, want empty on error", got)
 	}
-	if len(*calls) != 1 {
-		t.Errorf("chdir called %d times, want 1", len(*calls))
+	if !reflect.DeepEqual(*calls, []string{cfgDir}) {
+		t.Errorf("chdir calls = %q, want [%q]", *calls, cfgDir)
 	}
 }
 
@@ -1260,12 +1265,12 @@ func TestChdirToConfigDir_RealChdir(t *testing.T) {
 	cfgDir := t.TempDir()
 	cfgPath := filepath.Join(cfgDir, "s-hole.yaml")
 
-	dir, err := chdirToConfigDir(cfgPath, os.Chdir)
+	got, err := chdirToConfigDir(cfgPath, os.Chdir)
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
-	if dir != cfgDir {
-		t.Errorf("dir = %q, want %q", dir, cfgDir)
+	if got != cfgPath {
+		t.Errorf("returned path = %q, want %q", got, cfgPath)
 	}
 	wd, err := os.Getwd()
 	if err != nil {
@@ -1286,6 +1291,42 @@ func TestChdirToConfigDir_RealChdir(t *testing.T) {
 	}
 }
 
+// TestChdirToConfigDir_NestedRelativeLoadsConfig is the b/069 regression: with
+// a nested relative path such as conf/s-hole.yaml, the original string no
+// longer names the file after the chdir, so main must load the config through
+// the returned path. Relative data paths then resolve in the config directory.
+func TestChdirToConfigDir_NestedRelativeLoadsConfig(t *testing.T) {
+	startDir := t.TempDir()
+	t.Chdir(startDir)
+	cfgDir := filepath.Join(startDir, "conf")
+	if err := os.Mkdir(cfgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("S_HOLE_QUERY_DB", "queries.db")
+	rel := filepath.Join("conf", "s-hole.yaml")
+	if err := os.WriteFile(rel, []byte("upstreams:\n  - 1.1.1.1:53\nquery_db: \"queries.db\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := chdirToConfigDir(rel, os.Chdir)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if _, err := os.Stat(rel); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("original relative path still names a file after chdir (stat err = %v); the test setup is wrong", err)
+	}
+	cfg, _, _, _, err := config.LoadAndValidate(got)
+	if err != nil {
+		t.Fatalf("LoadAndValidate(%q) = %v, want nil", got, err)
+	}
+	if err := os.WriteFile(cfg.QueryDB, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(cfgDir, "queries.db")); err != nil {
+		t.Errorf("relative query_db did not resolve in the config directory: %v", err)
+	}
+}
+
 // sameDir reports whether a and b name the same directory after symlinks
 // resolve (a temp dir can sit behind a symlink, for example on macOS).
 func sameDir(t *testing.T, a, b string) bool {
@@ -1299,4 +1340,204 @@ func sameDir(t *testing.T, a, b string) bool {
 		t.Fatal(err)
 	}
 	return ra == rb
+}
+
+// TestNewReloadFn_RefusedAfterCancel pins b/070: once shutdown cancels ctx, a
+// new request starts no pass, returns false, leaves wg alone, and logs why.
+func TestNewReloadFn_RefusedAfterCancel(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	var wg sync.WaitGroup
+	ctx, cancel := context.WithCancel(context.Background())
+	var runs atomic.Int32
+	reload, _ := newReloadFn(ctx, log, &wg, func() { runs.Add(1) })
+
+	cancel()
+	if reload() {
+		t.Error("reload() after cancel = true, want false")
+	}
+	waitIdle(t, &wg)
+	if n := runs.Load(); n != 0 {
+		t.Errorf("work ran %d times after cancel, want 0", n)
+	}
+	if !strings.Contains(buf.String(), `msg="reload refused during shutdown"`) {
+		t.Errorf("missing refusal log line:\n%s", buf.String())
+	}
+}
+
+// TestNewReloadFn_RefusedAfterStop pins b/070: after stop runs, a request
+// starts no pass even though ctx is still live.
+func TestNewReloadFn_RefusedAfterStop(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	var wg sync.WaitGroup
+	var runs atomic.Int32
+	reload, stop := newReloadFn(context.Background(), log, &wg, func() { runs.Add(1) })
+
+	stop()
+	if reload() {
+		t.Error("reload() after stop = true, want false")
+	}
+	waitIdle(t, &wg)
+	if n := runs.Load(); n != 0 {
+		t.Errorf("work ran %d times after stop, want 0", n)
+	}
+	if !strings.Contains(buf.String(), `msg="reload refused during shutdown"`) {
+		t.Errorf("missing refusal log line:\n%s", buf.String())
+	}
+}
+
+// TestNewReloadFn_StopDropsQueuedPass pins b/070: stop during a pass with a
+// follow-up queued lets the pass in flight finish and drops the queued one,
+// so the shutdown wait covers one pass at most.
+func TestNewReloadFn_StopDropsQueuedPass(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	var wg sync.WaitGroup
+	g := newGatedWork(t)
+	reload, stop := newReloadFn(context.Background(), log, &wg, g.run)
+
+	if !reload() {
+		t.Fatal("first reload() = false, want true")
+	}
+	g.waitEntered()
+	if reload() {
+		t.Fatal("second reload() = true, want false (queued)")
+	}
+	stop()
+	if reload() {
+		t.Error("reload() after stop = true, want false")
+	}
+	g.step()
+	g.assertNoPassStarts("queued pass ran after stop")
+	waitIdle(t, &wg)
+	if got := g.started.Load(); got != 1 {
+		t.Errorf("work ran %d times, want 1", got)
+	}
+	if got := g.finished.Load(); got != 1 {
+		t.Errorf("in-flight pass finished %d times, want 1", got)
+	}
+	if strings.Contains(buf.String(), `msg="queued reload started"`) {
+		t.Errorf("queued pass logged a start after stop:\n%s", buf.String())
+	}
+}
+
+// TestVirtualIfacePrefixes_MatchInstaller pins the b/059 rule that the Go
+// list and the installer's lan_ipv4s awk filter name the same interfaces, so
+// the startup banner and the installer banner agree.
+func TestVirtualIfacePrefixes_MatchInstaller(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "deploy", "install-linux.sh"))
+	if err != nil {
+		t.Fatalf("read installer: %v", err)
+	}
+	src := string(data)
+	start := strings.Index(src, "lan_ipv4s() {")
+	if start < 0 {
+		t.Fatal("lan_ipv4s function not found in deploy/install-linux.sh")
+	}
+	re := regexp.MustCompile(`tolower\(\$2\) !~ /\^\(([^)]*)\)/`)
+	m := re.FindStringSubmatch(src[start:])
+	if m == nil {
+		t.Fatal("interface-name regex not found in lan_ipv4s")
+	}
+	shell := strings.Split(m[1], "|")
+	goList := append([]string(nil), virtualIfacePrefixes...)
+	sort.Strings(shell)
+	sort.Strings(goList)
+	if !reflect.DeepEqual(shell, goList) {
+		t.Errorf("install-linux.sh lan_ipv4s list = %v\nvirtualIfacePrefixes        = %v\nkeep them identical", shell, goList)
+	}
+}
+
+// TestBlockUntilStopped_ServeErrorLogsHint pins b/064: the "dns server
+// failed" record is at ERROR and carries the error and a hint.
+func TestBlockUntilStopped_ServeErrorLogsHint(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	done := make(chan struct{})
+	var stops atomic.Int32
+	stop := func() {
+		if stops.Add(1) == 1 {
+			close(done)
+		}
+	}
+	result := make(chan int, 1)
+	go func() { result <- blockUntilStopped(func() error { return errors.New("boom") }, stop, done) }()
+	select {
+	case code := <-result:
+		if code != 1 {
+			t.Errorf("code = %d, want 1", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("blockUntilStopped did not return")
+	}
+	if n := stops.Load(); n != 1 {
+		t.Errorf("stop called %d times, want 1", n)
+	}
+	var rec map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		var r map[string]any
+		if json.Unmarshal([]byte(line), &r) == nil && r["msg"] == "dns server failed" {
+			rec = r
+		}
+	}
+	if rec == nil {
+		t.Fatalf("no dns server failed record:\n%s", buf.String())
+	}
+	if rec["level"] != "ERROR" {
+		t.Errorf("level = %v, want ERROR", rec["level"])
+	}
+	if rec["err"] != "boom" {
+		t.Errorf("err = %v, want boom", rec["err"])
+	}
+	if h, _ := rec["hint"].(string); h == "" {
+		t.Errorf("hint is missing or empty: %v", rec)
+	}
+}
+
+// expiryFake returns a fixed ExpiryWarning result, so warnCertExpiry is
+// tested apart from the expiry math.
+type expiryFake struct {
+	notAfter  time.Time
+	msg, hint string
+}
+
+func (f expiryFake) Reload() error                            { return nil }
+func (f expiryFake) NotAfter() time.Time                      { return f.notAfter }
+func (f expiryFake) ExpiryWarning(time.Time) (string, string) { return f.msg, f.hint }
+
+func TestWarnCertExpiry_LogsOneWarnWithFields(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&buf, nil))
+	notAfter := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	warnCertExpiry(log, expiryFake{notAfter: notAfter, msg: "DoT certificate expires soon", hint: "renew it"})
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("got %d records, want 1:\n%s", len(lines), buf.String())
+	}
+	var rec map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec["level"] != "WARN" || rec["msg"] != "DoT certificate expires soon" {
+		t.Errorf("record = %v, want WARN with the ExpiryWarning message", rec)
+	}
+	if rec["expires"] != notAfter.Format(time.RFC3339) {
+		t.Errorf("expires = %v, want %s (RFC 3339)", rec["expires"], notAfter.Format(time.RFC3339))
+	}
+	if rec["hint"] != "renew it" {
+		t.Errorf("hint = %v, want the ExpiryWarning hint", rec["hint"])
+	}
+}
+
+func TestWarnCertExpiry_SilentWhenNoWarning(t *testing.T) {
+	var buf bytes.Buffer
+	warnCertExpiry(slog.New(slog.NewJSONHandler(&buf, nil)), expiryFake{notAfter: time.Now().Add(365 * 24 * time.Hour)})
+	if buf.Len() != 0 {
+		t.Errorf("want no log output, got:\n%s", buf.String())
+	}
 }

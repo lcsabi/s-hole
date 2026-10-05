@@ -2160,3 +2160,153 @@ file's directory (`chdirToConfigDir`) before it loads the config.
 `-service install` stores the config path as an absolute path, so this
 directory is known. Relative paths then resolve next to `config.yaml`. An
 interactive run keeps the current directory, as before.
+
+## b/067: config: an uppercase DoH scheme passed validation but was not forwarded over DoH
+
+**Priority:** P2
+**Component:** config
+**Status:** Fixed in CL 91
+**Filed:** 2026-10-05
+
+### Description
+
+An upstream such as `HTTPS://1.1.1.1/dns-query` passed config validation and
+`-check-config`, but every query to it failed. If it was the only upstream,
+every cache miss got SERVFAIL, and startup logged nothing about it. Found by
+the code review of CL 85 to CL 90.
+
+### Root Cause
+
+`isValidDoHURL` checked `url.Parse(u).Scheme == "https"`. `url.Parse`
+lowercases the scheme, so the check accepted any case. `filterUpstreams` kept
+the raw string, and the forwarder picks DoH by the exact prefix
+`https://`. The uppercase entry went to the plain UDP path, which cannot dial
+a URL. The same check also accepted a URL with user info, which then appeared
+as a label on `/metrics`, and a URL with no path.
+
+### Fix
+
+`normalizeDoHURL` replaces `isValidDoHURL`. It returns the normalized URL,
+and `filterUpstreams` stores that form, so the forwarder sees the scheme that
+the check accepted. A URL with user info or with no path is dropped with the
+existing WARN. That WARN replaces the user info with `redacted`, so a password
+in a dropped entry does not reach the log.
+
+## b/068: blocklist: a download that failed during the body dropped the list from the block set
+
+**Priority:** P2
+**Component:** blocklist
+**Status:** Fixed in CL 91
+**Filed:** 2026-10-05
+
+### Description
+
+When a blocklist download failed after the 200 status (a connection reset,
+or the 60 s client timeout during the body), s-hole logged `blocklist load
+failed` and did not use the cache file on disk. If another list loaded, the
+reload replaced the block set without the failed list's domains until the
+next good download. The troubleshooting guide says that line means s-hole has
+no cached copy, which was not true here. Found by the code review of CL 85 to
+CL 90.
+
+### Root Cause
+
+`fetchList` took the stale-cache fallback for a connection error, a non-200
+status, and a body over the size cap, but returned the read error from
+`parseHostsFormat` (and the `.tmp` close error) directly. The path is older
+than CL 89, but before CL 89 only a reload with a cache older than 24 hours
+downloaded. Since CL 89 (b/060), every reload downloads, so every reload can
+reach it, and the b/060 fix says the cache is the fallback when a download
+fails.
+
+### Fix
+
+A read or close error after the 200 status takes the same stale-cache
+fallback as a connection error: a `download failed, using stale cache` WARN
+and `from=stale_cache`. Without a cache file, the error is returned as
+before.
+
+## b/069: main: a Windows service with a relative -config path in a subdirectory could not load its config
+
+**Priority:** P3
+**Component:** main
+**Status:** Fixed in CL 91
+**Filed:** 2026-10-05
+
+### Description
+
+A Windows service registered by hand with a relative config path such as
+`-config conf\config.yaml` failed at start with `config load failed`, and the
+recovery actions restarted it in a loop. `-service install` stores an
+absolute path, so a service that it installed was not affected. Found by the
+code review of CL 85 to CL 90.
+
+### Root Cause
+
+The b/066 fix changed to the config file's directory, then loaded the config
+through the original relative path. From inside `conf`, `conf\config.yaml`
+names `conf\conf\config.yaml`.
+
+### Fix
+
+`chdirToConfigDir` returns the absolute config path, and main loads the
+config through it.
+
+## b/070: reload: a reload request after shutdown started still started a pass
+
+**Priority:** P3
+**Component:** main
+**Status:** Fixed in CL 91
+**Filed:** 2026-10-05
+
+### Description
+
+A reload request that arrived after shutdown had started (a SIGHUP, or a
+`POST /api/reload` during the admin HTTP drain) started a full reload pass.
+The pass could start after the bounded reload wait in `shutdown` had begun or
+ended, so the process could close the cache and the query log under it or
+exit while it wrote a blocklist cache file. Found as an open question by the
+code review of CL 85 to CL 90. The gap was older than CL 89: the `TryLock`
+gate had it too.
+
+### Root Cause
+
+`newReloadFn` checked the cancelled context only before a queued pass, not
+before a new request. The context cancel also does not take the closure's
+mutex, so a check alone does not order a `wg.Add` before the `wg.Wait` in
+shutdown.
+
+### Fix
+
+A new request returns false and logs `reload refused during shutdown` once
+the context is cancelled or the gate is closed. `newReloadFn` also returns a
+stop function that closes the gate under the closure's mutex. Shutdown calls
+it before it waits for the in-flight reload, so every `wg.Add` happens
+before that wait.
+
+## b/071: test: TestForward_TruncatedUDPRetriesOverTCP can fail to bind its TCP port
+
+**Priority:** P3
+**Component:** dns (tests)
+**Status:** Open
+**Filed:** 2026-10-05
+
+### Description
+
+During the CL 91 checks, one `CGO_ENABLED=1 go test -race -count=1 ./...`
+run failed with `listen tcp 127.0.0.1:36798: bind: address already in use`
+in `TestForward_TruncatedUDPRetriesOverTCP`. Three later runs of the package
+passed. The test is from CL 22, not from CL 91.
+
+### Root Cause
+
+`startTruncatingUpstream` binds UDP on `127.0.0.1:0` and then binds TCP on
+the same port number. Nothing reserves that TCP port, so another test
+package that runs at the same time can hold it. This is the cross-protocol
+collision that b/029 describes, and `pickFreePort` already avoids it with
+random probing over both transports.
+
+### Fix
+
+Not fixed yet. Make `startTruncatingUpstream` get its port pair the way
+`pickFreePort` does.

@@ -707,7 +707,8 @@ func TestShutdown_ContinuesAfterErrors(t *testing.T) {
 // shutdown() with a doStop that closes done afterward, and asserts the last
 // teardown step (closeDB) has run by the time blockUntilStopped returns. The
 // pre-fix code returned as soon as stopDNS unblocked Start(), before http,
-// reload, cache, and db ran.
+// reload, cache, and db ran. On a clean stop, blockUntilStopped must not call
+// stop itself: the signal path already did.
 func TestBlockUntilStopped_WaitsForTeardown(t *testing.T) {
 	done := make(chan struct{})
 	var mu sync.Mutex
@@ -734,13 +735,16 @@ func TestBlockUntilStopped_WaitsForTeardown(t *testing.T) {
 		close(done)
 	}
 
-	go func() {
-		time.Sleep(5 * time.Millisecond)
-		doStop()
-	}()
+	// The stop callback given to blockUntilStopped only counts; the signal
+	// path below runs the real doStop.
+	var stopCalls atomic.Int32
+	go doStop()
 
-	if code := blockUntilStopped(start, done); code != 0 {
+	if code := blockUntilStopped(start, func() { stopCalls.Add(1) }, done); code != 0 {
 		t.Fatalf("blockUntilStopped code = %d, want 0", code)
+	}
+	if n := stopCalls.Load(); n != 0 {
+		t.Errorf("stop called %d times on a clean stop, want 0", n)
 	}
 
 	mu.Lock()
@@ -751,13 +755,130 @@ func TestBlockUntilStopped_WaitsForTeardown(t *testing.T) {
 	}
 }
 
-// TestBlockUntilStopped_StartupErrorExitsNonZero verifies a startup serve error
-// (a bind failure) returns exit code 1 without needing a stop signal.
-func TestBlockUntilStopped_StartupErrorExitsNonZero(t *testing.T) {
-	done := make(chan struct{}) // never closed: only the serve error should fire
-	start := func() error { return errors.New("bind failed") }
-	if code := blockUntilStopped(start, done); code != 1 {
-		t.Fatalf("blockUntilStopped code = %d, want 1", code)
+// TestBlockUntilStopped_StartErrorStopsThenWaits pins b/064: when the DNS
+// server fails at runtime, blockUntilStopped logs, calls stop exactly once,
+// and returns 1 only after done closes. Returning before done closes would
+// exit mid-teardown and break the b/043 guarantee.
+func TestBlockUntilStopped_StartErrorStopsThenWaits(t *testing.T) {
+	done := make(chan struct{})
+	stopCalled := make(chan struct{}, 4)
+	var stopCalls atomic.Int32
+	stop := func() {
+		stopCalls.Add(1)
+		stopCalled <- struct{}{}
+	}
+	start := func() error { return errors.New("dns: listener failed") }
+
+	result := make(chan int, 1)
+	go func() { result <- blockUntilStopped(start, stop, done) }()
+
+	select {
+	case <-stopCalled:
+	case code := <-result:
+		t.Fatalf("blockUntilStopped returned %d before it called stop", code)
+	case <-time.After(3 * time.Second):
+		t.Fatal("stop was not called after start failed")
+	}
+
+	// done is still open, so blockUntilStopped must still be waiting. A
+	// negative check needs a short wait; 100 ms is enough to catch an early
+	// return on any host.
+	select {
+	case code := <-result:
+		t.Fatalf("blockUntilStopped returned %d before done closed", code)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(done)
+	select {
+	case code := <-result:
+		if code != 1 {
+			t.Errorf("blockUntilStopped code = %d, want 1", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("blockUntilStopped did not return after done closed")
+	}
+	if n := stopCalls.Load(); n != 1 {
+		t.Errorf("stop called %d times, want exactly 1", n)
+	}
+}
+
+// TestBlockUntilStopped_StartErrorRunsFullTeardown composes the b/064 path
+// with the real shutdown(): a start error triggers doStop, and every teardown
+// step has run when blockUntilStopped returns 1 (b/043).
+func TestBlockUntilStopped_StartErrorRunsFullTeardown(t *testing.T) {
+	done := make(chan struct{})
+	var mu sync.Mutex
+	var order []string
+	rec := func(n string) { mu.Lock(); order = append(order, n); mu.Unlock() }
+
+	doStop := func() {
+		shutdown(slog.With("pkg", "test"), 50*time.Millisecond, shutdownDeps{
+			cancelTickers: func() { rec("cancel") },
+			logStats:      func() { rec("stats") },
+			stopDNS:       func() { rec("dns") },
+			drainHTTP:     func(context.Context) error { rec("http"); return nil },
+			waitForReload: func(context.Context) { rec("reload") },
+			closeCache:    func() { rec("cache") },
+			closeFileLog:  func() error { rec("filelog"); return nil },
+			closeDB:       func() error { rec("db"); return nil },
+		})
+		close(done)
+	}
+	start := func() error { return errors.New("dns: listener failed") }
+
+	result := make(chan int, 1)
+	go func() { result <- blockUntilStopped(start, doStop, done) }()
+	select {
+	case code := <-result:
+		if code != 1 {
+			t.Fatalf("blockUntilStopped code = %d, want 1", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("blockUntilStopped did not return; was stop called?")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"cancel", "stats", "dns", "http", "reload", "cache", "filelog", "db"}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("teardown incomplete at exit: order = %v, want %v", order, want)
+	}
+}
+
+// TestBlockUntilStopped_NilStartIgnored verifies that a nil return from start
+// is not a failure: blockUntilStopped does not call stop and does not return
+// until done closes, and then it returns 0.
+func TestBlockUntilStopped_NilStartIgnored(t *testing.T) {
+	done := make(chan struct{})
+	var stopCalls atomic.Int32
+	startReturned := make(chan struct{})
+	start := func() error { close(startReturned); return nil }
+
+	result := make(chan int, 1)
+	go func() { result <- blockUntilStopped(start, func() { stopCalls.Add(1) }, done) }()
+
+	select {
+	case <-startReturned:
+	case <-time.After(3 * time.Second):
+		t.Fatal("start was not called")
+	}
+	select {
+	case code := <-result:
+		t.Fatalf("blockUntilStopped returned %d after a nil start, want it to wait for done", code)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(done)
+	select {
+	case code := <-result:
+		if code != 0 {
+			t.Errorf("blockUntilStopped code = %d, want 0", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("blockUntilStopped did not return after done closed")
+	}
+	if n := stopCalls.Load(); n != 0 {
+		t.Errorf("stop called %d times after a nil start, want 0", n)
 	}
 }
 
@@ -1037,4 +1158,145 @@ func TestRunCheckConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+// recordChdir returns a fake chdir that records each directory it gets and
+// returns err.
+func recordChdir(err error) (func(string) error, *[]string) {
+	var calls []string
+	return func(dir string) error {
+		calls = append(calls, dir)
+		return err
+	}, &calls
+}
+
+// TestChdirToConfigDir_AbsolutePath verifies that an absolute config path makes
+// chdir get the directory of that path, once (b/066).
+func TestChdirToConfigDir_AbsolutePath(t *testing.T) {
+	cfgDir := filepath.Join(t.TempDir(), "etc")
+	cfgPath := filepath.Join(cfgDir, "s-hole.yaml")
+	chdir, calls := recordChdir(nil)
+
+	dir, err := chdirToConfigDir(cfgPath, chdir)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if dir != cfgDir {
+		t.Errorf("dir = %q, want %q", dir, cfgDir)
+	}
+	if want := []string{cfgDir}; !reflect.DeepEqual(*calls, want) {
+		t.Errorf("chdir calls = %q, want %q", *calls, want)
+	}
+}
+
+// TestChdirToConfigDir_RelativePath verifies that a relative config path
+// resolves against the working directory at call time, and chdir gets an
+// absolute directory (b/066). The test changes the process working directory,
+// so it must not run in parallel.
+func TestChdirToConfigDir_RelativePath(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfgPath string
+		subdir  string // directory under the working directory that chdir must get
+	}{
+		{"nested", filepath.Join("conf", "s-hole.yaml"), "conf"},
+		{"bare file name", "config.yaml", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			wd, err := os.Getwd()
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := filepath.Join(wd, tc.subdir)
+			chdir, calls := recordChdir(nil)
+
+			dir, err := chdirToConfigDir(tc.cfgPath, chdir)
+			if err != nil {
+				t.Fatalf("err = %v, want nil", err)
+			}
+			if !filepath.IsAbs(dir) {
+				t.Errorf("dir = %q, want an absolute path", dir)
+			}
+			if dir != want {
+				t.Errorf("dir = %q, want %q", dir, want)
+			}
+			if !reflect.DeepEqual(*calls, []string{want}) {
+				t.Errorf("chdir calls = %q, want [%q]", *calls, want)
+			}
+		})
+	}
+}
+
+// TestChdirToConfigDir_ChdirError verifies that when chdir fails, the function
+// returns chdir's error and still returns the directory, so main can log it
+// (b/066).
+func TestChdirToConfigDir_ChdirError(t *testing.T) {
+	sentinel := errors.New("access denied")
+	cfgDir := filepath.Join(t.TempDir(), "missing")
+	chdir, calls := recordChdir(sentinel)
+
+	dir, err := chdirToConfigDir(filepath.Join(cfgDir, "s-hole.yaml"), chdir)
+	if !errors.Is(err, sentinel) {
+		t.Errorf("err = %v, want %v", err, sentinel)
+	}
+	if dir != cfgDir {
+		t.Errorf("dir = %q, want %q", dir, cfgDir)
+	}
+	if len(*calls) != 1 {
+		t.Errorf("chdir called %d times, want 1", len(*calls))
+	}
+}
+
+// TestChdirToConfigDir_RealChdir verifies that with os.Chdir, the working
+// directory becomes the config directory, and a relative data file such as
+// queries.db lands there and not in the old working directory (b/066: under the
+// Windows SCM the old working directory is C:\Windows\System32). The test
+// changes the process working directory, so it must not run in parallel.
+func TestChdirToConfigDir_RealChdir(t *testing.T) {
+	startDir := t.TempDir()
+	t.Chdir(startDir) // t.Chdir restores the original directory at cleanup
+	cfgDir := t.TempDir()
+	cfgPath := filepath.Join(cfgDir, "s-hole.yaml")
+
+	dir, err := chdirToConfigDir(cfgPath, os.Chdir)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if dir != cfgDir {
+		t.Errorf("dir = %q, want %q", dir, cfgDir)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameDir(t, wd, cfgDir) {
+		t.Errorf("working directory = %q, want %q", wd, cfgDir)
+	}
+
+	if err := os.WriteFile("queries.db", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(cfgDir, "queries.db")); err != nil {
+		t.Errorf("queries.db is not in the config directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(startDir, "queries.db")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("queries.db is in the start directory (stat err = %v)", err)
+	}
+}
+
+// sameDir reports whether a and b name the same directory after symlinks
+// resolve (a temp dir can sit behind a symlink, for example on macOS).
+func sameDir(t *testing.T, a, b string) bool {
+	t.Helper()
+	ra, err := filepath.EvalSymlinks(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rb, err := filepath.EvalSymlinks(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ra == rb
 }

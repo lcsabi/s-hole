@@ -1,5 +1,5 @@
 // Package config loads s-hole's YAML configuration and applies safe
-// defaults for every field (an empty config file is valid): two
+// defaults for every field (an empty config file is valid): three
 // zero-is-meaningful fields are seeded before the decode (see Load),
 // the rest are filled in by applyDefaults afterwards, and finally
 // environment-variable overrides (S_HOLE_*) are applied so container

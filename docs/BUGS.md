@@ -2039,3 +2039,124 @@ The same CL cleans up the log output: under systemd, lines carry their syslog
 priority and text lines drop `time=`; the messages that named only a thing
 (`msg=config`, `msg=service`) now say what happened; and the multi-line
 `[stats]` block is one `msg=stats` line.
+
+## b/063: dns: a Shutdown before Start left the UDP and TCP servers bound and serving
+
+**Priority:** P3
+**Component:** dns
+**Status:** Fixed in CL 90
+**Filed:** 2026-09-29
+
+### Description
+
+If `Server.Shutdown` ran before the UDP or TCP server had started, that
+server kept its port and served until the process exited. In tests, this
+made `TestServer_StartDrainsEveryListenerOnError` depend on a 50 ms sleep, and
+a slow runner could leak a goroutine and fail the whole package through
+goleak. Found in the code review of CL 86, which had fixed the same race for
+the DoT listener only.
+
+### Root Cause
+
+`Start` launched `ListenAndServe` for UDP and TCP in goroutines, so each
+server bound its own socket inside `Start`. `dns.Server.Shutdown` returns
+"server not started" and closes nothing when the server has not started. A
+server that started after that Shutdown then bound the port and served.
+
+### Fix
+
+`dnsserver.Listen` binds UDP and TCP in main, right after config validation,
+the same way `ListenDoT` binds the DoT port. `NewServer` takes the sockets,
+every server runs through `ActivateAndServe`, and `Shutdown` closes every
+socket itself. A server that starts after Shutdown reads from a closed
+socket and stops cleanly. A port conflict now stops startup at once with
+`dns listen failed`.
+
+## b/064: main: a DNS listener that failed at runtime exited without the teardown
+
+**Priority:** P3
+**Component:** main
+**Status:** Fixed in CL 90
+**Filed:** 2026-09-29
+
+### Description
+
+If a DNS listener failed after startup, the interactive and systemd path
+logged `dns server failed` and called `os.Exit(1)` at once. The query log
+lost the entries still in its queue, the final stats line was not written,
+and an in-flight reload was cut off. Found in the code review of CL 86: a
+DoT listener can fail at runtime, while the plain listeners used to fail only
+at bind time.
+
+### Root Cause
+
+`blockUntilStopped` returned 1 as soon as `Start` returned an error, and main
+exited with that code without calling `doStop`.
+
+### Fix
+
+On a serve error, `blockUntilStopped` calls `doStop`, waits until the teardown
+has closed `done`, and then returns 1. The process still exits non-zero, so
+systemd's `Restart=on-failure` restarts it.
+
+## b/065: service: the Windows service reported Running after the DNS server stopped
+
+**Priority:** P2
+**Component:** service
+**Status:** Fixed in CL 90
+**Filed:** 2026-09-29
+
+### Description
+
+Under the Windows SCM, if the DNS server stopped with an error, the service
+only logged a warning and kept reporting Running. It answered no queries, the
+Services panel showed it as healthy, and nothing restarted it. Found in the
+code review of CL 86.
+
+### Root Cause
+
+`handler.Execute` started the DNS server in a goroutine and then waited only
+for SCM control requests. It never learned that the DNS server had returned.
+The installer also set no recovery actions, so even a failed service was not
+restarted.
+
+### Fix
+
+`Run` takes `func() error`, and `Execute` waits for the first of a stop
+request or the DNS server returning. If the DNS server returns first,
+`Execute` runs `doStop` and returns service-specific exit code 1, so the SCM
+records the service as stopped with an error. `-service install` sets three
+restart actions 5 seconds apart and turns them on for a non-zero exit code
+(`SetRecoveryActionsOnNonCrashFailures`), because the SCM otherwise applies
+them only to a crash.
+
+## b/066: service: a Windows service wrote its files into C:\Windows\System32
+
+**Priority:** P2
+**Component:** main
+**Status:** Fixed in CL 90
+**Filed:** 2026-10-05
+
+### Description
+
+With the sample config, an s-hole Windows service wrote `queries.db`,
+`queries.log`, and the blocklist cache files into `C:\Windows\System32`.
+The README said nothing about it. Found while testing CL 90 on the
+maintainer's Windows 10 host: a test service with the sample's relative
+`query_db: "queries.db"` and `cache_dir: "."` and a relative `log_file`
+created all four files in `System32` and none in its own folder.
+
+### Root Cause
+
+The SCM starts every service with `C:\Windows\System32` as its working
+directory, and s-hole never changed it. The sample config uses relative
+paths, which suit the systemd unit (`WorkingDirectory=/var/lib/s-hole`) and
+Docker (`/app`), but resolve against `System32` under a Windows service.
+
+### Fix
+
+When the SCM starts s-hole, main changes the working directory to the config
+file's directory (`chdirToConfigDir`) before it loads the config.
+`-service install` stores the config path as an absolute path, so this
+directory is known. Relative paths then resolve next to `config.yaml`. An
+interactive run keeps the current directory, as before.

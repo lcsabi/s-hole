@@ -156,17 +156,39 @@ func main() {
 		return
 	}
 
+	// Under the Windows SCM the working directory is C:\Windows\System32, so
+	// the sample config's relative query_db and cache_dir, and any relative
+	// log_file, put s-hole's files in the system folder (b/066). Change to the config file's
+	// directory first, so relative paths resolve next to config.yaml, as they
+	// resolve in /var/lib/s-hole under systemd and in /app in Docker.
+	if service.IsWindowsService() {
+		dir, err := chdirToConfigDir(*cfgPath, os.Chdir)
+		if err != nil {
+			mainLog.Error("working directory change failed", "dir", dir, "err", err)
+			os.Exit(1)
+		}
+		mainLog.Info("working directory set to the config directory", "dir", dir)
+	}
+
 	cfg, refreshInterval, statsInterval, dbFlushInterval, err := config.LoadAndValidate(*cfgPath)
 	if err != nil {
 		mainLog.Error("config load failed", "err", err)
 		os.Exit(1)
 	}
 
-	// Bind the DNS-over-TLS listener before anything else opens, so a bad
-	// dot_listen or a port conflict exits here with nothing half-built. The
-	// failure is fatal, unlike the fail-open admin UI: an enabled DoT listener
-	// that did not come up would silently cut off the clients that need it
+	// Bind the DNS listeners before anything else opens, so a port conflict
+	// or a bad listen address exits here with nothing half-built. Binding
+	// here, not inside Start, also lets Shutdown always close the sockets
+	// (b/063). The failure is fatal, unlike the fail-open admin UI: a resolver
+	// that is not listening serves no one, and an enabled DoT listener that
+	// did not come up would silently cut off the clients that need it
 	// (Android's strict Private DNS mode does not fall back to plain DNS).
+	dnsPC, dnsLn, err := dnsserver.Listen(cfg.Listen)
+	if err != nil {
+		mainLog.Error("dns listen failed", "listen", cfg.Listen, "err", err,
+			"hint", "check for another program on the port (often the systemd-resolved stub on port 53), or fix listen")
+		os.Exit(1)
+	}
 	var dotCerts *dnsserver.CertReloader
 	var dotLn net.Listener
 	if cfg.DoTListen != "" {
@@ -213,7 +235,7 @@ func main() {
 
 	logger := buildMultiLogger(fileLog, db)
 	handler := dnsserver.NewHandler(store, counter, cfg.Upstreams, logger, cfg.BlockMode, cfg.BlockTTL, dnsCache, cfg.LocalPTR, cfg.QueryPrivacy)
-	dnsServer := dnsserver.NewServer(cfg.Listen, handler)
+	dnsServer := dnsserver.NewServer(dnsPC, dnsLn, handler)
 	if dotLn != nil {
 		dnsServer.EnableDoT(dotLn)
 	}
@@ -373,12 +395,16 @@ func main() {
 
 	// When launched by the Windows SCM, enter the service event loop instead
 	// of blocking directly on the DNS server. The SCM stop control calls doStop,
-	// which runs the same ordered teardown as the interactive path.
+	// which runs the same ordered teardown as the interactive path. If the DNS
+	// server fails first, Execute also calls doStop and reports a failure exit
+	// code, so the SCM recovery actions restart the service (b/065).
 	if service.IsWindowsService() {
-		if err := service.Run(func() {
-			if err := dnsServer.Start(); err != nil {
-				mainLog.Warn("dns server stopped", "err", err)
+		if err := service.Run(func() error {
+			err := dnsServer.Start()
+			if err != nil {
+				mainLog.Error("dns server failed", "err", err)
 			}
+			return err
 		}, doStop); err != nil {
 			mainLog.Error("windows service failed", "err", err)
 			os.Exit(1)
@@ -388,19 +414,22 @@ func main() {
 
 	// Interactive mode: run the DNS server in the background so doStop, not a
 	// returning Start(), owns the exit.
-	if code := blockUntilStopped(dnsServer.Start, done); code != 0 {
+	if code := blockUntilStopped(dnsServer.Start, doStop, done); code != 0 {
 		os.Exit(code)
 	}
 }
 
 // blockUntilStopped runs start (the DNS server) in a goroutine and blocks until
-// doStop closes done. It returns the process exit code: 1 on a startup serve
-// error, 0 on a clean stop. The serve goroutine reports only a non-nil error,
-// which in practice is a startup bind failure; a clean Shutdown makes start()
-// return nil, which is dropped so it cannot race the done signal. Extracted from
-// main so the guarantee "the process exits only after shutdown() has fully run"
-// is unit-testable (b/043).
-func blockUntilStopped(start func() error, done <-chan struct{}) int {
+// doStop closes done. It returns the process exit code: 0 on a clean stop, 1
+// when a listener failed. The sockets are bound before start runs, so a serve
+// error is a runtime failure, not a bind failure. On a serve error it calls
+// stop (doStop) and waits for done, so the ordered teardown runs (the query
+// log is flushed, an in-flight reload finishes) before the process exits
+// non-zero, and systemd's Restart=on-failure restarts it (b/064). A clean
+// Shutdown makes start() return nil, which is dropped so it cannot race the
+// done signal. Extracted from main so the guarantee "the process exits only
+// after shutdown() has fully run" is unit-testable (b/043).
+func blockUntilStopped(start func() error, stop func(), done <-chan struct{}) int {
 	serveErr := make(chan error, 1)
 	go func() {
 		if err := start(); err != nil {
@@ -409,7 +438,10 @@ func blockUntilStopped(start func() error, done <-chan struct{}) int {
 	}()
 	select {
 	case err := <-serveErr:
-		slog.With("pkg", "main").Error("dns server failed", "err", err)
+		slog.With("pkg", "main").Error("dns server failed", "err", err,
+			"hint", "read err. If it comes back after each restart, fix its cause")
+		stop()
+		<-done
 		return 1
 	case <-done:
 		return 0
@@ -635,6 +667,18 @@ func waitWithDeadline(ctx context.Context, wg *sync.WaitGroup, log *slog.Logger,
 	case <-ctx.Done():
 		log.Warn("shutdown deadline exceeded waiting for "+what, "err", ctx.Err())
 	}
+}
+
+// chdirToConfigDir changes the working directory to the directory that holds
+// cfgPath and returns that directory. main passes os.Chdir; a test passes a
+// fake, so the Windows-service path is testable on any platform.
+func chdirToConfigDir(cfgPath string, chdir func(string) error) (string, error) {
+	abs, err := filepath.Abs(cfgPath)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Dir(abs)
+	return dir, chdir(dir)
 }
 
 // runCheckConfig is the -check-config dry run: it loads and validates the

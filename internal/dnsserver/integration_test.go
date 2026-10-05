@@ -51,11 +51,8 @@ func TestIntegration_FullPipeline(t *testing.T) {
 		"zero", 60, c, false, "raw")
 
 	// --- Real DNS server on a free port ---
-	addr, err := pickFreePort(t)
-	if err != nil {
-		t.Fatalf("pickFreePort: %v", err)
-	}
-	srv := NewServer(addr, h)
+	addr, pc, ln := pickFreePort(t)
+	srv := NewServer(pc, ln, h)
 	startErr := make(chan error, 1)
 	go func() { startErr <- srv.Start() }()
 	if err := waitForUDP(addr, 2*time.Second); err != nil {

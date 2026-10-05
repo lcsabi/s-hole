@@ -630,7 +630,7 @@ machine's LAN IP, not the container address the startup banner prints.
 Run once as Administrator to register s-hole as an auto-start Windows Service:
 
 ```powershell
-# Install (uses the config path you specify, must be absolute)
+# Install (s-hole stores the config path as an absolute path)
 .\s-hole.exe -service install -config C:\s-hole\config.yaml
 
 # Start / stop
@@ -643,6 +643,15 @@ Run once as Administrator to register s-hole as an auto-start Windows Service:
 
 The service can also be managed through the standard Windows Services panel (`services.msc`) or `sc.exe`.
 
+`-service install` sets the service to restart 5 seconds after a failure, like `Restart=on-failure` in the systemd unit. A failure is a crash, or a DNS listener that stops with an error while s-hole runs. If you installed the service with an older version, it does not have these restart actions. To add them without a reinstall, run these two commands as Administrator:
+
+```powershell
+sc.exe failure s-hole reset= 86400 actions= restart/5000/restart/5000/restart/5000
+sc.exe failureflag s-hole 1
+```
+
+To see the actions, run `sc.exe qfailure s-hole`.
+
 Windows has no SIGHUP. To reload the blocklists, or a renewed DNS-over-TLS certificate, use the dashboard reload button or `POST /api/reload`.
 
 A service has no console, so s-hole routes its application log (startup,
@@ -651,6 +660,11 @@ Event Viewer under **Windows Logs > Application**, source **s-hole**. `-service
 install` registers the event source and `-service uninstall` removes it. The
 per-query `ALLOW`/`BLOCK` log is separate: set `log_file` to keep it, since
 stdout is discarded under the service.
+
+The service starts in the directory of its config file. If a path in the
+config is relative (for example `query_db`, `cache_dir`, `log_file`, or
+`tls_cert`), s-hole looks for the file next to `config.yaml`. For example,
+`queries.db` becomes `C:\s-hole\queries.db`.
 
 ### Monitoring (Prometheus + Grafana)
 

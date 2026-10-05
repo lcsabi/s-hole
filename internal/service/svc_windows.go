@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/eventlog"
@@ -29,35 +30,62 @@ func IsWindowsService() bool {
 	return ok
 }
 
-// Run starts fn in a goroutine and blocks in the Windows SCM event loop.
-// stop is called when the SCM sends a Stop or Shutdown control code.
-func Run(fn, stop func()) error {
+// exitServeFailed is the service-specific exit code that s-hole reports to
+// the SCM when the DNS server stops without a stop request. A non-zero code
+// makes the SCM apply the recovery actions that Install sets.
+const exitServeFailed = 1
+
+// Run starts fn (the DNS server) in a goroutine and blocks in the Windows SCM
+// event loop. stop (the ordered teardown) is called when the SCM sends a
+// Stop or Shutdown control code, or when fn returns first.
+func Run(fn func() error, stop func()) error {
 	return svc.Run(svcName, &handler{fn: fn, stop: stop})
 }
 
 type handler struct {
-	fn   func()
+	fn   func() error
 	stop func()
 }
 
 func (h *handler) Execute(_ []string, r <-chan svc.ChangeRequest, s chan<- svc.Status) (bool, uint32) {
 	s <- svc.Status{State: svc.StartPending}
-	go h.fn()
+	served := make(chan error, 1)
+	go func() { served <- h.fn() }()
 	s <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
-	for c := range r {
-		switch c.Cmd {
-		case svc.Stop, svc.Shutdown:
+	for {
+		select {
+		case c := <-r:
+			switch c.Cmd {
+			case svc.Interrogate:
+				s <- c.CurrentStatus
+			case svc.Stop, svc.Shutdown:
+				s <- svc.Status{State: svc.StopPending}
+				// doStop runs the ordered teardown and returns; it no longer
+				// calls os.Exit (b/043). Report Stopped so the SCM does not
+				// hang in StopPending, then return. After Execute returns,
+				// svc.Run returns and main exits (b/044).
+				h.stop()
+				s <- svc.Status{State: svc.Stopped}
+				return false, 0
+			}
+		case err := <-served:
+			// The DNS server stopped without an SCM stop request, so the
+			// service answers no queries. Before, the service still reported
+			// Running (b/065). Run the teardown (a no-op if it already ran).
 			s <- svc.Status{State: svc.StopPending}
-			// doStop runs the ordered teardown and returns; it no longer calls
-			// os.Exit (b/043). Report Stopped so the SCM does not hang in
-			// StopPending, then return. After Execute returns, svc.Run returns
-			// and main exits (b/044).
 			h.stop()
-			s <- svc.Status{State: svc.Stopped}
-			return false, 0
+			if err == nil {
+				// Only Shutdown makes Start return nil, so doStop already ran
+				// outside the SCM loop: Go can deliver a Windows shutdown
+				// event to main's signal handler as SIGTERM. A clean stop.
+				return false, 0
+			}
+			// Return a failure code: svc.Run reports Stopped with it, and the
+			// SCM restarts the service through the recovery actions that
+			// Install sets.
+			return true, exitServeFailed
 		}
 	}
-	return false, 0
 }
 
 // Install registers the binary as an auto-start Windows Service.
@@ -91,6 +119,15 @@ func Install(configPath string) error {
 	if err != nil {
 		return fmt.Errorf("create service: %w", err)
 	}
+	// Restart the service when it fails, like Restart=on-failure in the
+	// systemd unit. By default the SCM applies recovery actions only when
+	// the process crashes; the non-crash flag also applies them when the
+	// service stops with a non-zero exit code, which is how Execute reports
+	// a DNS server failure (b/065). The service runs without these actions,
+	// so a failure to set them is a warning, not a failed install.
+	if err := setRecovery(s); err != nil {
+		fmt.Printf("warning: could not set restart-on-failure for service %q: %v\n", svcName, err)
+	}
 	s.Close()
 
 	// Register an event-log source so Event Viewer renders s-hole's messages
@@ -105,6 +142,21 @@ func Install(configPath string) error {
 
 	fmt.Printf("service %q installed (auto-start)\n  binary: %s\n  config: %s\n", svcName, exePath, configPath)
 	return nil
+}
+
+// recoveryResetSeconds is the time without a failure after which the SCM
+// resets its failure count, so the next failure starts again at the first
+// action.
+const recoveryResetSeconds = 24 * 60 * 60
+
+// setRecovery sets three restart actions, 5 seconds apart like the systemd
+// unit's RestartSec, and turns them on for a non-zero exit code.
+func setRecovery(s *mgr.Service) error {
+	restart := mgr.RecoveryAction{Type: mgr.ServiceRestart, Delay: 5 * time.Second}
+	if err := s.SetRecoveryActions([]mgr.RecoveryAction{restart, restart, restart}, recoveryResetSeconds); err != nil {
+		return err
+	}
+	return s.SetRecoveryActionsOnNonCrashFailures(true)
 }
 
 // Uninstall removes the Windows Service registration.

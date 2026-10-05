@@ -2157,6 +2157,6 @@ Docker (`/app`), but resolve against `System32` under a Windows service.
 
 When the SCM starts s-hole, main changes the working directory to the config
 file's directory (`chdirToConfigDir`) before it loads the config.
-`-service install` already requires an absolute config path, so this
+`-service install` stores the config path as an absolute path, so this
 directory is known. Relative paths then resolve next to `config.yaml`. An
 interactive run keeps the current directory, as before.

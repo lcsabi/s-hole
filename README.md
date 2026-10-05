@@ -630,7 +630,7 @@ machine's LAN IP, not the container address the startup banner prints.
 Run once as Administrator to register s-hole as an auto-start Windows Service:
 
 ```powershell
-# Install (uses the config path you specify, must be absolute)
+# Install (s-hole stores the config path as an absolute path)
 .\s-hole.exe -service install -config C:\s-hole\config.yaml
 
 # Start / stop
@@ -661,9 +661,10 @@ install` registers the event source and `-service uninstall` removes it. The
 per-query `ALLOW`/`BLOCK` log is separate: set `log_file` to keep it, since
 stdout is discarded under the service.
 
-The service starts in the directory of its config file. Relative paths in the
-config (`query_db`, `cache_dir`, `log_file`) are therefore next to
-`config.yaml`, for example `C:\s-hole\queries.db`.
+The service starts in the directory of its config file. If a path in the
+config is relative (for example `query_db`, `cache_dir`, `log_file`, or
+`tls_cert`), s-hole looks for the file next to `config.yaml`. For example,
+`queries.db` becomes `C:\s-hole\queries.db`.
 
 ### Monitoring (Prometheus + Grafana)
 

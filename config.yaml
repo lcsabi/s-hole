@@ -116,10 +116,12 @@ query_db: "queries.db"
 # Directory to cache downloaded blocklists (avoids re-downloading on restart)
 cache_dir: "."
 
-# Relative paths (log_file, query_db, cache_dir) resolve against the working
-# directory: /var/lib/s-hole under the systemd unit, /app in Docker, the
-# directory of this config file under a Windows service, and the current
-# directory when you run s-hole in a terminal.
+# A relative path (log_file, query_db, cache_dir, tls_cert, tls_key)
+# starts from the working directory:
+#   systemd unit    -> /var/lib/s-hole
+#   Docker          -> /app
+#   Windows service -> the directory of this config file
+#   terminal        -> the current directory
 
 # Address:port for the admin web UI and REST API.
 # Default is "127.0.0.1:8080". Localhost only, no LAN access.

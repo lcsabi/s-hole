@@ -157,8 +157,8 @@ func main() {
 	}
 
 	// Under the Windows SCM the working directory is C:\Windows\System32, so
-	// the sample config's relative query_db, cache_dir, and log_file put
-	// s-hole's files in the system folder (b/066). Change to the config file's
+	// the sample config's relative query_db and cache_dir, and any relative
+	// log_file, put s-hole's files in the system folder (b/066). Change to the config file's
 	// directory first, so relative paths resolve next to config.yaml, as they
 	// resolve in /var/lib/s-hole under systemd and in /app in Docker.
 	if service.IsWindowsService() {

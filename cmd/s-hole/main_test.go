@@ -1170,8 +1170,8 @@ func recordChdir(err error) (func(string) error, *[]string) {
 	}, &calls
 }
 
-// TestChdirToConfigDir_AbsolutePath: an absolute config path makes chdir get
-// the directory of that path, once (b/066).
+// TestChdirToConfigDir_AbsolutePath verifies that an absolute config path makes
+// chdir get the directory of that path, once (b/066).
 func TestChdirToConfigDir_AbsolutePath(t *testing.T) {
 	cfgDir := filepath.Join(t.TempDir(), "etc")
 	cfgPath := filepath.Join(cfgDir, "s-hole.yaml")
@@ -1189,10 +1189,10 @@ func TestChdirToConfigDir_AbsolutePath(t *testing.T) {
 	}
 }
 
-// TestChdirToConfigDir_RelativePath: a relative config path resolves against
-// the working directory at call time, and chdir gets an absolute directory
-// (b/066). The test changes the process working directory, so it must not
-// run in parallel.
+// TestChdirToConfigDir_RelativePath verifies that a relative config path
+// resolves against the working directory at call time, and chdir gets an
+// absolute directory (b/066). The test changes the process working directory,
+// so it must not run in parallel.
 func TestChdirToConfigDir_RelativePath(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -1229,8 +1229,9 @@ func TestChdirToConfigDir_RelativePath(t *testing.T) {
 	}
 }
 
-// TestChdirToConfigDir_ChdirError: when chdir fails, the function returns
-// chdir's error and still returns the directory, so main can log it (b/066).
+// TestChdirToConfigDir_ChdirError verifies that when chdir fails, the function
+// returns chdir's error and still returns the directory, so main can log it
+// (b/066).
 func TestChdirToConfigDir_ChdirError(t *testing.T) {
 	sentinel := errors.New("access denied")
 	cfgDir := filepath.Join(t.TempDir(), "missing")
@@ -1248,11 +1249,11 @@ func TestChdirToConfigDir_ChdirError(t *testing.T) {
 	}
 }
 
-// TestChdirToConfigDir_RealChdir: with os.Chdir, the working directory becomes
-// the config directory, and a relative data file such as queries.db lands
-// there and not in the old working directory (b/066: under the Windows SCM
-// the old working directory is C:\Windows\System32). The test changes the
-// process working directory, so it must not run in parallel.
+// TestChdirToConfigDir_RealChdir verifies that with os.Chdir, the working
+// directory becomes the config directory, and a relative data file such as
+// queries.db lands there and not in the old working directory (b/066: under the
+// Windows SCM the old working directory is C:\Windows\System32). The test
+// changes the process working directory, so it must not run in parallel.
 func TestChdirToConfigDir_RealChdir(t *testing.T) {
 	startDir := t.TempDir()
 	t.Chdir(startDir) // t.Chdir restores the original directory at cleanup

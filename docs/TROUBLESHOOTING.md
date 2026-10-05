@@ -244,7 +244,7 @@ To keep it, also add it to `whitelist` in the config file.
 
 | You see | What it means | What to do |
 |---|---|---|
-| `msg="query log database open failed"` | s-hole cannot open `query_db`. The dashboard history and the recent queries stay empty. | Read `err`. Under systemd, keep `query_db` in `/var/lib/s-hole`. |
+| `msg="query log database open failed"` | s-hole cannot open `query_db`. The dashboard history and the recent queries stay empty. | Read `err`. Under systemd, keep `query_db` in `/var/lib/s-hole`. Under a Windows service, a relative `query_db` is next to `config.yaml`. |
 | `msg="query log commit failed, dropping batch"` | s-hole cannot write some queries to the database. | Read `err`. Check the free disk space. |
 
 The metric `shole_query_log_dropped_total` counts queries that the query log

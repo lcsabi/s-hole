@@ -94,8 +94,8 @@ func startMockUpstreamRcode(t *testing.T, rcode int) (addr string, hits *atomic.
 //
 // With TCP, the port comes from pickFreePort, which binds both transports on
 // one port. A UDP port from "127.0.0.1:0" says nothing about TCP: another test
-// package that runs at the same time can hold that TCP port, and the TCP bind
-// then failed with "address already in use" (b/071).
+// package that runs at the same time can hold that TCP port, and a TCP bind on
+// it fails with "address already in use" (b/071).
 func startTruncatingUpstream(t *testing.T, ip net.IP, withTCP bool) (addr string, udpHits, tcpHits *atomic.Int64) {
 	t.Helper()
 	udpHits, tcpHits = new(atomic.Int64), new(atomic.Int64)

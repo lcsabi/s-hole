@@ -95,7 +95,7 @@ journalctl -u s-hole -b -p err
 | You see | What it means | What to do |
 |---|---|---|
 | `msg="config load failed"` | The config file has an error. `err` names the setting. A DoT certificate that does not load also shows here, with `tls_cert/tls_key` in `err`. | Correct the setting. To check the file before a restart, run `s-hole -check-config -config /etc/s-hole/config.yaml`. |
-| `msg="dns listen failed"` with `address already in use` | Another program uses port 53. On many Linux systems, this is the `systemd-resolved` stub. | To find the program, run `sudo ss -lunp 'sport = :53'`. If the program is `systemd-resolved`, run the installer with `--free-port-53` to free the port. |
+| `msg="dns listen failed"` with `address already in use` (on Windows: `Only one usage of each socket address`) | Another program uses port 53. On many Linux systems, this is the `systemd-resolved` stub. | To find the program, run `sudo ss -lunp 'sport = :53'`. If the program is `systemd-resolved`, run the installer with `--free-port-53` to free the port. |
 | `msg="dns listen failed"` with `permission denied` | s-hole cannot open a port below 1024 without root or the `CAP_NET_BIND_SERVICE` capability. | Run s-hole through the systemd unit that the installer writes, or set `listen` to a port above 1024. |
 | `msg="DoT listener failed"` | `dot_listen` is set, but s-hole cannot open the DoT port. | Read `err` and `hint`. Look for another program on port 853, or correct `dot_listen`. |
 

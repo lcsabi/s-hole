@@ -54,7 +54,9 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   as `https://user:pass@1.1.1.1/dns-query` or `https://1.1.1.1` now gets the
   `ignoring malformed upstream` warning at startup, like any other malformed
   entry. User info would show on the unauthenticated `/metrics` page, and a
-  DoH endpoint is a path on the server (`/dns-query`). (CL 91)
+  DoH endpoint is a path on the server (`/dns-query`). The warning shows the
+  entry with its user info replaced by `redacted`, so the password does not
+  reach the log. (CL 91)
 - **The pprof warning has its advice in a `hint` field.** The message
   `pprof endpoints enabled; bind api_listen to localhost only` is now
   `pprof endpoints enabled`. Update a log search that matches the old text.

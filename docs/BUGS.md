@@ -2189,7 +2189,8 @@ as a label on `/metrics`, and a URL with no path.
 `normalizeDoHURL` replaces `isValidDoHURL`. It returns the normalized URL,
 and `filterUpstreams` stores that form, so the forwarder sees the scheme that
 the check accepted. A URL with user info or with no path is dropped with the
-existing WARN.
+existing WARN. That WARN replaces the user info with `redacted`, so a password
+in a dropped entry does not reach the log.
 
 ## b/068: blocklist: a download that failed during the body dropped the list from the block set
 

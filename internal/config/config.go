@@ -174,8 +174,8 @@ func Load(path string) (*Config, error) {
 	var droppedUp []string
 	cfg.Upstreams, droppedUp = filterUpstreams(cfg.Upstreams)
 	for _, u := range droppedUp {
-		logger.Warn("ignoring malformed upstream", "upstream", u,
-			"hint", "use host:port, such as 1.1.1.1:53, or a DoH URL with an IP host, such as https://1.1.1.1/dns-query")
+		logger.Warn("ignoring malformed upstream", "upstream", redactUserInfo(u),
+			"hint", "use host:port, such as 1.1.1.1:53, or a DoH URL with an IP host and a path and no user name or password, such as https://1.1.1.1/dns-query")
 	}
 	return cfg, nil
 }
@@ -264,6 +264,18 @@ func filterUpstreams(upstreams []string) (valid, dropped []string) {
 		valid = append(valid, u)
 	}
 	return valid, dropped
+}
+
+// redactUserInfo replaces the user info of a URL-shaped upstream with
+// "redacted", so the WARN for a dropped entry does not write a user name or
+// password into the log. Any other string is returned unchanged.
+func redactUserInfo(u string) string {
+	parsed, err := url.Parse(u)
+	if err != nil || parsed.User == nil {
+		return u
+	}
+	parsed.User = url.User("redacted")
+	return parsed.String()
 }
 
 // normalizeDoHURL reports whether u is a usable DoH upstream for this first
@@ -480,7 +492,7 @@ func (c *Config) Validate() error {
 	}
 	switch len(c.Upstreams) {
 	case 0:
-		return errors.New("no usable upstream: every configured upstream was malformed (want host:port such as 1.1.1.1:53, or a DoH URL with an IP host such as https://1.1.1.1/dns-query)")
+		return errors.New("no usable upstream: every configured upstream was malformed (want host:port such as 1.1.1.1:53, or a DoH URL with an IP host and a path such as https://1.1.1.1/dns-query)")
 	case 1:
 		logger.Info("single upstream configured; no forwarding fallback if it fails", "upstream", c.Upstreams[0])
 	}

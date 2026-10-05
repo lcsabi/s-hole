@@ -833,7 +833,10 @@ func TestFilterUpstreams_MalformedURLReallyFailsParse(t *testing.T) {
 
 func TestLoad_NormalizesDoHAndWarnsOnDrops(t *testing.T) {
 	// b/067: Load stores the normalized DoH URL and WARNs once for each
-	// dropped DoH entry. Plain host:port entries pass through unchanged.
+	// dropped DoH entry. Plain host:port entries pass through unchanged. The
+	// WARN must not write user info: it is replaced by "redacted", and the
+	// user name and password appear nowhere in the log. Entries without user
+	// info, and unparsable ones, are logged as written.
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
@@ -841,7 +844,8 @@ func TestLoad_NormalizesDoHAndWarnsOnDrops(t *testing.T) {
 
 	path := writeTemp(t, "upstreams:\n"+
 		"  - HTTPS://1.1.1.1/dns-query\n"+
-		"  - https://user:pass@1.1.1.1/dns-query\n"+
+		"  - https://s3cretuser:hunter2pw@1.1.1.1/dns-query\n"+
+		"  - https://onlyuserx@8.8.8.8/dns-query\n"+
 		"  - https://1.1.1.1/\n"+
 		"  - \"https://[::1\"\n"+
 		"  - 9.9.9.9:53\n")
@@ -853,23 +857,40 @@ func TestLoad_NormalizesDoHAndWarnsOnDrops(t *testing.T) {
 	if !reflect.DeepEqual(cfg.Upstreams, want) {
 		t.Errorf("cfg.Upstreams = %v, want %v", cfg.Upstreams, want)
 	}
-	warned := map[string]bool{}
-	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+
+	out := buf.String()
+	for _, secret := range []string{"s3cretuser", "hunter2pw", "onlyuserx"} {
+		if strings.Contains(out, secret) {
+			t.Errorf("log contains user info %q:\n%s", secret, out)
+		}
+	}
+
+	var warned []string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		var rec map[string]any
 		if json.Unmarshal([]byte(line), &rec) != nil {
 			continue
 		}
-		if rec["msg"] == "ignoring malformed upstream" && rec["level"] == "WARN" {
-			u, _ := rec["upstream"].(string)
-			warned[u] = true
+		if rec["msg"] != "ignoring malformed upstream" {
+			continue
+		}
+		if rec["level"] != "WARN" {
+			t.Errorf("drop record level = %v, want WARN", rec["level"])
+		}
+		u, _ := rec["upstream"].(string)
+		warned = append(warned, u)
+		hint, _ := rec["hint"].(string)
+		if !strings.Contains(hint, "path") || !strings.Contains(hint, "no user name or password") {
+			t.Errorf("hint = %q, want it to say a DoH URL needs a path and no user name or password", hint)
 		}
 	}
-	for _, d := range []string{"https://user:pass@1.1.1.1/dns-query", "https://1.1.1.1/", "https://[::1"} {
-		if !warned[d] {
-			t.Errorf("no drop WARN for %q; log:\n%s", d, buf.String())
-		}
+	wantWarned := []string{
+		"https://redacted@1.1.1.1/dns-query",
+		"https://redacted@8.8.8.8/dns-query",
+		"https://1.1.1.1/",
+		"https://[::1",
 	}
-	if len(warned) != 3 {
-		t.Errorf("got WARNs for %v, want exactly the 3 dropped entries", warned)
+	if !reflect.DeepEqual(warned, wantWarned) {
+		t.Errorf("drop WARN upstream fields = %q, want %q", warned, wantWarned)
 	}
 }

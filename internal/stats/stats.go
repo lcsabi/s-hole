@@ -69,6 +69,10 @@ type Counter struct {
 	blocked    int64            // guarded by mu
 	topDomains map[string]int64 // blocked domain → block count
 	topClients map[string]int64 // client IP → total query count
+
+	// timeline is the per-minute graph (see timeline.go). Its counts are not
+	// part of the LOAD-ORDER INVARIANT: the graph shows counts, not ratios.
+	timeline timeline
 }
 
 // Entry is a name/count pair used in top-N lists (domains and clients).
@@ -124,6 +128,11 @@ func New() *Counter {
 // (see Snapshot).
 func (c *Counter) RecordQuery(clientIP, domain string, blocked bool) {
 	c.total.Add(1)
+	b := c.timeline.at(time.Now())
+	b.total.Add(1)
+	if blocked {
+		b.blocked.Add(1)
+	}
 	c.mu.Lock()
 	if clientIP != "" {
 		c.topClients[clientIP]++
@@ -190,6 +199,7 @@ func (c *Counter) ResetTallies() {
 // handler when a query is satisfied from the in-memory response cache.
 func (c *Counter) RecordCacheHit() {
 	c.cacheHit.Add(1)
+	c.timeline.at(time.Now()).cached.Add(1)
 }
 
 // RecordLocalPTR increments the local-PTR counter. Called from the DNS
@@ -206,6 +216,7 @@ func (c *Counter) RecordLocalPTR() {
 // total ≥ forwardFailures at all times.
 func (c *Counter) RecordForwardFailure() {
 	c.forwardFailures.Add(1)
+	c.timeline.at(time.Now()).unresolved.Add(1)
 }
 
 // RecordUpstreamError increments the relayed-failure counter. Called from the
@@ -214,6 +225,7 @@ func (c *Counter) RecordForwardFailure() {
 // RecordQuery first so that total ≥ upstreamErrors at all times.
 func (c *Counter) RecordUpstreamError() {
 	c.upstreamErrors.Add(1)
+	c.timeline.at(time.Now()).upstreamError.Add(1)
 }
 
 // topNTarget selects which of the two tally maps Snapshot/topN reads.

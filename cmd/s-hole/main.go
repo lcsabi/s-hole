@@ -306,7 +306,13 @@ func main() {
 	}))
 
 	apiServer := api.New(counter, db, store, dnsCache, reloadFn)
-	apiServer.SetQueryPrivacy(cfg.QueryLog.Clients)
+	apiServer.SetPrivacy(api.PrivacyInfo{
+		Mode:          cfg.QueryLog.Mode,
+		Clients:       cfg.QueryLog.Clients,
+		Database:      db != nil,
+		File:          fileKind(cfg.QueryLog.File),
+		RetentionDays: cfg.QueryLog.RetentionDays,
+	})
 	apiServer.SetClientNames(cfg.QueryLog.ClientNames)
 	// Bridge the dnsserver per-upstream transport-failure tracker to /metrics;
 	// api does not import dnsserver, so main wires the two.
@@ -316,7 +322,7 @@ func main() {
 	if fileLog != nil {
 		apiServer.SetFileLogDropped(fileLog.Dropped)
 	}
-	apiServer.SetPurge(purgeTargets{cfg: cfg, db: db, fileLog: fileLog, counter: counter, dnsCache: dnsCache}.purge)
+	apiServer.SetPurge(purgeTargets{cfg: cfg, db: db, fileLog: fileLog, counter: counter, dnsCache: dnsCache, resetGraph: counter.ResetTimeline}.purge)
 	if dotCerts != nil {
 		apiServer.SetDoTStatus(func() api.DoTStatus {
 			st := dotCerts.Status(time.Now())
@@ -363,6 +369,7 @@ func main() {
 	printNetworkHint(dnsPort, dotPort, apiHost, apiPort, apiUp)
 
 	report := &privacyReport{settings: cfg.Warnings(), plaintext: dnsserver.PlaintextFallbacks, refused: dnsserver.RefusedQueries}
+	apiServer.SetWarnings(report.current)
 	if db != nil {
 		go func() {
 			report.checkStale(runCtx, mainLog, db, cfg.QueryLog.Clients, true)
@@ -667,6 +674,19 @@ func useASCIIBanner() bool {
 		return true
 	}
 	return false
+}
+
+// fileKind is query_log.file as the dashboard shows it: "off", "stdout", or
+// "file". The path itself stays out of the API.
+func fileKind(file string) string {
+	switch file {
+	case "":
+		return "off"
+	case config.FileStdout:
+		return "stdout"
+	default:
+		return "file"
+	}
 }
 
 // newFileLogger opens the query-line output that query_log.file selects:

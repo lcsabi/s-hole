@@ -3,7 +3,10 @@ package querylog
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -147,6 +150,9 @@ func NewDBLogger(path, logQueries string, flushInterval time.Duration, retention
 	if flushInterval <= 0 {
 		return nil, fmt.Errorf("flush interval must be positive, got %s", flushInterval)
 	}
+	if err := preparePrivateDB(path); err != nil {
+		return nil, fmt.Errorf("create db: %w", err)
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
@@ -188,6 +194,29 @@ func NewDBLogger(path, logQueries string, flushInterval time.Duration, retention
 		go l.runPrune()
 	}
 	return l, nil
+}
+
+// preparePrivateDB makes the query database owner-only before SQLite opens
+// it: it creates a missing file with mode 0600, and sets an existing file and
+// its -wal and -shm files to 0600. SQLite creates the -wal and -shm files with
+// the mode of the database file, so they follow. A database written by an
+// older build was 0644, readable by every account on the host (b/076). A
+// failed chmod is a WARN, not an error: the history then stays as readable
+// as before, which is no reason to stop recording it.
+func preparePrivateDB(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		if err := os.Chmod(p, 0o600); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			logger.Warn("query database permissions could not be set to owner-only", "path", p, "err", err)
+		}
+	}
+	return nil
 }
 
 // runPrune deletes rows older than retentionDays once an hour. Runs in

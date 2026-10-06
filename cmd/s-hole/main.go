@@ -184,6 +184,9 @@ func main() {
 		mainLog.Info("working directory set to the config directory", "dir", filepath.Dir(absCfg))
 	}
 
+	// Set the umask before the first file is created (b/076).
+	restrictUmask()
+
 	cfg, problems, err := config.Load(*cfgPath)
 	logConfigProblems(mainLog, problems)
 	if err != nil {

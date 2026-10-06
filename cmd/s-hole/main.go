@@ -552,11 +552,12 @@ func printNetworkHint(dnsHost, dnsPort, dotPort, apiHost, apiPort string, apiUp 
 
 	dnsHosts := lanIPs
 	dnsNote := ""
-	if ip := net.ParseIP(dnsHost); ip != nil && !ip.IsUnspecified() {
+	switch ip := net.ParseIP(dnsHost); {
+	case isLoopbackHost(dnsHost):
 		dnsHosts = []string{dnsHost}
-		if ip.IsLoopback() {
-			dnsNote = " (this machine only)"
-		}
+		dnsNote = " (this machine only)"
+	case ip != nil && !ip.IsUnspecified():
+		dnsHosts = []string{dnsHost}
 	}
 
 	adminHosts := lanIPs

@@ -197,7 +197,9 @@ func (h *Handler) tally(clientIP, domain string, blocked bool) (string, string) 
 func (h *Handler) warnAttrs(err error, domain string) []any {
 	attrs := []any{"err", writeErr(err)}
 	if h.logMode == "all" {
-		attrs = append(attrs, "domain", domain)
+		// Lowercase, as the query log records it (b/082); the reply writers
+		// pass the name as sent.
+		attrs = append(attrs, "domain", strings.ToLower(domain))
 	}
 	return attrs
 }

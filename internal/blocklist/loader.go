@@ -144,7 +144,9 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 
 	req, err := http.NewRequest(http.MethodGet, url, nil) //nolint:gosec // URL comes from operator config
 	if err != nil {
-		return nil, sourceMeta{}, fmt.Errorf("%q: %w", redact.URL(url), err)
+		// The parse error repeats the raw URL, user name and password
+		// included; redact it like a transport error.
+		return nil, sourceMeta{}, fmt.Errorf("%q: %w", redact.URL(url), redactURLError(err))
 	}
 	// A fixed User-Agent with no version: Go's default names the Go release,
 	// which tells the list host more about this machine than it needs.

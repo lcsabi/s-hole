@@ -56,13 +56,14 @@ func (s *Server) secure(next http.Handler) http.Handler {
 	}))
 	protected := cop.Handler(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.hostAllowed(r.Host) {
-			http.Error(w, s.hostHint(r), http.StatusMisdirectedRequest)
-			return
-		}
+		// The headers come first, so the 421 below carries them too.
 		h := w.Header()
 		for k, v := range securityHeaders {
 			h.Set(k, v)
+		}
+		if !s.hostAllowed(r.Host) {
+			http.Error(w, s.hostHint(r), http.StatusMisdirectedRequest)
+			return
 		}
 		protected.ServeHTTP(w, r)
 	})
@@ -141,3 +142,22 @@ func isJSON(r *http.Request) bool {
 	mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	return err == nil && mt == "application/json"
 }
+
+// keepNoStore wraps the static file server. http.FileServer deletes
+// Cache-Control from its error replies (a 404 for an unknown path, for
+// example), so noStoreWriter sets it again before the status line.
+func keepNoStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(noStoreWriter{w}, r)
+	})
+}
+
+type noStoreWriter struct{ http.ResponseWriter }
+
+func (w noStoreWriter) WriteHeader(code int) {
+	w.Header().Set("Cache-Control", securityHeaders["Cache-Control"])
+	w.ResponseWriter.WriteHeader(code)
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer.
+func (w noStoreWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

@@ -379,7 +379,7 @@ func (s *Server) handler() http.Handler {
 		logger.Error("embedded static FS missing 'static' subtree", "err", err)
 		panic(err)
 	}
-	mux.Handle("/", http.FileServer(http.FS(sub)))
+	mux.Handle("/", keepNoStore(http.FileServer(http.FS(sub))))
 
 	return s.secure(mux)
 }

@@ -137,6 +137,9 @@ type Server struct {
 	// purgeFn deletes the query history and the other stored data; main
 	// wires it (SetPurge). nil answers 503.
 	purgeFn func(context.Context) PurgeReport
+	// refusedQueries returns the count of queries refused from outside the
+	// LAN for /metrics (dnsserver.RefusedQueries); nil leaves the metric off.
+	refusedQueries func() uint64
 	// plaintextFallbacks returns the plaintext fallback count for /metrics
 	// (dnsserver.PlaintextFallbacks); nil leaves the metric off.
 	plaintextFallbacks func() uint64
@@ -210,6 +213,13 @@ func (s *Server) SetClientNames(m map[string]string) {
 // not import dnsserver.
 func (s *Server) SetUpstreamTransportFailures(fn func() map[string]uint64) {
 	s.upstreamTransportFailures = fn
+}
+
+// SetRefusedQueries wires the refused-query counter
+// (dnsserver.RefusedQueries) so /metrics can emit shole_refused_total. Call
+// before Serve.
+func (s *Server) SetRefusedQueries(fn func() uint64) {
+	s.refusedQueries = fn
 }
 
 // SetPlaintextFallbacks wires the plaintext fallback counter

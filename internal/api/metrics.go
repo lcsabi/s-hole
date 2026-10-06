@@ -162,6 +162,11 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "# TYPE shole_query_log_dropped_total counter")
 		fmt.Fprintf(w, "shole_query_log_dropped_total %d\n", s.db.Dropped())
 	}
+	if s.refusedQueries != nil {
+		fmt.Fprintln(w, "# HELP shole_refused_total Queries refused because they came from outside the LAN.")
+		fmt.Fprintln(w, "# TYPE shole_refused_total counter")
+		fmt.Fprintf(w, "shole_refused_total %d\n", s.refusedQueries())
+	}
 	if s.plaintextFallbacks != nil {
 		fmt.Fprintln(w, "# HELP shole_upstream_plaintext_fallback_total Queries sent to a plain upstream because every DoH upstream had failed.")
 		fmt.Fprintln(w, "# TYPE shole_upstream_plaintext_fallback_total counter")

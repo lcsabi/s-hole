@@ -1,5 +1,6 @@
 // Package dnsserver implements the DNS sinkhole's listening servers and
 // per-query handler. For each query the handler:
+//  0. Refuses a query from outside the LAN (see lan.go).
 //  1. Intercepts PTR queries for RFC 6303 private-range zones and returns
 //     authoritative NXDOMAIN locally, without consulting the blocklist,
 //     cache, or upstream (see privateReverseZones, isPrivatePTR).
@@ -124,6 +125,7 @@ type Handler struct {
 	// may name the query. The zero value records nothing.
 	logMode  string
 	failures *failureLog
+	lan      *lanACL
 }
 
 // NewHandler wires together all dependencies needed to answer a query.
@@ -154,6 +156,7 @@ func NewHandler(
 		localPTR:     localPTR,
 		queryPrivacy: queryPrivacy,
 		failures:     newFailureLog(),
+		lan:          newLANACL(),
 	}
 }
 
@@ -203,6 +206,12 @@ func (h *Handler) warnAttrs(err error, domain string) []any {
 // queries (when localPTR is enabled), returns a sinkhole reply for blocked
 // domains, and otherwise serves from cache or forwards upstream.
 func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
+	// Answer the LAN only (see lan.go). This runs first, so a query from
+	// outside leaves no trace in the stats, the cache, or the query log.
+	if ip := remoteIP(w); ip.IsValid() && !h.lan.allows(ip) {
+		refuse(w, req)
+		return
+	}
 	if len(req.Question) == 0 {
 		dns.HandleFailed(w, req)
 		return

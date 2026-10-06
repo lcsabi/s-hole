@@ -310,6 +310,7 @@ func main() {
 	// api does not import dnsserver, so main wires the two.
 	apiServer.SetUpstreamTransportFailures(dnsserver.UpstreamTransportFailures)
 	apiServer.SetPlaintextFallbacks(dnsserver.PlaintextFallbacks)
+	apiServer.SetRefusedQueries(dnsserver.RefusedQueries)
 	if fileLog != nil {
 		apiServer.SetFileLogDropped(fileLog.Dropped)
 	}
@@ -359,7 +360,7 @@ func main() {
 	apiHost, apiPort, _ := net.SplitHostPort(cfg.Admin.Listen)
 	printNetworkHint(dnsPort, dotPort, apiHost, apiPort, apiUp)
 
-	report := &privacyReport{settings: cfg.Warnings(), plaintext: dnsserver.PlaintextFallbacks}
+	report := &privacyReport{settings: cfg.Warnings(), plaintext: dnsserver.PlaintextFallbacks, refused: dnsserver.RefusedQueries}
 	if db != nil {
 		go func() {
 			report.checkStale(runCtx, mainLog, db, cfg.QueryLog.Clients, true)

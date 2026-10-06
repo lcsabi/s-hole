@@ -51,12 +51,17 @@ With `S_HOLE_LOG_FORMAT=json`, each line is a JSON object with the same fields.
 
 The log also has two other kinds of lines:
 
-- **Query lines.** When `log_file` is empty and `log_queries` is `all`, s-hole
-  writes one line for each DNS query, such as `2026-09-29T06:51:19-04:00 BLOCK 192.168.1.23 ads.example.com.`.
-  These lines have no `level` field. To write fewer of them, set `log_queries`
-  to `blocked` or `none`. To write them to a file, set `log_file`.
+- **Query lines.** Off by default. With `query_log.file: "stdout"` and
+  `query_log.mode` set to `"all"` (or `"blocked"`), s-hole writes one line for
+  each recorded query, such as `2026-09-29T10:51:19Z BLOCK 192.168.1.23 ads.example.com.`.
+  These lines have no `level` field. s-hole cannot delete them from the
+  journal, so turn them on only while you look into a problem.
 - **The startup banner.** The "Router setup" box shows the address to enter
   in your router.
+
+The application log holds no queried domain and no client address, except a
+warning about one failed query under `query_log.mode: "all"` and the allowlist
+audit lines.
 
 ### Show only problems
 
@@ -84,6 +89,10 @@ level=INFO msg=stats pkg=stats uptime=2h5m0s queries=5120 blocked=812 blocked_pc
 If `forward_failures` or `upstream_errors` increases, read
 [Some names do not resolve](#some-names-do-not-resolve).
 
+After the stats line, s-hole writes one `msg="privacy and security warnings in
+effect"` line when a setting is less private than its default. Read
+[Privacy and security warnings](#privacy-and-security-warnings).
+
 ## s-hole does not start
 
 Show the errors from the last start:
@@ -94,10 +103,10 @@ journalctl -u s-hole -b -p err
 
 | You see | What it means | What to do |
 |---|---|---|
-| `msg="config load failed"` | The config file has an error. `err` names the setting. A DoT certificate that does not load also shows here, with `tls_cert/tls_key` in `err`. | Correct the setting. To check the file before a restart, run `sudo -u s-hole s-hole -check-config -config /etc/s-hole/config.yaml`. |
+| `msg="config load failed"` | The config file cannot be read or is not valid YAML, or one of the three settings that s-hole cannot work without is wrong: `dns.listen` is not `host:port`, every `dns.upstreams` entry is malformed, or DoT is on and its certificate does not load (`dns.dot_cert/dns.dot_key` in `err`). | Correct the setting. To check the file before a restart, run `sudo -u s-hole s-hole -check-config -config /etc/s-hole/config.yaml`. Other mistakes do not stop s-hole: read [A config setting has no effect](#a-config-setting-has-no-effect). |
 | `msg="dns listen failed"` with `address already in use` (on Windows: `Only one usage of each socket address`) | Another program uses port 53. On many Linux systems, this is the `systemd-resolved` stub. | To find the program, run `sudo ss -lunp 'sport = :53'`. If the program is `systemd-resolved`, run the installer with `--free-port-53` to free the port. |
-| `msg="dns listen failed"` with `permission denied` | s-hole cannot open a port below 1024 without root or the `CAP_NET_BIND_SERVICE` capability. | Run s-hole through the systemd unit that the installer writes, or set `listen` to a port above 1024. |
-| `msg="DoT listener failed"` | `dot_listen` is set, but s-hole cannot open the DoT port. | Read `err` and `hint`. Look for another program on port 853, or correct `dot_listen`. |
+| `msg="dns listen failed"` with `permission denied` | s-hole cannot open a port below 1024 without root or the `CAP_NET_BIND_SERVICE` capability. | Run s-hole through the systemd unit that the installer writes, or set `dns.listen` to a port above 1024. |
+| `msg="DoT listener failed"` | `dns.dot_listen` is set, but s-hole cannot open the DoT port. | Read `err` and `hint`. Look for another program on port 853, or correct `dns.dot_listen`. |
 
 If the start fails, systemd tries again every 5 seconds. `systemctl status
 s-hole` then shows `activating (auto-restart)`.
@@ -165,52 +174,85 @@ A `from=stale_cache` line comes after a warning that gives the reason:
 
 | You see | What it means |
 |---|---|
-| `msg="download failed, using stale cache"` | s-hole cannot connect to the server, the download stopped before the end of the list, or s-hole cannot write the cache file. Read `err`. |
+| `msg="download failed, using stale cache"` | s-hole cannot connect to the server, or the download stopped before the end of the list. Read `err`. |
 | `msg="non-200 response, using stale cache"` | The server answered with an error. `status` gives the HTTP status. |
 | `msg="response truncated at cap, using stale cache"` | The list is larger than 256 MiB. s-hole does not use a partial list. |
 
 To download the lists now, run `sudo systemctl reload s-hole`. The log then
 shows `msg="refreshing blocklists"` and one `msg=loaded` line for each list.
 
+`msg="blocklist cache could not be written"` means that s-hole used the
+downloaded list but cannot keep a copy, so the next start downloads it again.
+Read `hint`. The directory, or its files, belong to another user. In Docker,
+the image runs as user 65532 since s-hole 2.0: on the host, run
+`sudo chown -R 65532:65532` on the directory that is mounted at `/app`.
+
 ## Some names do not resolve
 
 ```bash
-journalctl -u s-hole | grep 'upstream forward failed'
+journalctl -u s-hole | grep 'queries could not be resolved'
 ```
 
-`msg="upstream forward failed" domain=...` means that no upstream DNS server
-answered this query, so the client got SERVFAIL. Read `err`. If this line
-appears for many domains, s-hole cannot reach its upstreams. Send a query to
-an upstream from the s-hole host:
+`msg="queries could not be resolved"` comes once a minute while queries fail.
+`queries` is how many failed, and `causes` gives the last error of each
+upstream. The clients got SERVFAIL. The line names no domain, except
+`last_domain` under `query_log.mode: "all"`.
+
+- If `hint` names the system clock, an upstream's TLS certificate looks
+  expired or not yet valid. The DoH upstreams use HTTPS, so a wrong clock
+  stops them. Check the clock: `timedatectl` shows the time and whether NTP
+  synchronized it. A Raspberry Pi 4 or older has no battery-backed clock, and
+  after a long power-off it starts with an old time. Make sure the s-hole host
+  does not use s-hole as its own DNS server, or it cannot reach its time
+  server while DoH fails: read
+  [This host uses s-hole as its own DNS server](#this-host-uses-s-hole-as-its-own-dns-server).
+- Otherwise, s-hole cannot reach its upstreams. Send a query to an upstream
+  from the s-hole host:
 
 ```bash
-dig @1.1.1.1 example.com
+dig @9.9.9.9 example.com
+dig +https @9.9.9.9 example.com      # DoH, with BIND dig 9.18 or later
 ```
 
-If this query fails too, check the network of the s-hole host. If it
-succeeds, check the `upstreams` setting.
+If these queries fail too, check the network of the s-hole host. If they
+succeed, check the `dns.upstreams` setting.
 
-If you configured only one upstream, the log shows `msg="single upstream
-configured; no forwarding fallback if it fails"` at startup. Add a second
-upstream, so that DNS continues to work when one upstream fails.
+`msg="queries were sent unencrypted"` means that every DoH upstream failed, so
+s-hole sent these queries to a plain upstream. Correct the DoH problem as
+above. For DoH only, remove the plain upstreams from `dns.upstreams`.
+
+At startup, s-hole writes a note about the upstream list: `single upstream
+configured; no forwarding fallback if it fails`, or that every upstream is
+DoH (no fallback if TLS fails). These are notes, not errors.
 
 ## A device's queries do not reach s-hole
 
-When `log_file` is empty and `log_queries` is `all`, s-hole writes one query
-line for each query. Search for the device's IP address:
+By default s-hole records no query lines, so look at the counters. Send a
+query from the device, then read the next `msg=stats` line: `queries` goes up
+for every query that reaches s-hole. To see the device's own queries for a
+short time, set `query_log.mode: "all"`, `query_log.clients: "full"`, and
+`query_log.file: "stdout"`, restart s-hole, and search for the device's IP
+address:
 
 ```bash
 journalctl -u s-hole | grep ' 192.168.1.23 '
 ```
 
+Set the three settings back when you are done; s-hole warns while they are on.
+
 If you find no line, the query did not reach s-hole. Check the network path:
 the router's DHCP DNS setting, a firewall, or a DNS setting on the device.
 After a change on the router, the device uses s-hole from its next DHCP lease
-renewal.
+renewal. A device with its own encrypted DNS (Firefox DNS over HTTPS, iCloud
+Private Relay, or Android Private DNS with another provider) does not use
+s-hole at all.
 
-With `query_privacy: subnet`, query lines show the subnet (such as
-`192.168.1.0`), not the device's address. With `query_privacy: drop`, they
-show no client.
+If the warnings line says `queries from outside the LAN were refused`, s-hole
+answers only loopback, private, link-local, and unique-local addresses and the
+subnets of its own interfaces. A device on a routed subnet with public IPv6
+addresses, or behind a VPN with its own address range (such as Tailscale's
+100.64.0.0/10), gets REFUSED. Give the device an address in a private range
+or in one of the s-hole host's subnets.
 
 ## A domain is blocked, but you want to allow it
 
@@ -221,15 +263,17 @@ curl -s 'localhost:8080/api/check?domain=example.com'
 ```
 
 The answer shows the block entry that matched. To allow the domain now, add
-it to the whitelist on the dashboard. This entry is lost when s-hole restarts.
-To keep it, also add it to `whitelist` in the config file.
+it to the allowlist on the dashboard. This entry is lost when s-hole restarts.
+To keep it, also add it to `blocking.allowlist` in the config file.
 
 ## The dashboard does not open
 
 | You see | What it means | What to do |
 |---|---|---|
-| `msg="admin UI failed to bind; DNS still serving"` | Another program uses the `api_listen` port. DNS still works. | Read `err`. Stop the other program, or change `api_listen`. |
+| `msg="admin UI failed to bind; DNS still serving"` | Another program uses the `admin.listen` port. DNS still works. | Read `err`. Stop the other program, or change `admin.listen`. |
 | `msg="admin UI listening" url=http://127.0.0.1:8080` | The dashboard runs, but only on the s-hole host. | Open it through an SSH tunnel: `ssh -L 8080:127.0.0.1:8080 <host>`. |
+| The browser shows `421` and `s-hole answers only requests addressed to its IP address...` | You opened the dashboard by a name that is not the machine's own hostname, such as a name from your router (`pi.lan`). s-hole refuses other names, to stop DNS rebinding. | Open it by IP address, `localhost`, or the machine's hostname, such as `http://raspberrypi.local:8080`. |
+| **Delete history** says `the query history can be deleted only from the s-hole host` | A purge is accepted only from the s-hole host itself. | Open the dashboard on the s-hole host, or run `s-hole -purge -config <config>` there. In a Docker bridge network, run `docker exec <container> s-hole -purge -config /app/config.yaml`. |
 
 ## DNS over TLS
 
@@ -242,28 +286,71 @@ To keep it, also add it to `whitelist` in the config file.
 
 ## The query history is empty or has gaps
 
+The query history is off by default. It needs `query_log.database` set to a
+file and `query_log.mode` set to `"blocked"` or `"all"`. The dashboard header
+shows `stored history off` while it is off.
+
 | You see | What it means | What to do |
 |---|---|---|
-| `msg="query log database open failed"` | s-hole cannot open `query_db`. The dashboard history and the recent queries stay empty. | Read `err`. Under systemd, keep `query_db` in `/var/lib/s-hole`. Under a Windows service, a relative `query_db` is next to `config.yaml`. |
+| `msg="query log database open failed"` | s-hole cannot open `query_log.database`. The dashboard history and the recent queries stay empty. | Read `err` and `hint`. Under systemd, keep the file in `/var/lib/s-hole`. Under a Windows service, a relative path is next to `config.yaml`. With `permission denied` in Docker, run `sudo chown -R 65532:65532` on the host directory mounted at `/app`. |
 | `msg="query log commit failed, dropping batch"` | s-hole cannot write some queries to the database. | Read `err`. Check the free disk space. |
+| `msg="query log file open failed; query lines are not written"` | s-hole cannot open `query_log.file`. It does not write the lines to standard output instead. | Read `err`. Check that the directory exists and s-hole can write to it. |
 
-The metric `shole_query_log_dropped_total` counts queries that the query log
-dropped because it was busy.
+The metric `shole_query_log_dropped_total` counts queries that the database
+dropped because it was busy; `shole_query_log_file_dropped_total` counts query
+lines that the file output dropped.
+
+## Privacy and security warnings
+
+s-hole writes a `msg="privacy warning"` line at startup (and at
+`-check-config`) for each setting that is less private or less secure than its
+default, and repeats all of them in one `msg="privacy and security warnings in
+effect"` line after every stats line. The dashboard shows the same list. You
+cannot turn them off: they go away when you change the setting back.
+
+| `key` | What it means | To remove the warning |
+|---|---|---|
+| `query_log.mode` | s-hole records queries | `query_log.mode: "none"` |
+| `query_log.clients` | recorded queries keep the device address or subnet | `query_log.clients: "drop"` |
+| `query_log.file` | query lines go to a file or to standard output | `query_log.file: "off"` |
+| `query_log.retention_days` | the history is kept forever, or for more than 7 days | `query_log.retention_days: 7` |
+| `query_log.database` | the database holds rows written under a less private setting, such as client addresses from before a switch to `"drop"` | wait for retention (the line gives the date), or run `s-hole -purge` |
+| `admin.listen` | the dashboard listens on more than this machine | `admin.listen: "127.0.0.1:8080"` |
+| `admin.pprof` | the profiler is exposed | `admin.pprof: false` |
+| `dns.local_ptr` | reverse lookups for private addresses go upstream | `dns.local_ptr: true` |
+| `dns.upstreams` | every upstream is plain DNS, or queries were sent unencrypted because every DoH upstream failed | put a DoH upstream first; for a fallback, read [Some names do not resolve](#some-names-do-not-resolve) |
+| `blocking.lists` | a list is downloaded over plain HTTP | use the `https://` URL |
+| `dns.listen` | queries from outside the LAN were refused | read [A device's queries do not reach s-hole](#a-devices-queries-do-not-reach-s-hole) |
+
+## This host uses s-hole as its own DNS server
+
+`msg="this host uses s-hole as its own DNS server"` comes at startup and
+within an hour after the host's resolver changes, usually after the router
+starts to hand out s-hole's address. While s-hole is down, this host cannot
+resolve names: s-hole cannot download its blocklists, updates fail, and the
+host may not reach its time server. Set the host's resolver by hand, as
+[Keep the s-hole host off s-hole](../README.md#keep-the-s-hole-host-off-s-hole)
+in the README shows. s-hole writes `this host no longer uses s-hole as its own
+DNS server` after the change.
 
 ## A config setting has no effect
 
-At startup, s-hole ignores some entries that are not correct, and writes a
-warning for each:
+s-hole does not stop for a mistake in the config. For an unknown key, a key
+renamed in s-hole 2.0, an invalid value, or an `S_HOLE_*` variable that is
+unknown or renamed, it writes a warning and uses the default for that setting:
 
 ```bash
-journalctl -u s-hole -b | grep 'msg="ignoring'
+journalctl -u s-hole -b | grep 'msg="config problem"'
 ```
 
-| You see | What it means |
-|---|---|
-| `msg="ignoring invalid whitelist entry"` | The `whitelist` entry is not a valid domain. |
-| `msg="ignoring client_names entry with invalid key"` | The `client_names` key is not an IP address or a CIDR. |
-| `msg="ignoring malformed upstream"` | The `upstreams` entry is not `host:port` or a usable DoH URL. A DoH URL needs an IP host and a path, and must not contain a user name or password. `upstream` shows the entry, with a user name and password replaced by `redacted`. `hint` shows the correct form. |
+`key` names the setting or the variable, and `problem` says what is wrong and
+what s-hole uses instead. A key from s-hole 1.x, such as `api_listen` or
+`log_queries`, says which 2.0 key replaces it. `docs/CHANGELOG.md` has the full
+mapping. An upstream entry in `problem` shows a user name, a password, or a
+query string as `redacted`.
+
+`s-hole -check-config -config /etc/s-hole/config.yaml` lists the same problems
+and exits 1, so run it before a restart.
 
 s-hole reads the config file only at startup. After you change it, run
 `sudo systemctl restart s-hole`. A reload does not read the file again. The

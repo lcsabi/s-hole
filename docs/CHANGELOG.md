@@ -8,7 +8,106 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 
 ## [Unreleased]
 
+The next release is **2.0.0**: CL 93 changes the config format and every
+default. Read the upgrade notes first.
+
+### Upgrade to 2.0 (read first)
+
+s-hole 2.0 is private by default. It records no queries and no client
+addresses until you turn that on, and it warns, at startup and with every
+stats line, about each setting that records more. The config file has a new
+layout, so a 1.x config needs an edit. (CL 93)
+
+1. **Move the config to the 2.0 layout.** Keys now sit in four sections. A 1.x
+   key is ignored, with a `config problem` warning that names its new key, and
+   that setting uses its 2.0 default, which is never less private than the old
+   value. `s-hole -check-config` fails while any 1.x key is left, and so does
+   `install-linux.sh`.
+
+   | 1.x key | 2.0 key | Value changes |
+   |---|---|---|
+   | `listen` | `dns.listen` | |
+   | `dot_listen`, `tls_cert`, `tls_key` | `dns.dot_listen`, `dns.dot_cert`, `dns.dot_key` | off is `"off"` |
+   | `upstreams` | `dns.upstreams` | default is now Quad9 DoH, Cloudflare DoH, Quad9 plain, Cloudflare plain |
+   | `cache_size` | `dns.cache_entries` | |
+   | `local_ptr` | `dns.local_ptr` | |
+   | `blocklists` | `blocking.lists` | |
+   | `whitelist` | `blocking.allowlist` | |
+   | `block_mode` | `blocking.reply` | `zero` is `zero_ip` |
+   | `block_ttl` | `blocking.reply_ttl_seconds` | |
+   | `refresh_interval` | `blocking.refresh_interval` | |
+   | `cache_dir` | `blocking.cache_dir` | |
+   | `log_queries` | `query_log.mode` | default `"none"` (was `all`) |
+   | `query_privacy` | `query_log.clients` | `raw` is `full`; default `"drop"` (was `raw`) |
+   | `query_db` | `query_log.database` | off is `"off"`; default off |
+   | `log_file` | `query_log.file` | empty used to mean standard output: now `"off"` is off and `"stdout"` is standard output; default off |
+   | `query_db_retention_days` | `query_log.retention_days` | default 7 (was 0, forever) |
+   | `db_flush_interval` | `query_log.flush_interval` | |
+   | `client_names` | `query_log.client_names` | |
+   | `api_listen` | `admin.listen` | |
+   | `enable_pprof` | `admin.pprof` | |
+   | `stats_interval` | `stats_interval` | unchanged |
+
+   An `S_HOLE_*` variable is now `S_HOLE_` plus the key path:
+   `S_HOLE_LISTEN` is `S_HOLE_DNS_LISTEN`, `S_HOLE_API_LISTEN` is
+   `S_HOLE_ADMIN_LISTEN`, `S_HOLE_QUERY_DB` is `S_HOLE_QUERY_LOG_DATABASE`,
+   `S_HOLE_LOG_QUERIES` is `S_HOLE_QUERY_LOG_MODE`, `S_HOLE_QUERY_PRIVACY` is
+   `S_HOLE_QUERY_LOG_CLIENTS`, `S_HOLE_RETENTION_DAYS` is
+   `S_HOLE_QUERY_LOG_RETENTION_DAYS`, and so on. A 1.x variable is ignored
+   with a warning that names the new one.
+2. **Decide what to keep.** The 2.0 defaults keep no history. To keep one, set
+   `query_log.mode` and `query_log.database`, and s-hole warns while they are
+   on. With retention on, the first prune at startup deletes the rows older
+   than `query_log.retention_days` (7 by default). Query lines no longer go to
+   the system journal unless you set `query_log.file: "stdout"`.
+3. **Check names and addresses that changed.** The allowlist API is
+   `/api/allowlist` (was `/api/whitelist`), the metric is
+   `shole_allowlist_size`, and `/api/check` reports `allowlisted` and
+   `matched_allowlist`. `/api/stats` has a `privacy` object and `warnings`
+   instead of `query_privacy`. The export headers are
+   `X-Shole-Query-Log-Clients` and `X-Shole-Query-Log-Mode`, and the JSON
+   export has `clients` and `mode`. The dashboard answers only requests
+   addressed to an IP address, `localhost`, or the machine's own hostname: a
+   name from your router, such as `pi.lan`, gets `421`.
+4. **Docker:** the image runs as UID 65532. Run
+   `sudo chown -R 65532:65532 data` once on the host directory you mount at
+   `/app`. Until you do, s-hole still resolves and blocks, and its warnings
+   name this command. `--cap-add=NET_BIND_SERVICE` is no longer needed. Host
+   networking is now the recommended Linux setup (see the README).
+5. **Windows service:** uninstall and install the service again, so it runs
+   as `NT SERVICE\s-hole` and its folder gets an owner-only access list.
+6. **The host that runs s-hole** should not use s-hole as its own DNS server.
+   s-hole now warns when it does; the README shows how to set the host's
+   resolver.
+
+
 ### Added
+- **Private defaults, and a warning for every exception.** Each setting that
+  is less private or less secure than its default gives a `privacy warning` at
+  `-check-config` and at startup, and one `privacy and security warnings in
+  effect` line repeats all of them with every stats line. The dashboard shows
+  them too. They cannot be turned off. s-hole also warns about stored rows
+  written under a less private setting (with the date retention removes
+  them), about queries sent unencrypted because every DoH upstream failed, and
+  about queries refused from outside the LAN. (CL 93)
+- **Delete the query history.** `s-hole -purge`, `POST /api/purge`, and a
+  dashboard button on the s-hole host delete the stored queries, the query log
+  file, the downloaded blocklists, the Top lists, the per-minute graph, and the
+  DNS response cache. `uninstall-linux.sh --purge` runs it. (CL 93)
+- **`PRIVACY.md`**: every place s-hole keeps or sends data, with the defaults,
+  how long it stays, who can read it, and how to delete it. Release archives
+  include it. (CL 93)
+- **The dashboard says what s-hole records**: the query log mode, the client
+  setting, and the stored-history retention, with a red badge while the history
+  records which device asked. Its 24-hour graph now comes from per-minute
+  counts kept in memory (no domains, no clients, never on disk), so it works
+  under every setting. (CL 93)
+- **`s-hole -healthcheck`**, used by the Docker image's new `HEALTHCHECK`. (CL 93)
+- **A warning when the s-hole host uses s-hole as its own DNS server**, at
+  startup, hourly, and in the installer, with a README walkthrough to set the
+  host's resolver. (CL 93)
+- **Metrics:** `shole_refused_total`, `shole_upstream_plaintext_fallback_total`,
+  and `shole_query_log_file_dropped_total`. (CL 93)
 - **A troubleshooting guide.** `docs/TROUBLESHOOTING.md` lists the common
   problems, the log lines that each one produces, and what to do. (CL 89)
 - **The blocklist `loaded` log line says where each list came from.** A new
@@ -52,6 +151,39 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   warning that shows `redacted` in place of them. (CL 85, CL 91)
 
 ### Changed
+- **Config format 2.0 and private defaults.** See "Upgrade to 2.0" above. A
+  config mistake no longer stops s-hole: it warns and uses the default for that
+  setting, and `-check-config` fails on any problem. Only a malformed
+  `dns.listen`, an upstream list with no valid entry, and a broken DoT
+  certificate pair stop startup. (CL 93)
+- **The default upstreams are DoH** (Quad9, then Cloudflare), with the same two
+  over plain DNS as a fallback that s-hole uses only when every DoH upstream
+  has failed. (CL 93)
+- **s-hole answers only clients on the local network** and refuses any other
+  source. (CL 93)
+- **The application log names no queried domain and no client address**,
+  except a warning about one failed query under `query_log.mode: "all"` and the
+  allowlist audit lines. Unresolved queries are summarized once a minute
+  (`queries could not be resolved`, with each upstream's error and a hint when
+  the system clock looks wrong) instead of one `upstream forward failed` line
+  each. Update a log search that matched the old line. (CL 93)
+- **The query log** stores times in UTC and domains in lowercase; a one-time
+  migration converts the rows that are already stored. Query lines are written
+  in the background and never block a DNS query. (CL 93)
+- **Stored data is owner-only:** files are created with mode `600`, the data
+  directory is `700`, and the systemd unit sets `UMask=0077`. An existing query
+  database is tightened when it opens. (CL 93)
+- **`whitelist` is now `allowlist`** in the config, the API, the metrics, and
+  the dashboard. (CL 93)
+- **The Docker image runs as an unprivileged user** (UID 65532), builds with a
+  pinned Go release, and has a `HEALTHCHECK`. (CL 93)
+- **The Windows service runs as its own virtual account** and gets an
+  owner-only folder. (CL 93)
+- **Blocklist downloads and DoH requests send `User-Agent: s-hole`**, and URLs
+  that s-hole shows hide user info and query strings. Builds use `-trimpath`.
+  (CL 93)
+- **The dashboard's "All time" list is now "Stored"**, and its query filter is
+  kept for the browser tab only. (CL 93)
 - **The pprof warning has its advice in a `hint` field.** The message
   `pprof endpoints enabled; bind api_listen to localhost only` is now
   `pprof endpoints enabled`. Update a log search that matches the old text.
@@ -124,6 +256,19 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   (CL 89)
 
 ### Fixed
+- **A cached reply lost its DNSSEC OK flag** after a few seconds, because the
+  cache aged the EDNS0 OPT record like an answer (b/072). (CL 93)
+- **A UDP reply could exceed what the client accepts** after a TCP retry or
+  from a DoH upstream; it is now truncated with TC set (b/081). (CL 93)
+- **Top Blocked split one domain by its letter case** (b/082). (CL 93)
+- **Memory stayed near double after a blocklist reload**; s-hole now returns
+  the freed memory at once (b/083). (CL 93)
+- **The installer rejected the armv7 build on a 64-bit ARM kernel**, which runs
+  it (b/084). (CL 93)
+- **The smoke test's port 5353 collided with avahi**; it is now 5354 (b/085).
+  (CL 93)
+- **A blocklist whose cache file could not be written failed to load**; the
+  downloaded list is now used with a warning. (CL 93)
 - **A blocklist download that breaks during the transfer now uses the cache.**
   If the connection closed or timed out while s-hole read the list, s-hole
   dropped the list's domains from the block set until the next good download,
@@ -187,6 +332,31 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   listed the Docker bridge (`172.17.0.1`) as a DNS server for the router, which
   a router cannot reach. Container, VM, and VPN interfaces are now left out of
   the banner. s-hole still listens on the same addresses. (CL 87, b/059)
+
+### Security
+- **A web page could read the query history through DNS rebinding** (b/073)
+  **and change the allowlist with a cross-site request** (b/074), through the
+  operator's own browser, also while the dashboard listened on localhost only.
+  The admin server now answers only requests addressed to an IP address,
+  `localhost`, or its own hostname, refuses cross-site requests that change
+  something, requires JSON on JSON endpoints, and sends `no-store`, a CSP, and
+  framing, referrer, and `nosniff` headers. (CL 93)
+- **Every query went to the system journal by default**, outside retention and
+  purge, and the direct writes could block queries; under load journald also
+  dropped s-hole's own warnings (b/075). (CL 93)
+- **Every local account could read the query history** (b/076). (CL 93)
+- **A retention prune did not erase the deleted rows** from the database and
+  WAL files (b/077). (CL 93)
+- **The application log held query names and client addresses** whatever the
+  query log settings said (b/078). (CL 93)
+- **Privacy settings failed open**: an unknown key was ignored, an unknown
+  client mode stored the full address, a negative retention kept everything,
+  and a log file that could not open fell back to standard output (b/079).
+  (CL 93)
+- **s-hole answered queries from any source**, an open resolver on a host with
+  a public IPv6 address (b/080). (CL 93)
+- **The Windows service ran as LocalSystem** (b/086), **and the Docker image ran
+  as root and built with an unpinned Go release** (b/087). (CL 93)
 
 ## [1.0.0] - 2026-09-18
 

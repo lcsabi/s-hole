@@ -6,6 +6,12 @@ and working sessions; each should land as a CL when picked up. This
 file records *intent and rationale*; the durable record of what
 actually changed stays in `CL.md` / `CHANGELOG.md`.
 
+CL 93 (format 2.0) renamed the config keys (for example `query_privacy` is
+`query_log.clients`, `query_db` is `query_log.database`, `api_listen` is
+`admin.listen`) and the whitelist to the allowlist. The sections of items that
+were done before CL 93 keep the names they shipped with; the open items use
+the 2.0 names.
+
 Impact gauges the value delivered, not the effort required; effort
 estimates are deliberately omitted. **High** = user-visible filtering,
 distribution, or validation wins; **Medium** = robustness,
@@ -14,7 +20,7 @@ rails.
 
 | # | Item | Impact | Status |
 |--:|---|---|---|
-| 1 | Deploy to real hardware (Raspberry Pi) | High | procedure validated in a VM; awaiting hardware |
+| 1 | Deploy to real hardware (Raspberry Pi) | High | ARM replay done (CL 93, Raspberry Pi 5, 2026-10-06); router cut-over and multi-day soak open |
 | 2 | Tag `v0.1.0` + release workflow | High | done (CL 43, CL 44); v0.1.0 tagged 2026-08-24 |
 | 3 | Wildcard / subdomain blocking | High | done (CL 30) |
 | 4 | Wire up or delete `DBLogger.TopBlocked` | Medium | done (CL 33) |
@@ -26,7 +32,7 @@ rails.
 | 10 | Blocklist size in `/api/stats` + dashboard | Medium | done (CL 28) |
 | 11 | Install script prints the installed version/commit | Low | done (CL 35) |
 | 12 | `uninstall-linux.sh` companion to the installer | Low | done (CL 40) |
-| 13 | Persist runtime whitelist across restarts | Medium | not started |
+| 13 | Persist runtime allowlist across restarts | Medium | not started |
 | 14 | CNAME deep-inspection (block cloaked trackers) | Medium | not started |
 | 15 | Local DNS records (host overrides) | High | not started |
 | 16 | Conditional / split-horizon forwarding | Medium | not started |
@@ -53,6 +59,9 @@ rails.
 | 37 | Per-query latency histograms (service time + upstream) in `/metrics` | Medium | not started |
 | 38 | Per-transport query counter (plain, DoT) in `/metrics` | Medium | not started |
 | 39 | Serve DoH to LAN clients (client-facing `/dns-query` endpoint) | Low | not started |
+| 40 | Privacy hardening: private defaults, loud warnings, erasure, purge, LAN-only, admin browser defenses | High | done (CL 93) |
+| 41 | Minimal upstream query: no client EDNS options, a fresh ID, local-only names to LAN upstreams only, EDNS padding | High | not started (planned as CL 94) |
+| 42 | Admin authentication by device pairing | Medium | not started (reopened in CL 93) |
 
 Items 19-26 came out of a 2026-08-24 feature-ideas session. Items 21-24 are a
 dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
@@ -113,6 +122,25 @@ restart-from-cached-blocklists all passed; SQLite layer deliberately
 disabled (`query_db: ""`). What remains is a replay on ARM hardware
 (`make pi`) plus the router cut-over and the multi-day soak, so the
 item stays open until a Raspberry Pi is available.
+
+**2026-10-06 (CL 93):** the ARM replay ran on a Raspberry Pi 5 (8 GB,
+Raspberry Pi OS bookworm, 16K-page kernel, SD card). Every package's test
+binary passed on the Pi, cross-compiled for both arm64 and armv7 (the armv7
+build runs on the 64-bit kernel). The installer installed, health-checked, and
+started the service in under a second; the CONTRIBUTING smoke test passed from
+the Pi and from another LAN host over UDP and TCP; a restart came back ready
+in 0.18 s from the blocklist cache; DoT with strict certificate checks, a
+certificate reload by SIGHUP, and DoH-only upstreams (20 to 24 ms for an
+uncached name, 0 ms cached) worked. Measured on the Pi: about 62 000 queries
+per second over loopback with a p99 of 1.06 ms, a blocked query in 0.6 µs and a
+cache hit in 1.2 µs inside the handler, RSS of 24 MB at 72 000 domains and
+65 MB at 405 000 (in line with the DESIGN sizing). The replay found b/083 (RSS
+stayed near double after a reload), b/084 (the installer rejected the runnable
+armv7 build on the 64-bit kernel), b/085 (avahi holds the smoke test's port
+5353), and showed b/075 live (journald suppressed 975 700 lines of the
+default stdout query stream, s-hole's own warnings with them). The router
+cut-over and the multi-day soak remain, because they need the maintainer's
+network.
 
 ## 2. Tag `v0.1.0` + release workflow (done, CL 43 and CL 44)
 
@@ -418,12 +446,12 @@ cause: because it never overwrites an existing `/etc/s-hole/config.yaml`, a
 stale config left behind by a prior install silently shadows a freshly copied
 one until it is removed (the uninstaller now removes `/etc/s-hole` for you).
 
-## 13. Persist runtime whitelist across restarts
+## 13. Persist runtime allowlist across restarts
 
-The whitelist is two-tier today: declarative entries in `config.yaml` (re-read
+The allowlist is two-tier today: declarative entries in `config.yaml` (re-read
 on every startup) and runtime entries added via the dashboard or
-`POST /api/whitelist` (in-memory only, lost on restart; see
-`store.AddToWhitelist`). An operator who whitelists a domain from the UI and
+`POST /api/allowlist` (in-memory only, lost on restart; see
+`store.AddToAllowlist`). An operator who allowlists a domain from the UI and
 later restarts the service is surprised when it re-blocks. Persist runtime
 additions so they survive a restart.
 
@@ -432,37 +460,37 @@ Design decisions to settle in the CL:
 - **A separate store, not a `config.yaml` rewrite.** The API must not edit
   `config.yaml`, since it carries comments, formatting, and is frequently managed by
   version control or config management. Persist runtime entries to a dedicated
-  file in the data dir (e.g. `/var/lib/s-hole/whitelist.json`, atomic
-  temp-and-rename like the blocklist cache), **independent of `query_db`** so
-  whitelist persistence never depends on the query log being enabled. A plain,
+  file in the data dir (e.g. `/var/lib/s-hole/allowlist.json`, atomic
+  temp-and-rename like the blocklist cache), **independent of `query_log.database`** so
+  allowlist persistence never depends on the query log being enabled. A plain,
   inspectable, hand-editable file also keeps the "auditable in an afternoon"
   property.
-- **Effective whitelist = config entries ∪ persisted runtime entries**, merged
+- **Effective allowlist = config entries ∪ persisted runtime entries**, merged
   into the store at startup.
 - **Removal must be persistent, and its semantics differ by source.**
-  `DELETE /api/whitelist` has to remove the entry from the *persistent* runtime
+  `DELETE /api/allowlist` has to remove the entry from the *persistent* runtime
   store, not just the in-memory map; otherwise a deleted entry reappears on the
   next restart, which is a broken half-feature. A **config-sourced** entry,
   however, cannot be removed via the API without rewriting `config.yaml` (which
   we won't do): a `DELETE` on such an entry should be **rejected with a clear
   message** ("defined in config.yaml; edit the config to remove it") rather
-  than silently no-op'ing or resurrecting on restart. The whitelist list
+  than silently no-op'ing or resurrecting on restart. The allowlist list
   responses should expose each entry's source (config vs runtime) so the UI can
   disable delete on config entries.
-- **Blocklist precedence is unchanged.** The whitelist still wins globally and
+- **Blocklist precedence is unchanged.** The allowlist still wins globally and
   suffix-aware (CL 30).
-- **Companion: show the whitelist size on the dashboard.** Surface the current
-  count near the whitelist controls in the actions panel: a small `(N)` label
+- **Companion: show the allowlist size on the dashboard.** Surface the current
+  count near the allowlist controls in the actions panel: a small `(N)` label
   matching the `(N)` on the Top Blocked / Top Clients headers, not a full stat
   card (the number is usually 0–few). The count already exists via
-  `store.WhitelistLen()` / `shole_whitelist_size` (R34); the work is adding a
-  `whitelist_size` field to the `/api/stats` payload the way `blocklist_size`
+  `store.AllowlistLen()` / `shole_allowlist_size` (R34); the work is adding a
+  `allowlist_size` field to the `/api/stats` payload the way `blocklist_size`
   rides along (CL 28) and rendering it. Folded in here because #13 already
   reworks this panel for the config-vs-runtime source display, so it is nearly
   free, but it does not strictly depend on persistence and could land
   standalone earlier (mirroring the Blocklist Size card, CL 28) if wanted.
 
-Rated Medium: a user-visible robustness win (the whitelist behaves the way
+Rated Medium: a user-visible robustness win (the allowlist behaves the way
 operators expect across restarts) that changes no filtering semantics.
 
 ## 14. CNAME deep-inspection
@@ -1596,8 +1624,7 @@ complexity in the cache and the DNS write path.
 
 ## 34. General admin-API rate limiting
 
-The admin API is unauthenticated by design (LAN-trust, a settled non-goal for
-auth). Today its only abuse defenses are the localhost-default bind, the slowloris
+The admin API has no login (authentication is planned as device pairing, #42). Today its only abuse defenses are the localhost-default bind, the slowloris
 timeouts, the 64 KiB body cap, and the `?limit=` clamp; there is no request-rate
 throttle. CL 81 added an export-only concurrency guard for the one endpoint whose
 cost is unbounded, but a broad limiter across every route is a separate decision.
@@ -1614,9 +1641,9 @@ Design points to settle if picked up:
   carries its own logic.
 - **Response.** `429` with `Retry-After`, matching the export guard.
 
-Weigh it only for deployments that expose `api_listen` beyond localhost. This is
-**not** auth, which stays a settled non-goal; it is rate limiting as
-defense-in-depth. Rated Low while the default bind stays localhost.
+Weigh it only for deployments that expose `admin.listen` beyond localhost. This is
+**not** auth (#42); it is rate limiting as defense-in-depth. Rated Low while the
+default bind stays localhost.
 
 ## 35. DNSSEC validation of upstream answers
 
@@ -1979,6 +2006,59 @@ Rated Low: it reaches Windows desktops and browsers, but on a LAN their plain
 DNS already reaches s-hole and gets filtered; DoH would add encryption for them,
 not blocking.
 
+
+## 40. Privacy hardening (done, CL 93)
+
+A staff-level privacy review (four independent reviews, checked against the
+code and on a Debian VM, a Raspberry Pi 5, Docker, and Windows) found that the
+defaults recorded every query with the device address forever, that the query
+stream also went to the system journal, and that a web page could read or
+change the admin API through the operator's browser. **Shipped in CL 93:**
+config format 2.0 with the most private value as every default and fallback;
+a loud, repeating warning for every less private setting; owner-only files and
+`secure_delete` erasure; a purge; a LAN-only DNS server; the Host and
+cross-origin checks and security headers; log hygiene; a non-root Docker image
+and a least-privilege Windows service. See `docs/cls/CL-93.md`, `PRIVACY.md`, and
+b/072 to b/087.
+
+## 41. Minimal upstream query (planned as CL 94)
+
+s-hole still forwards the client's own DNS message. The upstream sees the
+client's query ID and its EDNS options, such as a COOKIE (a per-device token
+that lets the upstream tell household devices apart behind one address) or a
+Client Subnet. The cache then serves one client's reply options to other
+clients (CL 93 fixed only the TTL corruption, b/072). Names that are local by
+definition still go upstream.
+
+The planned change:
+
+- **Build a fresh upstream query:** the question, the RD/CD/DO bits, a random
+  ID, and s-hole's own OPT record (UDP size 1232). Restore the client's ID on
+  the reply, strip the reply's options before caching, and rebuild the OPT
+  record for each client the way the sinkhole reply mirrors it.
+- **Local-only names go to LAN upstreams only.** Single-label names, `.local`,
+  `home.arpa`, `.internal`, `.lan`, `.home`, `.corp`, `.localdomain`, `.onion`,
+  `.invalid`, and similar names are sent only to an upstream that is a LAN
+  address (the router), never to a public resolver. With no LAN upstream,
+  s-hole answers NXDOMAIN itself (and loopback for `localhost`, RFC 6761). No
+  setting is needed: a router upstream keeps resolving `nas.lan`.
+- **EDNS padding (RFC 8467)** on DoH queries and on DoT replies, so the message
+  size does not reveal the name.
+
+Rated High: it closes the last two places where LAN data leaves the network.
+
+## 42. Admin authentication by device pairing
+
+Reopened in CL 93 from the non-goals. The dashboard has no login, and with
+`admin.listen` on the LAN every device can read the stored history and change
+the allowlist. A password form is not the plan. The idea to work out, in the
+spirit of a transit-pass check: s-hole shows a one-time pairing code (a QR code
+in its own console or log, which only someone with access to the host can see);
+scanning it on a phone gives that browser a signed device pass, and the
+dashboard admits only paired devices. Points to settle: where the pass lives
+(cookie), how to revoke a device, how a script authenticates, and how the
+Host and cross-origin checks fit. It needs its own CL.
+
 ## Pending decisions
 
 - **Cache eviction beyond drop-on-full.** Now that `shole_cache_dropped_total`
@@ -2101,12 +2181,11 @@ not blocking.
   is a real deployment with high QPS or a block set in the millions where memory or
   lock contention is measured, not assumed.
 
-- _None otherwise open._ (Resolved: the shipped sample `config.yaml` was restored
-  to the conservative `query_db: "queries.db"` / `api_listen:
-  "127.0.0.1:8080"` after `0.0.0.0`/SQLite-off values were accidentally
-  committed with CL 27; the unauthenticated admin UI should not ship
-  LAN-exposed. The README config table documents the *code* defaults,
-  which are `api_listen` `127.0.0.1:8080` and `query_db` off.)
+- _None otherwise open._ (Resolved: since CL 93 the shipped sample
+  `config.yaml` carries the most private defaults, the same values as the
+  code: `admin.listen: "127.0.0.1:8080"`, `query_log.mode: "none"`, and
+  `query_log.database: "off"`. Before that, the sample turned the query
+  database on.)
 
 ## Deliberately not planned
 
@@ -2124,10 +2203,6 @@ Pi-hole/AdGuard Home:
   without it: a config change is made on the host, where `systemctl restart`
   is at hand, and a DoT certificate renewal uses the reload path (CL 86),
   which needs no restart.
-- **Admin API authentication.** LAN-trust is a documented scope
-  decision (SECURITY.md, DESIGN open question #6). Half-hearted auth
-  would imply a security property the unauthenticated design doesn't
-  have; the localhost-only default is the mitigation.
 - **Per-client policies / client groups.**
 - **LRU cache eviction.** Move-to-front on every hit is a write on the
   read path; `Get` is a bare `RLock` read today, so LRU would serialize
@@ -2152,14 +2227,14 @@ Pi-hole/AdGuard Home:
 - **Live application-log panel in the web UI.** About 90 % redundant with
   the recent-queries panel, which already renders the
   timestamp/client/domain/blocked content of the `ALLOW`/`BLOCK`
-  stream once `query_db` is enabled. The remainder is operational slog
+  stream once `query_log.database` is enabled. The remainder is operational slog
   lines (refresh results, upstream errors), which matter during
   incidents where `journalctl` is the better tool. Building it would
   require an in-memory log ring buffer plus a new `/api/logs` endpoint
   (the process does not retain its own stdout; journald owns it), and
   exposing operational internals on the unauthenticated UI sits on the
   pprof end of the disclosure gradient: if ever revisited, it must be
-  opt-in like `enable_pprof`.
+  opt-in like `admin.pprof`.
 - **Container-aware / advertised startup banner.** In Docker the "Router
   setup" banner prints the container's *internal* bridge IP (e.g.
   `172.17.0.2`), not the host's; s-hole cannot know the host LAN IP or the

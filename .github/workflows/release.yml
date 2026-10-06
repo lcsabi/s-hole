@@ -60,7 +60,7 @@ jobs:
             -o "$stage/$bin" ./cmd/s-hole
 
           # Ship the sample config and the docs/license in every archive.
-          cp config.yaml LICENSE README.md "$stage/"
+          cp config.yaml LICENSE README.md PRIVACY.md "$stage/"
           # The deploy helpers are Linux-only.
           if [ "$GOOS" = "linux" ]; then
             cp deploy/install-linux.sh deploy/uninstall-linux.sh deploy/s-hole.service "$stage/"

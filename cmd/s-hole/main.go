@@ -98,6 +98,7 @@ func main() {
 	svcAction := flag.String("service", "", "manage the system service: install|uninstall|start|stop")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	checkConfig := flag.Bool("check-config", false, "load and validate the config, then exit")
+	purge := flag.Bool("purge", false, "delete the query history and everything else s-hole stored, then exit")
 	flag.Parse()
 
 	// -version is a pure CLI introspection; print before any other init so
@@ -164,6 +165,12 @@ func main() {
 			os.Exit(code)
 		}
 		return
+	}
+
+	// -purge deletes the stored data, through the running s-hole when there is
+	// one, and exits.
+	if *purge {
+		os.Exit(runPurge(mainLog, *cfgPath))
 	}
 
 	// Under the Windows SCM the working directory is C:\Windows\System32, so
@@ -304,6 +311,7 @@ func main() {
 	if fileLog != nil {
 		apiServer.SetFileLogDropped(fileLog.Dropped)
 	}
+	apiServer.SetPurge(purgeTargets{cfg: cfg, db: db, fileLog: fileLog, counter: counter, dnsCache: dnsCache}.purge)
 	if dotCerts != nil {
 		apiServer.SetDoTStatus(func() api.DoTStatus {
 			st := dotCerts.Status(time.Now())

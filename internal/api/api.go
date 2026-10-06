@@ -24,6 +24,7 @@
 //	POST   /api/allowlist        add a domain (JSON body, ValidDomain-gated, 64 KiB cap)
 //	DELETE /api/allowlist        remove a domain
 //	POST   /api/reload           reload the DoT certificate (if on) and refresh blocklists (single-flight)
+//	POST   /api/purge            delete the query history and other stored data ({"confirm": true}; from this machine only)
 //	GET    /healthz              liveness probe (always 200 when running)
 //	GET    /readyz               readiness probe (200 once blocklist > 0)
 //	GET    /metrics              Prometheus text exposition (queries, blocked, local_ptr, cache, failures, blocklist, DoT certificate, runtime gauges)
@@ -133,6 +134,9 @@ type Server struct {
 	// cheap JSON endpoints the dashboard polls. General API rate limiting is a
 	// separate, broader decision (ROADMAP #34).
 	exportSem chan struct{}
+	// purgeFn deletes the query history and the other stored data; main
+	// wires it (SetPurge). nil answers 503.
+	purgeFn func(context.Context) PurgeReport
 	// fileLogDropped returns the query_log.file drop count for /metrics; nil
 	// while the file output is off.
 	fileLogDropped func() uint64
@@ -310,6 +314,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /api/allowlist", s.handleAllowlistAdd)
 	mux.HandleFunc("DELETE /api/allowlist", s.handleAllowlistRemove)
 	mux.HandleFunc("POST /api/reload", s.handleReload)
+	mux.HandleFunc("POST /api/purge", s.handlePurge)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleReady)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)

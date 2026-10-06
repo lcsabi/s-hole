@@ -20,6 +20,8 @@
 package querylog
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -54,6 +56,7 @@ type FileLogger struct {
 	done       chan struct{}
 	wg         sync.WaitGroup
 	dropped    atomic.Uint64
+	purgeCh    chan chan error
 }
 
 // fileQueueSize is the line buffer between Log and the writer goroutine.
@@ -71,6 +74,7 @@ func NewFileLogger(dest, logQueries string) (*FileLogger, error) {
 		logQueries: logQueries,
 		ch:         make(chan string, fileQueueSize),
 		done:       make(chan struct{}),
+		purgeCh:    make(chan chan error),
 	}
 	if dest == "stdout" {
 		l.w = os.Stdout
@@ -141,6 +145,8 @@ func (l *FileLogger) run() {
 		select {
 		case line := <-l.ch:
 			_, _ = io.WriteString(l.w, line)
+		case reply := <-l.purgeCh:
+			reply <- l.truncate()
 		case <-l.done:
 			for {
 				select {
@@ -152,6 +158,46 @@ func (l *FileLogger) run() {
 			}
 		}
 	}
+}
+
+// ErrStdoutNotPurgeable is returned by Purge when the lines go to standard
+// output: they are in the system journal or the container log, which s-hole
+// cannot change.
+var ErrStdoutNotPurgeable = errors.New("query lines go to standard output; s-hole cannot delete them from the system journal or the container log")
+
+// Purge discards the queued lines and empties the log file. It runs in the
+// writer goroutine, so no queued line is written after it.
+func (l *FileLogger) Purge(ctx context.Context) error {
+	reply := make(chan error, 1)
+	select {
+	case l.purgeCh <- reply:
+	case <-l.done:
+		return errors.New("query log file is closed")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case err := <-reply:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (l *FileLogger) truncate() error {
+	for {
+		select {
+		case <-l.ch:
+			continue
+		default:
+		}
+		break
+	}
+	f, ok := l.w.(*os.File)
+	if !ok || l.closer == nil {
+		return ErrStdoutNotPurgeable
+	}
+	return f.Truncate(0)
 }
 
 // Close writes the queued lines, stops the writer, and closes the file. It

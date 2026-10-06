@@ -301,6 +301,34 @@ func ValidDomain(s string) bool {
 	return true
 }
 
+// PurgeCache deletes the downloaded blocklists in cacheDir: every
+// blocklist_<hash>.txt file and any .tmp file a download left behind. It
+// removes only files with that name pattern, never anything else in the
+// directory. The block set in memory is untouched; the next reload downloads
+// the lists again. It returns the number of files it removed.
+func PurgeCache(cacheDir string) (int, error) {
+	matches, err := filepath.Glob(filepath.Join(cacheDir, "blocklist_*.txt*"))
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	var firstErr error
+	for _, m := range matches {
+		base := filepath.Base(m)
+		if !strings.HasSuffix(base, ".txt") && !strings.HasSuffix(base, ".txt.tmp") {
+			continue
+		}
+		if err := os.Remove(m); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		removed++
+	}
+	return removed, firstErr
+}
+
 // cacheFilename maps a URL to a stable, collision-free cache filename by
 // hashing it. The old character-replacement scheme collapsed ".", "/", ":",
 // "?", "&", and "=" all to "_", so two similar URLs could map to one file and

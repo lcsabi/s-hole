@@ -143,6 +143,15 @@ func (c *Cache) reclaimOneExpired(now time.Time) {
 	}
 }
 
+// Flush deletes every cached answer. A purge calls it: the cache is a short
+// history of the names the network looked up. The hit, miss, and drop
+// counters are kept.
+func (c *Cache) Flush() {
+	c.mu.Lock()
+	c.entries = make(map[string]*entry, c.maxSize)
+	c.mu.Unlock()
+}
+
 // Stats returns (hits, misses, current size).
 func (c *Cache) Stats() (hits, misses uint64, size int) {
 	c.mu.RLock()

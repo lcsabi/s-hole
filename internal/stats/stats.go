@@ -174,6 +174,18 @@ func pruneBottomHalf(m map[string]int64) map[string]int64 {
 	return out
 }
 
+// ResetTallies empties the Top Domains and Top Clients lists, which name the
+// domains and clients s-hole has seen. A purge calls it. The counters (total,
+// blocked, cache hits, and so on) are not reset: they are counts, not
+// history, and resetting them while queries are in flight could make a ratio
+// exceed 100 % (see the LOAD-ORDER INVARIANT on Counter).
+func (c *Counter) ResetTallies() {
+	c.mu.Lock()
+	c.topDomains = make(map[string]int64)
+	c.topClients = make(map[string]int64)
+	c.mu.Unlock()
+}
+
 // RecordCacheHit increments the cache-hit counter. Called from the DNS
 // handler when a query is satisfied from the in-memory response cache.
 func (c *Counter) RecordCacheHit() {

@@ -118,6 +118,9 @@ type DBLogger struct {
 	flushInterval time.Duration
 	retentionDays int // 0 = retain forever
 	dropped       atomic.Uint64
+	// purgeCh carries Purge requests to the writer goroutine, which owns the
+	// batch and the queue, so a purge cannot race a flush.
+	purgeCh chan chan error
 }
 
 // pragmas applied on every open. WAL + synchronous=NORMAL dramatically reduces
@@ -194,6 +197,7 @@ func NewDBLogger(path, logQueries string, flushInterval time.Duration, retention
 		logQueries:    logQueries,
 		flushInterval: flushInterval,
 		retentionDays: retentionDays,
+		purgeCh:       make(chan chan error),
 	}
 	l.wg.Add(1)
 	go l.run()
@@ -263,6 +267,48 @@ func (d *DBLogger) prune() {
 	}
 	logger.Info("query log retention prune done", "deleted", n, "cutoff", cutoff)
 	d.checkpoint()
+}
+
+// errClosed is returned by Purge after Close.
+var errClosed = errors.New("query log database is closed")
+
+// Purge deletes the whole query history: the queued entries, every row, and
+// the row counter, then rebuilds the file. secure_delete has already zeroed
+// the deleted rows; VACUUM writes a compact new file without the free pages,
+// and the TRUNCATE checkpoints empty the WAL. Resetting sqlite_sequence
+// matters too: the next row id would otherwise tell how many queries were
+// ever recorded. The writer goroutine runs the purge, so no batch in flight
+// is written after it.
+func (d *DBLogger) Purge(ctx context.Context) error {
+	reply := make(chan error, 1)
+	select {
+	case d.purgeCh <- reply:
+	case <-d.done:
+		return errClosed
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case err := <-reply:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (d *DBLogger) purgeAll() error {
+	for _, q := range []string{
+		"DELETE FROM queries",
+		"DELETE FROM sqlite_sequence WHERE name = 'queries'",
+		"PRAGMA wal_checkpoint(TRUNCATE)",
+		"VACUUM",
+		"PRAGMA wal_checkpoint(TRUNCATE)",
+	} {
+		if _, err := d.db.Exec(q); err != nil {
+			return fmt.Errorf("%s: %w", q, err)
+		}
+	}
+	return nil
 }
 
 // checkpoint copies the WAL into the database file and truncates the WAL to
@@ -425,6 +471,18 @@ func (d *DBLogger) run() {
 				d.flush(batch)
 				batch = batch[:0]
 			}
+		case reply := <-d.purgeCh:
+			// Discard what is not written yet, then delete what is.
+			batch = batch[:0]
+		discard:
+			for {
+				select {
+				case <-d.ch:
+				default:
+					break discard
+				}
+			}
+			reply <- d.purgeAll()
 		case <-d.done:
 			// Non-blocking drain: use select so len(ch) is not sampled
 			// separately from the receive (avoids TOCTOU race).

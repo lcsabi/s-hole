@@ -26,6 +26,9 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/s-hole
+# Files s-hole creates (the query database, the blocklist cache) are
+# readable by the s-hole user only.
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

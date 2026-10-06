@@ -88,11 +88,13 @@ if command -v file >/dev/null 2>&1; then
   fi
   case "$(uname -m)" in
     x86_64)            arch_pat='x86-64' ;;
-    aarch64|arm64)     arch_pat='aarch64' ;;
+    # A 64-bit ARM kernel also runs 32-bit ARM (armv7) binaries, which a
+    # Raspberry Pi 2 or 3 build is; the -version run below proves it runs.
+    aarch64|arm64)     arch_pat='aarch64|ARM' ;;
     armv7l|armv6l|arm) arch_pat='ARM' ;;
     *)                 arch_pat='' ;;
   esac
-  if [[ -n "$arch_pat" ]] && ! grep -qi "$arch_pat" <<<"$bin_desc"; then
+  if [[ -n "$arch_pat" ]] && ! grep -Eqi "$arch_pat" <<<"$bin_desc"; then
     echo "error: binary '$BINARY' is not built for this host ($(uname -m))" >&2
     echo "       file reports: $bin_desc" >&2
     exit 1
@@ -131,8 +133,11 @@ else
 fi
 
 echo "==> creating data directory $DATA_DIR"
+# Owner-only: the directory holds the query history when query_log.database
+# is on. chmod also tightens a directory from an older install (b/076).
 mkdir -p "$DATA_DIR"
 chown s-hole:s-hole "$DATA_DIR"
+chmod 0700 "$DATA_DIR"
 
 echo "==> installing systemd unit"
 cat > /etc/systemd/system/s-hole.service << 'EOF'
@@ -164,6 +169,9 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/s-hole
+# Files s-hole creates (the query database, the blocklist cache) are
+# readable by the s-hole user only.
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target
@@ -175,11 +183,17 @@ echo "==> validating config"
 # config surfaces here on screen instead of as a failed start (which the health
 # check below would then have to diagnose from the journal). Same load-and-
 # validate sequence the service runs at startup (ROADMAP #27).
-if ! "$INSTALL_BIN" -check-config -config "$CONFIG_DIR/config.yaml"; then
+# The output is kept: its "config OK" line names admin.listen for the banner.
+# -check-config fails on any config problem, including a key renamed in
+# s-hole 2.0, so an upgrade with an old config stops here instead of starting
+# with defaults.
+if ! check_out=$("$INSTALL_BIN" -check-config -config "$CONFIG_DIR/config.yaml" 2>&1); then
+  printf '%s\n' "$check_out" >&2
   echo "error: config validation failed, service not started" >&2
   echo "       fix $CONFIG_DIR/config.yaml and re-run the installer" >&2
   exit 1
 fi
+printf '%s\n' "$check_out"
 
 # Port-53 preflight: the most common Linux DNS-server install failure is the
 # systemd-resolved stub listener already holding :53, which makes the s-hole
@@ -277,12 +291,14 @@ echo "    (service is active)"
 # The Admin UI line must honor where the API is actually bound: with the
 # localhost-only default, printing http://<lan-ip>:8080 would advertise a
 # URL that refuses connections from every other device (same fix as the
-# in-binary banner, T4). Only show LAN URLs when api_listen is set to a
-# non-loopback address.
-api_listen=$(grep -E '^[[:space:]]*api_listen:' "$CONFIG_DIR/config.yaml" | tail -1 || true)
-# Pull the host:port value out of the YAML line, dropping the key, quotes,
-# and surrounding whitespace: `  api_listen: "0.0.0.0:8080"` -> `0.0.0.0:8080`.
-api_value=$(echo "$api_listen" | sed -E 's/^[^:]*:[[:space:]]*//; s/^"//; s/"$//; s/[[:space:]]*$//')
+# in-binary banner, T4). Only show LAN URLs when admin.listen is set to a
+# non-loopback address. The value comes from the "config OK" line of the
+# dry run above, so the binary's own parser reads the YAML (and the
+# environment), not a grep.
+api_value=$(sed -n 's/.*msg="config OK".* admin_listen=\([^ ]*\).*/\1/p' <<<"$check_out" | tail -1)
+api_value=${api_value#\"}
+api_value=${api_value%\"}
+api_value=${api_value:-127.0.0.1:8080}
 # Split off the port (after the last colon) and the host (before it), then
 # strip the IPv6 brackets: `[::]:8080` -> host `::`, port `8080`.
 api_port=${api_value##*:}
@@ -335,7 +351,39 @@ for ip in $banner_ips; do
 done
 if ! $api_on_lan; then
   echo "│  Admin UI   → http://127.0.0.1:${api_port} (this machine only."
-  echo "│               Set api_listen: \"0.0.0.0:${api_port}\" for LAN access)"
+  echo "│               Set admin.listen: \"0.0.0.0:${api_port}\" for LAN access)"
 fi
 echo "└─────────────────────────────────────────────────────────"
 echo "Point your router's DHCP DNS field at the address above."
+
+# Keep the s-hole host off s-hole. After the router change, DHCP also gives
+# s-hole's address to this host, unless its resolver is set by hand. Then
+# this host has no DNS while s-hole is down: s-hole cannot download its
+# blocklists, apt cannot run, and a host without a battery-backed clock may
+# not reach its time server. s-hole warns at runtime too; this catches a host
+# that already points at itself. 127.0.0.53/54 are the systemd-resolved stubs,
+# so the check reads resolved's own server list behind them.
+own_addrs=$(ip -o addr show 2>/dev/null | awk '{ sub(/\/.*/, "", $4); print $4 }' || true)
+self_resolver=""
+for f in /etc/resolv.conf /run/systemd/resolve/resolv.conf; do
+  [[ -r "$f" ]] || continue
+  while read -r key addr _; do
+    [[ "$key" == nameserver ]] || continue
+    case "$addr" in 127.0.0.53|127.0.0.54) continue ;; esac
+    if [[ "$addr" == 127.* || "$addr" == ::1 ]] || grep -qxF "$addr" <<<"$own_addrs"; then
+      self_resolver=$addr
+    fi
+  done < "$f"
+done
+echo ""
+echo "┌─ Before you change the router ──────────────────────────"
+echo "│  Keep this host off s-hole: set this host's own DNS"
+echo "│  resolver by hand (your router, or a public resolver), so"
+echo "│  it does not take s-hole's address from the router."
+echo "│  See \"Keep the s-hole host off s-hole\" in README.md."
+if [[ -n "$self_resolver" ]]; then
+  echo "│"
+  echo "│  WARNING: this host already uses $self_resolver, which is"
+  echo "│  s-hole, as its DNS server."
+fi
+echo "└─────────────────────────────────────────────────────────"

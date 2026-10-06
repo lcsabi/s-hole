@@ -24,9 +24,11 @@ The config directory also holds any files you added to it, such as the
 DNS-over-TLS certificate and private key; the prompt names them.
 
 Options:
-  --purge             Also delete the data directory (/var/lib/s-hole):
-                      blocklist caches and the SQLite query log. Off by
-                      default, so your query history is preserved.
+  --purge             Also delete everything s-hole stored: the data
+                      directory (/var/lib/s-hole) with the blocklist
+                      caches and the query database, and any query log
+                      file. Off by default, so your query history is
+                      kept (owned by root, readable by root only).
   --restore-resolved  If a DNSStubListener=no drop-in for systemd-resolved
                       is present (created to free port 53 for s-hole),
                       remove it and restart systemd-resolved.
@@ -75,7 +77,7 @@ fi
 if $PURGE; then
   echo "  - delete $DATA_DIR (blocklist caches + query log)   [--purge]"
 else
-  echo "  - keep   $DATA_DIR (blocklist caches and query log. Pass --purge to remove)"
+  echo "  - keep   $DATA_DIR (blocklist caches and query log, owned by root. Pass --purge to remove)"
 fi
 echo "  - remove the s-hole system user and group"
 if [[ -f "$RESOLVED_DROPIN" ]]; then
@@ -113,14 +115,24 @@ if [[ -f "$UNIT_FILE" ]]; then
   removed+=("$UNIT_FILE")
 fi
 
-# 3. Remove the binary.
+# 3. With --purge, let s-hole delete what it stored before the binary and the
+#    config go: the query database and log file can sit outside $DATA_DIR
+#    when the config names an absolute path. The service is stopped, so
+#    s-hole deletes the files itself. Relative paths in the config start from
+#    the service's working directory, so run it there.
+if $PURGE && [[ -x "$INSTALL_BIN" && -f "$CONFIG_DIR/config.yaml" && -d "$DATA_DIR" ]]; then
+  echo "==> deleting the stored data (s-hole -purge)"
+  (cd "$DATA_DIR" && "$INSTALL_BIN" -purge -config "$CONFIG_DIR/config.yaml") || true
+fi
+
+# 4. Remove the binary.
 if [[ -e "$INSTALL_BIN" ]]; then
   echo "==> removing binary"
   rm -f "$INSTALL_BIN"
   removed+=("$INSTALL_BIN")
 fi
 
-# 4. Remove the config directory.
+# 5. Remove the config directory.
 if [[ -d "$CONFIG_DIR" ]]; then
   echo "==> removing config"
   rm -rf "$CONFIG_DIR"
@@ -131,7 +143,7 @@ if [[ -d "$CONFIG_DIR" ]]; then
   fi
 fi
 
-# 5. Data directory: delete only with --purge; otherwise preserve it.
+# 6. Data directory: delete only with --purge; otherwise keep it.
 if [[ -d "$DATA_DIR" ]]; then
   if $PURGE; then
     echo "==> removing data directory (--purge)"
@@ -143,7 +155,7 @@ if [[ -d "$DATA_DIR" ]]; then
   fi
 fi
 
-# 6. Remove the system user, then the group if userdel left it behind.
+# 7. Remove the system user, then the group if userdel left it behind.
 if id -u s-hole &>/dev/null; then
   echo "==> removing s-hole system user"
   userdel s-hole 2>/dev/null || true
@@ -153,8 +165,15 @@ if getent group s-hole &>/dev/null; then
   groupdel s-hole 2>/dev/null || true
   removed+=("system group s-hole")
 fi
+# A kept data directory still belongs to the deleted user's numeric ID. A
+# system user created later can get the same ID and would then own the query
+# history. Give it to root and close it to every other user.
+if ! $PURGE && [[ -d "$DATA_DIR" ]]; then
+  chown -R root:root "$DATA_DIR"
+  chmod 0700 "$DATA_DIR"
+fi
 
-# 7. Optionally restore the systemd-resolved stub listener. This is a
+# 8. Optionally restore the systemd-resolved stub listener. This is a
 #    system-wide change the operator may have made independently of s-hole,
 #    so only act on it behind --restore-resolved.
 if [[ -f "$RESOLVED_DROPIN" ]]; then
@@ -184,6 +203,12 @@ fi
 echo "└─────────────────────────────────────────────────────────"
 
 if ! $PURGE && [[ -d "$DATA_DIR" ]]; then
-  echo "Query history and caches remain in $DATA_DIR."
+  echo "Query history and caches remain in $DATA_DIR (owned by root, readable by root only)."
   echo "Remove them with: sudo rm -rf $DATA_DIR"
 fi
+# s-hole cannot delete what went to the system journal. With the 2.0
+# defaults the journal holds no query data; with query_log.file "stdout" it
+# held query lines. Print the command; clearing the journal deletes the logs
+# of every service, so the operator decides.
+echo "s-hole's lines in the system journal stay. To clear the whole journal (every service's logs):"
+echo "  sudo journalctl --rotate && sudo journalctl --vacuum-time=1s"

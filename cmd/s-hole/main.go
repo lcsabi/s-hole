@@ -839,7 +839,8 @@ func runCheckConfig(log *slog.Logger, path string) int {
 			"hint", "s-hole would start and use the default for each setting above. Fix them, then run -check-config again")
 		return 1
 	}
-	log.Info("config OK", "path", path)
+	// admin_listen is read by deploy/install-linux.sh for its banner.
+	log.Info("config OK", "path", path, "admin_listen", cfg.Admin.Listen)
 	return 0
 }
 

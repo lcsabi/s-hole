@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	neturl "net/url"
 	"os"
@@ -175,15 +176,27 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 	// A connection drop or process kill mid-download leaves only the .tmp
 	// behind; the previous cachePath stays usable (and its mtime stays old
 	// so the next start re-attempts the download).
+	//
+	// The cache only saves a download at the next start. If the cache file
+	// cannot be created (most often a data directory that belongs to another
+	// user, such as root-owned files from an older Docker image), the list is
+	// still parsed from the download and used, with a WARN: before, the
+	// source failed and s-hole could start with no blocklist at all.
 	tmpPath := cachePath + ".tmp"
+	body := io.LimitReader(resp.Body, maxBodyBytes)
 	f, err := os.Create(tmpPath)
 	if err != nil {
-		return nil, sourceMeta{}, err
+		warnCacheWrite(cacheDir, err)
+		f = nil
+	} else {
+		body = io.TeeReader(body, f)
 	}
 
-	tee := io.TeeReader(io.LimitReader(resp.Body, maxBodyBytes), f)
-	domains, parseErr := parseHostsFormat(tee)
-	closeErr := f.Close()
+	domains, parseErr := parseHostsFormat(body)
+	var closeErr error
+	if f != nil {
+		closeErr = f.Close()
+	}
 	// The .tmp removals below are best-effort cleanup on failure paths; a
 	// leftover .tmp is harmless (ignored by loads, overwritten by the next
 	// download).
@@ -223,11 +236,24 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 		}
 		return nil, sourceMeta{}, fmt.Errorf("%q: response exceeded %d-byte cap", redact.URL(url), maxBodyBytes)
 	}
-	if err := os.Rename(tmpPath, cachePath); err != nil {
-		_ = os.Remove(tmpPath)
-		return nil, sourceMeta{}, err
+	if f != nil {
+		if err := os.Rename(tmpPath, cachePath); err != nil {
+			_ = os.Remove(tmpPath)
+			warnCacheWrite(cacheDir, err)
+		}
 	}
 	return domains, sourceMeta{from: fromDownload, snapshot: time.Now()}, nil
+}
+
+// warnCacheWrite reports a blocklist cache file that could not be written.
+// The list is still used; only the next start has to download it again.
+func warnCacheWrite(cacheDir string, err error) {
+	hint := "the list is used, but the next start downloads it again. Check that s-hole can write to blocking.cache_dir"
+	if errors.Is(err, fs.ErrPermission) {
+		hint = "the list is used, but the next start downloads it again. The directory or its files belong to another user. " +
+			"In Docker the image runs as user 65532 since s-hole 2.0: on the host, run sudo chown -R 65532:65532 on the directory that is mounted at /app"
+	}
+	logger.Warn("blocklist cache could not be written", "dir", cacheDir, "err", err, "hint", hint)
 }
 
 func loadFromFile(path string) ([]string, error) {

@@ -43,8 +43,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"os"
@@ -99,6 +101,7 @@ func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	checkConfig := flag.Bool("check-config", false, "load and validate the config, then exit")
 	purge := flag.Bool("purge", false, "delete the query history and everything else s-hole stored, then exit")
+	healthcheck := flag.Bool("healthcheck", false, "exit 0 when the running s-hole is ready, else 1 (for a Docker HEALTHCHECK)")
 	flag.Parse()
 
 	// -version is a pure CLI introspection; print before any other init so
@@ -106,6 +109,11 @@ func main() {
 	if *showVersion {
 		fmt.Println(version.String())
 		return
+	}
+	// -healthcheck runs before the logger, so a check that Docker runs every
+	// 30 seconds does not log a startup line each time.
+	if *healthcheck {
+		os.Exit(runHealthcheck(*cfgPath))
 	}
 
 	setupLogger()
@@ -250,8 +258,12 @@ func main() {
 	if cfg.QueryLog.Database != "" {
 		db, err = querylog.NewDBLogger(cfg.QueryLog.Database, cfg.QueryLog.Mode, cfg.QueryLog.FlushInterval, cfg.QueryLog.RetentionDays)
 		if err != nil {
-			mainLog.Warn("query log database open failed", "err", err,
-				"hint", "the dashboard history and recent queries stay empty. Check query_log.database")
+			hint := "the dashboard history and recent queries stay empty. Check query_log.database"
+			if errors.Is(err, fs.ErrPermission) {
+				hint = "the dashboard history and recent queries stay empty. The file or its directory belongs to another user. " +
+					"In Docker the image runs as user 65532 since s-hole 2.0: on the host, run sudo chown -R 65532:65532 on the directory that is mounted at /app"
+			}
+			mainLog.Warn("query log database open failed", "err", err, "hint", hint)
 		} else {
 			mainLog.Info("query log database opened", "path", cfg.QueryLog.Database)
 		}

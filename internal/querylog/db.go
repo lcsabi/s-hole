@@ -467,6 +467,7 @@ func (d *DBLogger) LogQueries() string {
 
 // Close signals the writer goroutine to flush remaining entries and waits for
 // it to finish before closing the database. This prevents data loss on shutdown.
+// Call Close once; a second call panics.
 func (d *DBLogger) Close() error {
 	close(d.done)
 	d.wg.Wait()

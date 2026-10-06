@@ -201,7 +201,7 @@ func (l *FileLogger) truncate() error {
 }
 
 // Close writes the queued lines, stops the writer, and closes the file. It
-// does not close standard output.
+// does not close standard output. Call Close once; a second call panics.
 func (l *FileLogger) Close() error {
 	close(l.done)
 	l.wg.Wait()

@@ -1,9 +1,11 @@
-# Compiled binaries
-s-hole
-s-hole.exe
-s-hole-linux-arm64
-s-hole-linux-amd64
-s-hole-linux-armv7
+# Compiled binaries, at the repository root only. An unanchored "s-hole"
+# also matched the cmd/s-hole/ directory and hid new source files there
+# (b/090).
+/s-hole
+/s-hole.exe
+/s-hole-linux-arm64
+/s-hole-linux-amd64
+/s-hole-linux-armv7
 
 # Runtime data
 *.db

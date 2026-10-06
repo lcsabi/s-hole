@@ -2728,3 +2728,24 @@ again. Found on the Raspberry Pi during the CL 93 memory check.
 
 s-hole creates the directory, owner-only (`0700`), before it writes a cache
 file.
+
+## b/090: repo: .gitignore hid new source files in cmd/s-hole
+
+**Priority:** P1
+**Component:** repo
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-06
+
+### Description
+
+The `.gitignore` entry `s-hole`, meant for the binary at the repository
+root, also matched the `cmd/s-hole/` directory. A new file there was
+ignored without a message, so `git add -A` skipped it. The CL 93 branch
+built in the author's checkout but not from git: five files in
+`cmd/s-hole` were missing. Found by the cold test sub-agent, whose
+worktree did not build.
+
+### Fix
+
+The binary entries are anchored to the repository root (`/s-hole`), and the
+five files are committed.

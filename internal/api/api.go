@@ -4,10 +4,13 @@
 // 127.0.0.1:8080, localhost only; set admin.listen to "0.0.0.0:8080" to
 // expose to the LAN) and exposes JSON endpoints backed by the stats,
 // querylog, and blocklist subsystems. The server is unauthenticated and
-// intended for LAN-only deployment; conservative HTTP server timeouts
-// and a per-request body size cap defend against slowloris and
-// memory-exhaustion attacks but are not a substitute for proper access
-// control on a multi-user network.
+// intended for LAN-only deployment. Every route passes a Host check and,
+// for a state-changing request, a cross-origin check (security.go), which
+// stop a web page in the operator's browser from reading or changing the
+// server through DNS rebinding or a cross-site request. Conservative HTTP
+// server timeouts and a per-request body size cap defend against slowloris
+// and memory-exhaustion attacks. None of this is a substitute for proper
+// access control on a multi-user network.
 //
 // Routes:
 //
@@ -18,7 +21,7 @@
 //	GET    /api/top-blocked      all-time most-blocked domains from SQLite (?limit=N, default 50, max 1000)
 //	GET    /api/history          per-bucket query volume from SQLite (?window=24h&bucket=1h; bucket count capped at 1000)
 //	GET    /api/allowlist        runtime allowlist (sorted)
-//	POST   /api/allowlist        add a domain (ValidDomain-gated, 64 KiB cap)
+//	POST   /api/allowlist        add a domain (JSON body, ValidDomain-gated, 64 KiB cap)
 //	DELETE /api/allowlist        remove a domain
 //	POST   /api/reload           reload the DoT certificate (if on) and refresh blocklists (single-flight)
 //	GET    /healthz              liveness probe (always 200 when running)
@@ -130,6 +133,10 @@ type Server struct {
 	// cheap JSON endpoints the dashboard polls. General API rate limiting is a
 	// separate, broader decision (ROADMAP #34).
 	exportSem chan struct{}
+	// hostnames are this machine's own names, which the Host check accepts
+	// next to IP addresses and "localhost" (see hostAllowed). New fills it
+	// from the OS hostname; the api tests replace it.
+	hostnames []string
 }
 
 // maxConcurrentExports caps simultaneous /api/queries/export streams. Two lets a
@@ -150,6 +157,7 @@ func New(counter *stats.Counter, db *querylog.DBLogger, store *blocklist.Store, 
 		reloadFn:           reloadFn,
 		readRuntimeMetrics: metrics.Read,
 		exportSem:          make(chan struct{}, maxConcurrentExports),
+		hostnames:          localHostnames(),
 	}
 }
 
@@ -310,7 +318,7 @@ func (s *Server) handler() http.Handler {
 	}
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 
-	return mux
+	return s.secure(mux)
 }
 
 // statsResponse is the /api/stats body: the stats snapshot plus the
@@ -857,6 +865,10 @@ func (s *Server) handleAllowlistList(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleAllowlistAdd(w http.ResponseWriter, r *http.Request) {
+	if !isJSON(r) {
+		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
+		return
+	}
 	// Cap the request body so an attacker on the LAN cannot exhaust memory
 	// by streaming an unbounded JSON payload to the unauthenticated server.
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)

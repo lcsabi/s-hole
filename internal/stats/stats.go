@@ -113,7 +113,11 @@ func New() *Counter {
 
 // RecordQuery records one DNS query. clientIP and domain are added to the
 // top-N maps; if blocked, both the blocked counter and the top-blocked-
-// domains tally are bumped.
+// domains tally are bumped. An empty clientIP or domain is not tallied: the
+// DNS handler passes "" when query_log.clients drops the client or when
+// query_log.mode does not record the query, so the Top Clients and Top
+// Domains lists hold only what the query log would hold. The counters are
+// bumped either way.
 //
 // Ordering note: total.Add is performed before taking the mutex, so that
 // snapshots that read blocked before total observe blocked ≤ total
@@ -121,10 +125,14 @@ func New() *Counter {
 func (c *Counter) RecordQuery(clientIP, domain string, blocked bool) {
 	c.total.Add(1)
 	c.mu.Lock()
-	c.topClients[clientIP]++
+	if clientIP != "" {
+		c.topClients[clientIP]++
+	}
 	if blocked {
 		c.blocked++
-		c.topDomains[domain]++
+		if domain != "" {
+			c.topDomains[domain]++
+		}
 	}
 	// Cap the maps so a long-running process does not accumulate every
 	// unique key forever. We prune lazily, only when a map exceeds the

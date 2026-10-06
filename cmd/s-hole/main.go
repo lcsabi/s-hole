@@ -232,7 +232,7 @@ func main() {
 
 	counter := stats.New()
 
-	fileLog := newFileLogger(cfg.QueryLog)
+	fileLog := newFileLogger(mainLog, cfg.QueryLog)
 
 	var db *querylog.DBLogger
 	if cfg.QueryLog.Database != "" {
@@ -253,6 +253,7 @@ func main() {
 
 	logger := buildMultiLogger(fileLog, db)
 	handler := dnsserver.NewHandler(store, counter, cfg.DNS.Upstreams, logger, cfg.Blocking.Reply, cfg.Blocking.ReplyTTLSeconds, dnsCache, cfg.DNS.LocalPTR, cfg.QueryLog.Clients)
+	handler.SetQueryLogMode(cfg.QueryLog.Mode)
 	dnsServer := dnsserver.NewServer(dnsPC, dnsLn, handler)
 	if dotLn != nil {
 		dnsServer.EnableDoT(dotLn)
@@ -297,6 +298,9 @@ func main() {
 	// Bridge the dnsserver per-upstream transport-failure tracker to /metrics;
 	// api does not import dnsserver, so main wires the two.
 	apiServer.SetUpstreamTransportFailures(dnsserver.UpstreamTransportFailures)
+	if fileLog != nil {
+		apiServer.SetFileLogDropped(fileLog.Dropped)
+	}
 	if dotCerts != nil {
 		apiServer.SetDoTStatus(func() api.DoTStatus {
 			st := dotCerts.Status(time.Now())
@@ -343,6 +347,7 @@ func main() {
 	printNetworkHint(dnsPort, dotPort, apiHost, apiPort, apiUp)
 
 	go runTicker(runCtx, cfg.StatsInterval, counter.Log)
+	go handler.RunFailureReport(runCtx)
 	go runTicker(runCtx, cfg.Blocking.RefreshInterval, func() {
 		mainLog.Info("reload requested via timer")
 		reloadFn()
@@ -638,16 +643,20 @@ func useASCIIBanner() bool {
 }
 
 // newFileLogger opens the query-line output that query_log.file selects:
-// nil when it is off, standard output for "stdout", or the file.
-func newFileLogger(ql config.QueryLog) *querylog.FileLogger {
-	switch ql.File {
-	case "":
+// nil when it is off or cannot be opened, else standard output or the file.
+// An open failure turns the output off with a WARN; it never falls back to
+// standard output (b/079).
+func newFileLogger(log *slog.Logger, ql config.QueryLog) *querylog.FileLogger {
+	if ql.File == "" {
 		return nil
-	case config.FileStdout:
-		return querylog.NewFileLogger("", ql.Mode)
-	default:
-		return querylog.NewFileLogger(ql.File, ql.Mode)
 	}
+	fl, err := querylog.NewFileLogger(ql.File, ql.Mode)
+	if err != nil {
+		log.Warn("query log file open failed; query lines are not written", "path", ql.File, "err", err,
+			"hint", "check that the directory exists and s-hole can write to it, or set query_log.file to off")
+		return nil
+	}
+	return fl
 }
 
 // buildMultiLogger fans out to the query-log outputs that are on: the file

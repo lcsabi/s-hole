@@ -143,6 +143,7 @@ func TestServeDNS_MasksClientEverywhere(t *testing.T) {
 			// A blocked query logs then writes a sinkhole reply, so it never
 			// forwards upstream: the client value is recorded on both paths.
 			h := NewHandler(store, counter, nil, log, "zero", 60, nil, false, tc.mode)
+			h.SetQueryLogMode("all")
 			h.ServeDNS(fakeClient(), buildReq("ads.example.com"))
 
 			if log.calls != 1 {
@@ -152,6 +153,13 @@ func TestServeDNS_MasksClientEverywhere(t *testing.T) {
 				t.Errorf("logged client = %q, want %q", log.clientIP, tc.want)
 			}
 			clients := counter.Snapshot(10).TopClients
+			if tc.want == "" {
+				// A dropped client is not tallied at all.
+				if len(clients) != 0 {
+					t.Fatalf("stats top clients = %v, want none", clients)
+				}
+				return
+			}
 			if len(clients) != 1 {
 				t.Fatalf("stats top clients = %d entries, want 1", len(clients))
 			}

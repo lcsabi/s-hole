@@ -204,7 +204,11 @@ func TestPrintNetworkHint_ASCIIFallback(t *testing.T) {
 }
 
 func TestBuildMultiLogger_NoDBReturnsFileLogger(t *testing.T) {
-	fl := querylog.NewFileLogger("", "all")
+	fl, err := querylog.NewFileLogger("stdout", "all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fl.Close()
 	got := buildMultiLogger(fl, nil)
 	if _, ok := got.(*querylog.FileLogger); !ok {
 		t.Errorf("buildMultiLogger(fl, nil) = %T, want *querylog.FileLogger", got)
@@ -212,7 +216,11 @@ func TestBuildMultiLogger_NoDBReturnsFileLogger(t *testing.T) {
 }
 
 func TestBuildMultiLogger_WithDBReturnsMulti(t *testing.T) {
-	fl := querylog.NewFileLogger("", "all")
+	fl, err := querylog.NewFileLogger("stdout", "all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fl.Close()
 	dbPath := t.TempDir() + "/q.db"
 	db, err := querylog.NewDBLogger(dbPath, "all", time.Hour, 0)
 	if err != nil {

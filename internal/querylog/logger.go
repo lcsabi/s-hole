@@ -4,11 +4,12 @@
 // the Logger interface; querylog.Multi fans out to any combination.
 //
 // Both backends respect the query_log.mode config setting ("all", "blocked",
-// or "none") and never block the calling DNS goroutine: the SQLite logger
-// buffers entries in a channel and drops on overflow rather than applying
-// back-pressure to query handling. Drops are counted in DBLogger.dropped
-// and exposed as shole_query_log_dropped_total via /metrics so operators
-// see when flush_interval is too long for the query volume.
+// or "none") and never block the calling DNS goroutine: each buffers entries
+// in a channel and drops on overflow rather than applying back-pressure to
+// query handling. Drops are counted and exposed via /metrics
+// (shole_query_log_dropped_total for the database,
+// shole_query_log_file_dropped_total for the file or standard output) so
+// operators see when an output cannot keep up with the query volume.
 //
 // The SQLite logger supports a TTL-based retention prune: when
 // query_log.retention_days is set, a goroutine deletes rows older than
@@ -20,7 +21,10 @@ package querylog
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lcsabi/s-hole/internal/logging"
@@ -28,39 +32,75 @@ import (
 
 var logger = logging.For("querylog")
 
-// FileLogger writes one line per query to a flat file, or to stdout when
-// the configured path is empty. The format is fixed for easy parsing by
-// shell tools (grep, tail): "<RFC3339> <ALLOW|BLOCK> <client> <domain>",
-// with an optional trailing marker on ALLOW lines: " CACHED" on a cache hit
-// or " FAILED" on a failed query (unresolved or a relayed upstream failure).
+// FileLogger writes one line per recorded query to a file or to standard
+// output (query_log.file). The format is fixed for easy parsing by shell
+// tools (grep, tail): "<RFC3339> <ALLOW|BLOCK> <client> <domain>", with an
+// optional trailing marker on ALLOW lines: " CACHED" on a cache hit or
+// " FAILED" on a failed query (unresolved or a relayed upstream failure).
 // The two markers are mutually exclusive, and a blocked query carries
 // neither (it never reaches the cache and its rcode is not a failure).
+//
+// Log never blocks the DNS goroutine. It hands the line to a writer goroutine
+// through a buffered channel and drops the line when the channel is full,
+// the same contract as DBLogger. A direct write blocked queries whenever the
+// reader fell behind: under systemd the reader is journald, which also rate
+// limits the stream (b/075).
 type FileLogger struct {
-	f          *os.File
+	w          io.Writer
+	closer     io.Closer // nil for standard output, which outlives the process
 	logQueries string
+	ch         chan string
+	done       chan struct{}
+	wg         sync.WaitGroup
+	dropped    atomic.Uint64
 }
 
-// NewFileLogger opens path for append (creating it if needed). If path is
-// empty or the open fails, the logger falls back to os.Stdout so the
-// caller does not need to special-case logging availability. logQueries
-// filters which queries are recorded ("all", "blocked", or "none").
-func NewFileLogger(path, logQueries string) *FileLogger {
-	if path == "" {
-		return &FileLogger{f: os.Stdout, logQueries: logQueries}
+// fileQueueSize is the line buffer between Log and the writer goroutine.
+const fileQueueSize = 1024
+
+// NewFileLogger starts a FileLogger. dest is "stdout" for standard output or
+// a file path, which is opened for append and created with mode 0600 (an
+// existing file is tightened to 0600). logQueries filters which queries are
+// recorded ("all", "blocked", or "none"). An open failure is returned to the
+// caller, which turns the output off: falling back to standard output would
+// send the query history to the system journal, which s-hole cannot delete
+// (b/079).
+func NewFileLogger(dest, logQueries string) (*FileLogger, error) {
+	l := &FileLogger{
+		logQueries: logQueries,
+		ch:         make(chan string, fileQueueSize),
+		done:       make(chan struct{}),
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if dest == "stdout" {
+		l.w = os.Stdout
+	} else {
+		f, err := OpenPrivateFile(dest)
+		if err != nil {
+			return nil, err
+		}
+		l.w, l.closer = f, f
+	}
+	l.wg.Add(1)
+	go l.run()
+	return l, nil
+}
+
+// OpenPrivateFile opens path for append, creating it with mode 0600, and
+// sets an existing file to 0600, so a query log written by an older build
+// with mode 0644 stops being readable by other users (b/076).
+func OpenPrivateFile(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
-		logger.Warn("cannot open file log, falling back to stdout", "path", path, "err", err)
-		return &FileLogger{f: os.Stdout, logQueries: logQueries}
+		return nil, err
 	}
-	return &FileLogger{f: f, logQueries: logQueries}
+	if err := f.Chmod(0o600); err != nil {
+		logger.Warn("query log file permissions could not be set to owner-only", "path", path, "err", err)
+	}
+	return f, nil
 }
 
-// Log writes a single line to the underlying file. Respects the
-// logQueries filter; a no-op for queries that should not be logged.
-// Write errors are deliberately ignored: query logging is best-effort
-// and must never fail or slow the DNS path (the same contract as
-// DBLogger's drop-on-full channel).
+// Log queues one line. It respects the logQueries filter and drops the line,
+// counting it, when the writer has fallen behind.
 func (l *FileLogger) Log(rec Record) {
 	if l.logQueries == "none" {
 		return
@@ -78,14 +118,48 @@ func (l *FileLogger) Log(rec Record) {
 	} else if rec.Failed() {
 		marker = " FAILED"
 	}
-	fmt.Fprintf(l.f, "%s %s %s %s%s\n", time.Now().Format(time.RFC3339), action, rec.ClientIP, rec.Domain, marker)
+	line := fmt.Sprintf("%s %s %s %s%s\n", time.Now().Format(time.RFC3339), action, rec.ClientIP, rec.Domain, marker)
+	select {
+	case l.ch <- line:
+	default:
+		l.dropped.Add(1)
+	}
 }
 
-// Close flushes and closes the underlying file. A no-op when the logger
-// is writing to stdout (since stdout outlives the process).
+// Dropped returns the number of lines Log dropped because the writer had
+// fallen behind. /metrics shows it as shole_query_log_file_dropped_total.
+func (l *FileLogger) Dropped() uint64 {
+	return l.dropped.Load()
+}
+
+// run writes queued lines until Close. Write errors are ignored: query
+// logging is best-effort and must never fail or slow the DNS path.
+func (l *FileLogger) run() {
+	defer l.wg.Done()
+	for {
+		select {
+		case line := <-l.ch:
+			_, _ = io.WriteString(l.w, line)
+		case <-l.done:
+			for {
+				select {
+				case line := <-l.ch:
+					_, _ = io.WriteString(l.w, line)
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
+// Close writes the queued lines, stops the writer, and closes the file. It
+// does not close standard output.
 func (l *FileLogger) Close() error {
-	if l.f != os.Stdout {
-		return l.f.Close()
+	close(l.done)
+	l.wg.Wait()
+	if l.closer != nil {
+		return l.closer.Close()
 	}
 	return nil
 }

@@ -162,6 +162,11 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "# TYPE shole_query_log_dropped_total counter")
 		fmt.Fprintf(w, "shole_query_log_dropped_total %d\n", s.db.Dropped())
 	}
+	if s.fileLogDropped != nil {
+		fmt.Fprintln(w, "# HELP shole_query_log_file_dropped_total Query log lines dropped because the file or standard-output writer fell behind.")
+		fmt.Fprintln(w, "# TYPE shole_query_log_file_dropped_total counter")
+		fmt.Fprintf(w, "shole_query_log_file_dropped_total %d\n", s.fileLogDropped())
+	}
 
 	s.writeRuntimeGauges(w)
 }

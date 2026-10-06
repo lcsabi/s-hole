@@ -119,6 +119,11 @@ type Handler struct {
 	cache        *cache.Cache // nil when caching is disabled
 	localPTR     bool         // when true, answer RFC 6303 private PTR queries locally
 	queryPrivacy string       // "drop", "subnet", or "full"; how the client IP is stored
+	// logMode is query_log.mode: which queries are recorded. It decides what
+	// reaches the Top Domains and Top Clients tallies and whether a WARN line
+	// may name the query. The zero value records nothing.
+	logMode  string
+	failures *failureLog
 }
 
 // NewHandler wires together all dependencies needed to answer a query.
@@ -148,7 +153,50 @@ func NewHandler(
 		cache:        c,
 		localPTR:     localPTR,
 		queryPrivacy: queryPrivacy,
+		failures:     newFailureLog(),
 	}
+}
+
+// SetQueryLogMode sets query_log.mode ("none", "blocked", or "all"). Call it
+// before the server starts. Until it is called the handler records nothing,
+// the most private choice.
+func (h *Handler) SetQueryLogMode(mode string) {
+	h.logMode = mode
+}
+
+// records reports whether the query log records a query with this outcome,
+// the same rule the query loggers apply.
+func (h *Handler) records(blocked bool) bool {
+	switch h.logMode {
+	case "all":
+		return true
+	case "blocked":
+		return blocked
+	default:
+		return false
+	}
+}
+
+// tally returns the client and domain to count in the Top Clients and Top
+// Domains lists: both empty when the query log does not record this query,
+// so query_log.mode governs the in-memory lists exactly as it governs the
+// database and the log file.
+func (h *Handler) tally(clientIP, domain string, blocked bool) (string, string) {
+	if !h.records(blocked) {
+		return "", ""
+	}
+	return clientIP, domain
+}
+
+// warnAttrs builds the attributes of a WARN line about one query: the safe
+// part of the error (see writeErr), and the domain only when the query log
+// records every query. A WARN line never holds the client address.
+func (h *Handler) warnAttrs(err error, domain string) []any {
+	attrs := []any{"err", writeErr(err)}
+	if h.logMode == "all" {
+		attrs = append(attrs, "domain", domain)
+	}
+	return attrs
 }
 
 // ServeDNS satisfies miekg/dns.Handler. It intercepts private-range PTR
@@ -173,7 +221,8 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// a round-trip and leaks LAN addressing to the upstream. Checked before
 	// the blocklist so these queries are never counted as blocked.
 	if h.localPTR && isPrivatePTR(q.Qtype, domain) {
-		h.counter.RecordQuery(clientIP, domain, false)
+		ptrClient, ptrDomain := h.tally(clientIP, domain, false)
+		h.counter.RecordQuery(ptrClient, ptrDomain, false)
 		h.counter.RecordLocalPTR()
 		h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Rcode: dns.RcodeNameError, Synthesized: true})
 		h.writeLocalNXDOMAIN(w, req)
@@ -181,7 +230,8 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	blocked := h.store.IsBlocked(domain)
-	h.counter.RecordQuery(clientIP, domain, blocked)
+	tallyClient, tallyDomain := h.tally(clientIP, domain, blocked)
+	h.counter.RecordQuery(tallyClient, tallyDomain, blocked)
 
 	// Log at the point each outcome is decided, so the query-log row records
 	// the cache-hit flag (cache_hit) and the outcome (rcode + synthesized). A
@@ -208,7 +258,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			// NOERROR-with-answers replies, so cached.Rcode is NOERROR.
 			h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, CacheHit: true, Rcode: cached.Rcode})
 			if err := w.WriteMsg(cached); err != nil {
-				logger.Warn("write cached response failed", "err", err, "domain", domain)
+				logger.Warn("write cached response failed", h.warnAttrs(err, domain)...)
 			}
 			return
 		}
@@ -225,7 +275,14 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	if err != nil {
 		// Unresolved: every upstream failed at the transport level or the
 		// deadline hit, so s-hole synthesizes the SERVFAIL (dns.HandleFailed).
-		logger.Warn("upstream forward failed", "err", err, "domain", domain)
+		// The failure goes into the once-a-minute summary (RunFailureReport),
+		// not a per-query WARN, so an outage does not write every failed name
+		// to the system log.
+		failedDomain := ""
+		if h.logMode == "all" {
+			failedDomain = domain
+		}
+		h.failures.record(err, failedDomain)
 		h.counter.RecordForwardFailure()
 		h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Rcode: dns.RcodeServerFailure, Synthesized: true})
 		dns.HandleFailed(w, req)
@@ -245,7 +302,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	if err := w.WriteMsg(resp); err != nil {
-		logger.Warn("write response failed", "err", err, "domain", domain)
+		logger.Warn("write response failed", h.warnAttrs(err, domain)...)
 	}
 }
 
@@ -263,7 +320,7 @@ func (h *Handler) writeSinkhole(w dns.ResponseWriter, req *dns.Msg, q dns.Questi
 	if h.blockMode == "nxdomain" {
 		resp.SetRcode(req, dns.RcodeNameError)
 		if err := w.WriteMsg(resp); err != nil {
-			logger.Warn("write sinkhole reply failed", "err", err, "domain", q.Name)
+			logger.Warn("write sinkhole reply failed", h.warnAttrs(err, q.Name)...)
 		}
 		return
 	}
@@ -283,7 +340,7 @@ func (h *Handler) writeSinkhole(w dns.ResponseWriter, req *dns.Msg, q dns.Questi
 	}
 	// For MX, TXT, etc. return NOERROR with no answer; clients won't retry.
 	if err := w.WriteMsg(resp); err != nil {
-		logger.Warn("write sinkhole reply failed", "err", err, "domain", q.Name)
+		logger.Warn("write sinkhole reply failed", h.warnAttrs(err, q.Name)...)
 	}
 }
 
@@ -300,7 +357,7 @@ func (h *Handler) writeLocalNXDOMAIN(w dns.ResponseWriter, req *dns.Msg) {
 		resp.SetEdns0(opt.UDPSize(), opt.Do())
 	}
 	if err := w.WriteMsg(resp); err != nil {
-		logger.Warn("write local PTR reply failed", "err", err, "domain", req.Question[0].Name)
+		logger.Warn("write local PTR reply failed", h.warnAttrs(err, req.Question[0].Name)...)
 	}
 }
 

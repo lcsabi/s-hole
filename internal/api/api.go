@@ -133,6 +133,9 @@ type Server struct {
 	// cheap JSON endpoints the dashboard polls. General API rate limiting is a
 	// separate, broader decision (ROADMAP #34).
 	exportSem chan struct{}
+	// fileLogDropped returns the query_log.file drop count for /metrics; nil
+	// while the file output is off.
+	fileLogDropped func() uint64
 	// hostnames are this machine's own names, which the Host check accepts
 	// next to IP addresses and "localhost" (see hostAllowed). New fills it
 	// from the OS hostname; the api tests replace it.
@@ -200,6 +203,14 @@ func (s *Server) SetClientNames(m map[string]string) {
 // not import dnsserver.
 func (s *Server) SetUpstreamTransportFailures(fn func() map[string]uint64) {
 	s.upstreamTransportFailures = fn
+}
+
+// SetFileLogDropped wires the query_log.file drop counter
+// (querylog.FileLogger.Dropped) so /metrics can emit
+// shole_query_log_file_dropped_total. Call before Serve, and only while the
+// file output is on.
+func (s *Server) SetFileLogDropped(fn func() uint64) {
+	s.fileLogDropped = fn
 }
 
 // DoTStatus is the DNS-over-TLS state the admin API reports. main fills it

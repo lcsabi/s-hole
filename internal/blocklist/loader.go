@@ -272,7 +272,7 @@ func parseHostsFormat(r io.Reader) ([]string, error) {
 // DNS label (whitespace, control chars, slashes, etc.). It is deliberately
 // lenient: IDN punycode and underscore-prefixed service labels pass.
 //
-// Exported so the api package can validate user-supplied whitelist
+// Exported so the api package can validate user-supplied allowlist
 // entries with the same rules the loader applies to blocklist files.
 func ValidDomain(s string) bool {
 	if s == "" || len(s) > 253 {
@@ -281,7 +281,7 @@ func ValidDomain(s string) bool {
 	// Require an interior dot. A bare label ("com") has none, and a bare
 	// label with a trailing root dot ("com.") would pass a plain Contains
 	// check, but normalize strips the dot and stores the bare label. A
-	// whitelist typo like "com." would then exempt an entire TLD through the
+	// allowlist typo like "com." would then exempt an entire TLD through the
 	// CL 30 suffix walk (b/040). Leading dots (".com") are rejected too. A
 	// real FQDN with a root dot ("example.com.") still has an interior dot
 	// and stays valid.

@@ -250,7 +250,7 @@ func (d *DBLogger) Dropped() uint64 {
 	return d.dropped.Load()
 }
 
-// LogQueries returns the effective log_queries filter ("all", "blocked", or
+// LogQueries returns the effective query_log.mode filter ("all", "blocked", or
 // "none"). The history endpoint reports it so the dashboard can label the graph
 // honestly: under "blocked" the log holds only blocked rows, so the graph shows
 // a single blocked line, and under "none" it shows an empty state.
@@ -449,7 +449,7 @@ func (d *DBLogger) Search(ctx context.Context, f QueryFilter, n int) ([]QueryRow
 // regardless of table size. It is the bulk companion to Search and reuses the
 // same where() builder, so a filtered export is the filtered query without the
 // LIMIT cap. When n > 0 it bounds the stream to the newest n rows; n <= 0 streams
-// the whole filtered log (bounded in practice by query_db_retention_days).
+// the whole filtered log (bounded in practice by query_log.retention_days).
 //
 // ctx is honored as a query deadline. yield is called once per row in order; if
 // it returns an error, Export stops and returns that error (the HTTP handler uses

@@ -153,7 +153,7 @@ func (c *Cache) Stats() (hits, misses uint64, size int) {
 
 // Dropped returns the cumulative number of entries Set refused because the
 // cache was full of live (not-yet-expired) entries. Surfaced via /metrics as
-// shole_cache_dropped_total; a sustained non-zero rate means cache_size is too
+// shole_cache_dropped_total; a sustained non-zero rate means dns.cache_entries is too
 // small for the working set. Inserts that reclaimed an expired slot are not
 // counted, so this reports real capacity pressure, not sweep-timing noise.
 func (c *Cache) Dropped() uint64 {

@@ -34,20 +34,20 @@ func TestStore_IsBlocked(t *testing.T) {
 	}
 }
 
-func TestStore_WhitelistOverridesBlocklist(t *testing.T) {
+func TestStore_AllowlistOverridesBlocklist(t *testing.T) {
 	s := NewStore()
 	s.Replace([]string{"ads.example.com"})
-	s.SetWhitelist([]string{"ads.example.com"})
+	s.SetAllowlist([]string{"ads.example.com"})
 
 	if s.IsBlocked("ads.example.com") {
-		t.Fatal("whitelist must override blocklist")
+		t.Fatal("allowlist must override blocklist")
 	}
 }
 
 func TestStore_Explain(t *testing.T) {
 	s := NewStore()
 	s.Replace([]string{"ads.example.com"})
-	s.SetWhitelist([]string{"safe.example.com"})
+	s.SetAllowlist([]string{"safe.example.com"})
 
 	t.Run("blocked by parent", func(t *testing.T) {
 		// A subdomain of a blocked entry: decision blocked, matched on the
@@ -59,8 +59,8 @@ func TestStore_Explain(t *testing.T) {
 		if e.MatchedBlock != "ads.example.com" {
 			t.Errorf("MatchedBlock = %q, want ads.example.com", e.MatchedBlock)
 		}
-		if e.MatchedWhitelist != "" {
-			t.Errorf("MatchedWhitelist = %q, want empty", e.MatchedWhitelist)
+		if e.MatchedAllowlist != "" {
+			t.Errorf("MatchedAllowlist = %q, want empty", e.MatchedAllowlist)
 		}
 		// Full walk: leaf → ... → TLD, four levels.
 		if len(e.Walk) != 4 {
@@ -68,19 +68,19 @@ func TestStore_Explain(t *testing.T) {
 		}
 	})
 
-	t.Run("whitelist overrides block", func(t *testing.T) {
-		// safe.example.com is whitelisted; block ads.example.com does not
-		// apply here, but a block on the whitelisted subtree should still be
-		// reported alongside the overriding whitelist entry.
+	t.Run("allowlist overrides block", func(t *testing.T) {
+		// safe.example.com is allowlisted; block ads.example.com does not
+		// apply here, but a block on the allowlisted subtree should still be
+		// reported alongside the overriding allowlist entry.
 		s2 := NewStore()
 		s2.Replace([]string{"ads.example.com"})
-		s2.SetWhitelist([]string{"ads.example.com"})
+		s2.SetAllowlist([]string{"ads.example.com"})
 		e := s2.Explain("ads.example.com")
-		if e.Decision != "whitelisted" {
-			t.Errorf("Decision = %q, want whitelisted", e.Decision)
+		if e.Decision != "allowlisted" {
+			t.Errorf("Decision = %q, want allowlisted", e.Decision)
 		}
-		if e.MatchedWhitelist != "ads.example.com" {
-			t.Errorf("MatchedWhitelist = %q, want ads.example.com", e.MatchedWhitelist)
+		if e.MatchedAllowlist != "ads.example.com" {
+			t.Errorf("MatchedAllowlist = %q, want ads.example.com", e.MatchedAllowlist)
 		}
 		if e.MatchedBlock != "ads.example.com" {
 			t.Errorf("MatchedBlock = %q, want ads.example.com (still reported)", e.MatchedBlock)
@@ -92,7 +92,7 @@ func TestStore_Explain(t *testing.T) {
 		if e.Decision != "allowed" {
 			t.Errorf("Decision = %q, want allowed", e.Decision)
 		}
-		if e.MatchedBlock != "" || e.MatchedWhitelist != "" {
+		if e.MatchedBlock != "" || e.MatchedAllowlist != "" {
 			t.Errorf("allowed domain has matches: %+v", e)
 		}
 	})
@@ -148,33 +148,33 @@ func TestStore_SubdomainBlocking(t *testing.T) {
 	}
 }
 
-// TestStore_WhitelistSuffixSemantics pins the "whitelist wins at every level"
-// rule (ROADMAP #3): whitelisting a domain exempts it and its whole subtree,
+// TestStore_AllowlistSuffixSemantics pins the "allowlist wins at every level"
+// rule (ROADMAP #3): allowlisting a domain exempts it and its whole subtree,
 // even when a more specific parent is on the block set, and the exemption is
 // surgical: sibling subtrees stay blocked.
-func TestStore_WhitelistSuffixSemantics(t *testing.T) {
+func TestStore_AllowlistSuffixSemantics(t *testing.T) {
 	s := NewStore()
 	s.Replace([]string{"doubleclick.net", "ads.example.com"})
-	// safe.doubleclick.net is a more specific whitelist entry than the
-	// doubleclick.net block; example.com is a parent-level whitelist entry
+	// safe.doubleclick.net is a more specific allowlist entry than the
+	// doubleclick.net block; example.com is a parent-level allowlist entry
 	// sitting above the deeper ads.example.com block.
-	s.SetWhitelist([]string{"safe.doubleclick.net", "example.com"})
+	s.SetAllowlist([]string{"safe.doubleclick.net", "example.com"})
 
 	tests := []struct {
 		name   string
 		domain string
 		want   bool
 	}{
-		// Whitelisted name and its subtree are exempt from the parent block.
-		{"whitelisted subdomain exempt", "safe.doubleclick.net", false},
-		{"child of whitelisted name exempt", "img.safe.doubleclick.net", false},
+		// Allowlisted name and its subtree are exempt from the parent block.
+		{"allowlisted subdomain exempt", "safe.doubleclick.net", false},
+		{"child of allowlisted name exempt", "img.safe.doubleclick.net", false},
 		// Sibling under the blocked apex is still blocked.
 		{"sibling still blocked", "ads.doubleclick.net", true},
 		{"blocked apex still blocked", "doubleclick.net", true},
-		// Parent-level whitelist exempts the whole subtree, including a
+		// Parent-level allowlist exempts the whole subtree, including a
 		// deeper block entry underneath it.
-		{"parent whitelist exempts blocked child", "ads.example.com", false},
-		{"parent whitelist exempts child subtree", "x.ads.example.com", false},
+		{"parent allowlist exempts blocked child", "ads.example.com", false},
+		{"parent allowlist exempts child subtree", "x.ads.example.com", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -185,38 +185,38 @@ func TestStore_WhitelistSuffixSemantics(t *testing.T) {
 	}
 }
 
-func TestStore_AddRemoveWhitelist(t *testing.T) {
+func TestStore_AddRemoveAllowlist(t *testing.T) {
 	s := NewStore()
 	s.Replace([]string{"ads.example.com"})
 
 	if !s.IsBlocked("ads.example.com") {
-		t.Fatal("precondition: domain should be blocked before whitelist add")
+		t.Fatal("precondition: domain should be blocked before allowlist add")
 	}
 
-	s.AddToWhitelist("ads.example.com")
+	s.AddToAllowlist("ads.example.com")
 	if s.IsBlocked("ads.example.com") {
-		t.Fatal("AddToWhitelist did not take effect")
+		t.Fatal("AddToAllowlist did not take effect")
 	}
 
-	s.RemoveFromWhitelist("ads.example.com")
+	s.RemoveFromAllowlist("ads.example.com")
 	if !s.IsBlocked("ads.example.com") {
-		t.Fatal("RemoveFromWhitelist did not take effect")
+		t.Fatal("RemoveFromAllowlist did not take effect")
 	}
 }
 
-func TestStore_GetWhitelist(t *testing.T) {
+func TestStore_GetAllowlist(t *testing.T) {
 	s := NewStore()
-	s.AddToWhitelist("a.com")
-	s.AddToWhitelist("b.com")
+	s.AddToAllowlist("a.com")
+	s.AddToAllowlist("b.com")
 
-	got := s.GetWhitelist()
+	got := s.GetAllowlist()
 	if len(got) != 2 {
-		t.Fatalf("GetWhitelist len = %d, want 2", len(got))
+		t.Fatalf("GetAllowlist len = %d, want 2", len(got))
 	}
 	// Order is unspecified; turn into a set for the comparison.
 	set := map[string]bool{got[0]: true, got[1]: true}
 	if !set["a.com"] || !set["b.com"] {
-		t.Errorf("GetWhitelist = %v, want a.com and b.com", got)
+		t.Errorf("GetAllowlist = %v, want a.com and b.com", got)
 	}
 }
 
@@ -260,32 +260,32 @@ func TestStore_Len(t *testing.T) {
 	}
 }
 
-func TestStore_WhitelistLen(t *testing.T) {
-	// R34: WhitelistLen must mirror GetWhitelist's count without
+func TestStore_AllowlistLen(t *testing.T) {
+	// R34: AllowlistLen must mirror GetAllowlist's count without
 	// allocating the full slice. Verify by hand that the two stay in
-	// sync across SetWhitelist and AddToWhitelist/RemoveFromWhitelist.
+	// sync across SetAllowlist and AddToAllowlist/RemoveFromAllowlist.
 	s := NewStore()
-	if s.WhitelistLen() != 0 {
-		t.Errorf("empty whitelist WhitelistLen = %d, want 0", s.WhitelistLen())
+	if s.AllowlistLen() != 0 {
+		t.Errorf("empty allowlist AllowlistLen = %d, want 0", s.AllowlistLen())
 	}
 
-	s.SetWhitelist([]string{"a.com", "b.com"})
-	if s.WhitelistLen() != 2 {
-		t.Errorf("after SetWhitelist WhitelistLen = %d, want 2", s.WhitelistLen())
+	s.SetAllowlist([]string{"a.com", "b.com"})
+	if s.AllowlistLen() != 2 {
+		t.Errorf("after SetAllowlist AllowlistLen = %d, want 2", s.AllowlistLen())
 	}
-	if len(s.GetWhitelist()) != s.WhitelistLen() {
-		t.Errorf("WhitelistLen %d disagrees with len(GetWhitelist()) %d",
-			s.WhitelistLen(), len(s.GetWhitelist()))
-	}
-
-	s.AddToWhitelist("c.com")
-	if s.WhitelistLen() != 3 {
-		t.Errorf("after AddToWhitelist WhitelistLen = %d, want 3", s.WhitelistLen())
+	if len(s.GetAllowlist()) != s.AllowlistLen() {
+		t.Errorf("AllowlistLen %d disagrees with len(GetAllowlist()) %d",
+			s.AllowlistLen(), len(s.GetAllowlist()))
 	}
 
-	s.RemoveFromWhitelist("a.com")
-	if s.WhitelistLen() != 2 {
-		t.Errorf("after RemoveFromWhitelist WhitelistLen = %d, want 2", s.WhitelistLen())
+	s.AddToAllowlist("c.com")
+	if s.AllowlistLen() != 3 {
+		t.Errorf("after AddToAllowlist AllowlistLen = %d, want 3", s.AllowlistLen())
+	}
+
+	s.RemoveFromAllowlist("a.com")
+	if s.AllowlistLen() != 2 {
+		t.Errorf("after RemoveFromAllowlist AllowlistLen = %d, want 2", s.AllowlistLen())
 	}
 }
 
@@ -311,7 +311,7 @@ func BenchmarkStore_IsBlocked(b *testing.B) {
 }
 
 // BenchmarkStore_IsBlocked_Miss covers the suffix walk's worst case: a
-// deep, not-blocked, not-whitelisted name walks every label to the TLD
+// deep, not-blocked, not-allowlisted name walks every label to the TLD
 // without an early return. This is the hot path for the overwhelming
 // majority of real traffic (allowed queries), so it is the number that
 // matters most for the ROADMAP #3 suffix-match change.

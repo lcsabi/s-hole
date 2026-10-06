@@ -48,7 +48,7 @@ func TestIntegration_FullPipeline(t *testing.T) {
 
 	counter := stats.New()
 	h := NewHandler(store, counter, []string{upstreamAddr}, db,
-		"zero", 60, c, false, "raw")
+		"zero", 60, c, false, "full")
 
 	// --- Real DNS server on a free port ---
 	addr, pc, ln := pickFreePort(t)

@@ -1,161 +1,195 @@
-# Address and port for DNS queries (UDP + TCP).
-# ":53" binds all interfaces, IPv4 and IPv6 (dual-stack).
-# Use "0.0.0.0:53" for IPv4 only, or a specific address to bind one interface.
-listen: ":53"
-
-# DNS over TLS (DoT): an encrypted listener for LAN clients, usually on
-# port 853. Android phones in the default "Automatic" Private DNS mode use it
-# on their own and do not check the certificate, so a self-signed one works.
-# DoT is off while dot_listen is empty (the default). To turn it on, set all
-# three keys. You supply the certificate and key (PEM).
-# See "DNS over TLS" in README.md for the commands and for strict mode.
-# To renew, replace the two files and reload: the dashboard reload button,
-# POST /api/reload, `systemctl reload s-hole`, or SIGHUP. No restart needed.
-# dot_listen: ":853"
-# tls_cert: "/etc/s-hole/cert.pem"
-# tls_key: "/etc/s-hole/key.pem"
-
-# Upstream resolvers, tried in order. Each entry is either a plain host:port
-# resolver or a DNS-over-HTTPS (DoH) endpoint. A bare address such as "1.1.1.1"
-# (no ":53") is dropped with a warning at startup. If every entry is malformed,
-# startup fails (nothing could forward). A single upstream is valid but logs a
-# note, because it leaves no fallback if it fails.
+# s-hole configuration (format 2.0).
 #
-# DoH encrypts the hop to the upstream (port 443), which defeats an ISP that
-# intercepts or logs plain port-53 traffic. A DoH entry must use an IP host, not
-# a hostname (s-hole is often the LAN's own resolver, so a hostname lookup could
-# loop back into s-hole). The IP is the same well-known resolver IP, and its
-# certificate covers that IP, so TLS still verifies. Ready-to-use endpoints:
-#   - "https://1.1.1.1/dns-query"   # Cloudflare DoH
-#   - "https://8.8.8.8/dns-query"   # Google DoH
-#   - "https://9.9.9.9/dns-query"   # Quad9 DoH
-# List a plain resolver after a DoH entry to keep a fallback if DoH fails. A DoH
-# URL with a hostname host is not supported yet, so use a provider that answers
-# on an IP. A DoH entry needs a path (such as /dns-query) and must not contain
-# a user name or password.
-upstreams:
-  - "1.1.1.1:53"
-  - "8.8.8.8:53"
-
-# Blocklist URLs: hosts-file format or plain domain-per-line.
-blocklists:
-  - "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
-  - "https://adaway.org/hosts.txt"
-  # Optional lists from HaGeZi (GPL-3.0, https://github.com/hagezi/dns-blocklists).
-  # Use the plain-domain "-onlydomains" files. s-hole's suffix blocking covers
-  # subdomains, and the in-memory set removes duplicates, so you can stack these
-  # with the lists above. To enable one, delete the leading "# ".
-  #
-  # Multi PRO is HaGeZi's recommended ads/tracker/malware list. PRO++ adds more
-  # aggressive blocking (it also blocks referral domains). Pick one tier, and use
-  # a mini list on a small box such as a Raspberry Pi:
-  #   - "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro-onlydomains.txt"            # PRO, ~224k domains
-  #   - "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro.mini-onlydomains.txt"       # PRO mini, ~50k domains
-  #   - "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro.plus-onlydomains.txt"       # PRO++, ~248k domains
-  #   - "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro.plus.mini-onlydomains.txt"  # PRO++ mini, ~60k domains
-  #
-  # Add-on lists you can stack on top:
-  #   - "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/tif.mini-onlydomains.txt"  # threat intel: malware, phishing, C2 (mini, ~176k)
-  #   - "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/popupads-onlydomains.txt"  # pop-up ads
-  #   - "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/fake-onlydomains.txt"      # scams, subscription traps, fake sites
-
-# Domains to never block regardless of blocklist hits.
-whitelist:
-  # - "example.com"
-
-# How often to re-download blocklists (Go duration: 1h, 24h, 168h …)
-refresh_interval: "24h"
-
-# How often to log the stats line (msg=stats)
-stats_interval: "5m"
-
-# How to respond to blocked queries: "zero" (0.0.0.0) or "nxdomain"
-block_mode: "zero"
-
-# TTL in seconds advertised on blocked replies.
-# 0 tells clients not to cache them (whitelist changes then take effect
-# immediately, at the cost of more repeat queries).
-block_ttl: 300
-
-# Which queries to write to the log: "all", "blocked", or "none".
-# This controls the log-backed dashboard panels (Queries over time, Recent
-# Queries, and Top Blocked "All time"). "blocked" limits them to blocked
-# queries, so the graph shows one blocked line. "none" leaves them empty. The
-# stat cards are not affected. They count every query from the in-memory counter.
-log_queries: "all"
-
-# How the client IP is stored in the query log and shown in Top Clients:
-# "raw" (as-is), "drop" (store no client), or "subnet" (mask the host bits to
-# IPv4 /24 or IPv6 /64). The client is masked once at write time, so the log
-# file, the SQLite log, and the Top Clients panel all see the same value.
-# Masking is forward-only: rows written at "raw" keep their addresses.
-# On a flat single-subnet home LAN, "subnet" collapses every client to one
-# address, so use "drop" there. "subnet" is for segmented or VLAN networks.
-query_privacy: "raw"
-
-# client_names gives each client a label in the log and the Top Clients panel.
-# A key is an exact IP or a CIDR. The value is the label.
-# The label is read-only. s-hole resolves it from the stored client value, which
-# query_privacy has already masked. So a label never shows more than query_privacy.
-#   query_privacy: raw    -> an exact-IP or CIDR key matches (host labels work)
-#   query_privacy: subnet -> only a CIDR or network-address key matches, because
-#                            the host bits are masked. Use CIDR keys here.
-#   query_privacy: drop   -> no client is stored, so no key matches.
-# An exact key wins over a CIDR. The most specific CIDR wins.
-# s-hole skips a bad key and logs a WARN. This map has no S_HOLE_* override.
-client_names:
-  # "192.168.1.42": kids-ipad
-  # "10.0.5.0/24": iot-vlan
-
-# Plain-text query log file (leave empty to write to stdout)
-log_file: ""
-
-# SQLite database for persistent query log + historical top-domain queries
-# Leave empty to disable SQLite logging.
-query_db: "queries.db"
-
-# Directory to cache downloaded blocklists (avoids re-downloading on restart)
-cache_dir: "."
-
-# A relative path (log_file, query_db, cache_dir, tls_cert, tls_key)
-# starts from the working directory:
+# Every setting has a default, so you can delete any line. The defaults are
+# the most private choice: s-hole records no queries and no client addresses
+# until you turn that on here.
+#
+# s-hole logs a WARN at startup, and again with every stats line, for each
+# setting that is less private than its default. You cannot turn these
+# warnings off.
+#
+# If a value is not valid, s-hole logs a warning and uses the default for that
+# setting. To check this file before a restart, run:
+#   s-hole -check-config -config config.yaml
+# It fails on any problem in the file.
+#
+# A relative path (query_log.database, query_log.file, blocking.cache_dir,
+# dns.dot_cert, dns.dot_key) starts from the working directory:
 #   systemd unit    -> /var/lib/s-hole
 #   Docker          -> /app
 #   Windows service -> the directory of this config file
 #   terminal        -> the current directory
+#
+# An environment variable overrides a single value. Its name is S_HOLE_ plus
+# the key path in upper case, with dots as underscores. For example,
+# S_HOLE_QUERY_LOG_MODE overrides query_log.mode. Lists and maps (upstreams,
+# lists, allowlist, client_names) have no environment variable.
 
-# Address:port for the admin web UI and REST API.
-# Default is "127.0.0.1:8080". Localhost only, no LAN access.
-# Set to "0.0.0.0:8080" to expose the UI to every device on the LAN.
-api_listen: "127.0.0.1:8080"
+dns:
+  # Address and port for DNS queries (UDP and TCP).
+  # ":53" listens on all interfaces, IPv4 and IPv6.
+  # Use "0.0.0.0:53" for IPv4 only, or an address to listen on one interface.
+  listen: ":53"
 
-# Maximum number of DNS responses to hold in the in-memory cache.
-# Cached responses are served without an upstream round-trip until their TTL expires.
-# Set to 0 to disable. Recommended: 2000–5000 for a Raspberry Pi.
-cache_size: 2000
+  # DNS over TLS (DoT): an encrypted listener for LAN clients, usually on
+  # port 853. Android phones in the default "Automatic" Private DNS mode use it
+  # and do not check the certificate, so a self-signed one works.
+  # DoT is off while dot_listen is off. To turn it on, set all three keys. You
+  # supply the certificate and key (PEM). See "DNS over TLS" in README.md.
+  # To renew, replace the two files and reload: the dashboard reload button,
+  # POST /api/reload, `systemctl reload s-hole`, or SIGHUP. No restart needed.
+  dot_listen: "off"
+  # dot_cert: "/etc/s-hole/cert.pem"
+  # dot_key: "/etc/s-hole/key.pem"
 
-# How often the query log is flushed to SQLite.
-# Longer intervals reduce SD card / flash write cycles on embedded hardware.
-# 30s is a good balance between data freshness and write wear.
-db_flush_interval: "30s"
+  # Upstream resolvers, tried in order. Each entry is a DNS-over-HTTPS (DoH)
+  # endpoint ("https://IP/path") or a plain resolver ("IP:port").
+  #
+  # DoH encrypts the queries s-hole sends upstream, so your internet provider
+  # cannot read or change them. The defaults are two DoH resolvers, Quad9 and
+  # then Cloudflare. The same two resolvers over plain DNS follow as a
+  # fallback. s-hole uses a plain entry only when every DoH entry has failed,
+  # and it logs a WARN each time that happens. For DoH only, delete the two
+  # plain entries. Then, if TLS fails (for example, the system clock is wrong),
+  # s-hole cannot resolve names until it works again.
+  #
+  # A DoH entry must use an IP address, not a hostname, and needs a path such
+  # as /dns-query. It must not contain a user name or password. A plain entry
+  # needs a port: "9.9.9.9" without ":53" is dropped with a warning. If every
+  # entry is malformed, s-hole does not start.
+  upstreams:
+    - "https://9.9.9.9/dns-query"   # Quad9 DoH
+    - "https://1.1.1.1/dns-query"   # Cloudflare DoH
+    - "9.9.9.9:53"                  # Quad9, plain fallback
+    - "1.1.1.1:53"                  # Cloudflare, plain fallback
 
-# Delete query-log rows older than this many days. 0 = retain forever.
-# A background prune runs hourly when this is > 0.
-query_db_retention_days: 0
+  # Number of DNS answers to keep in the in-memory cache. A cached answer
+  # needs no upstream query until its TTL expires. 0 turns the cache off.
+  # 2000 to 5000 suits a Raspberry Pi.
+  cache_entries: 2000
 
-# Expose net/http/pprof handlers under /debug/pprof/ on the admin HTTP
-# server. Off by default. Enable it only to investigate a running
-# incident, and only when api_listen is bound to localhost. pprof
-# reveals goroutine stacks, heap layouts, and symbols that are useful to
-# the operator and dangerous in the wrong hands.
-enable_pprof: false
+  # Answer reverse lookups (PTR) for private address ranges (10/8, 172.16/12,
+  # 192.168/16, fc00::/7, fe80::/10) here, with "no such name", instead of
+  # sending them upstream. No public resolver has records for these addresses,
+  # and forwarding them tells the upstream which addresses your LAN uses.
+  # Set to false only if you run a private reverse DNS zone on your LAN.
+  # s-hole warns while this is false.
+  local_ptr: true
 
-# Answer PTR (reverse DNS) queries for RFC 6303 private-range zones
-# (10/8, 172.16/12, 192.168/16, fc00::/7, fe80::/10) locally with
-# authoritative NXDOMAIN instead of forwarding them upstream.
-# No public resolver can ever hold records for these addresses. Forwarding
-# wastes a round-trip on every request and leaks LAN addressing to the
-# upstream resolver. Recommended: true (the default).
-# If you run a private reverse DNS zone on your LAN, set this to false.
-# Queries for it then reach a forwarding resolver that can answer them.
-local_ptr: true
+blocking:
+  # Blocklist URLs: hosts-file format or one domain per line. Use https://
+  # URLs; s-hole warns about an http:// URL, because anyone on the network
+  # path can change the list.
+  lists:
+    - "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
+    - "https://adaway.org/hosts.txt"
+    # Optional lists from HaGeZi (GPL-3.0, https://github.com/hagezi/dns-blocklists).
+    # Use the plain-domain "-onlydomains" files. s-hole blocks subdomains too,
+    # and it removes duplicates, so you can add these to the lists above. To
+    # turn one on, delete the leading "# ".
+    #
+    # Multi PRO is HaGeZi's recommended ads, tracker, and malware list. PRO++
+    # blocks more (it also blocks referral domains). Pick one tier, and use a
+    # mini list on a small box such as a Raspberry Pi:
+    #   - "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro-onlydomains.txt"            # PRO, ~224k domains
+    #   - "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro.mini-onlydomains.txt"       # PRO mini, ~50k domains
+    #   - "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro.plus-onlydomains.txt"       # PRO++, ~248k domains
+    #   - "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/pro.plus.mini-onlydomains.txt"  # PRO++ mini, ~60k domains
+    #
+    # Add-on lists:
+    #   - "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/tif.mini-onlydomains.txt"  # threat intel: malware, phishing, C2 (mini, ~176k)
+    #   - "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/popupads-onlydomains.txt"  # pop-up ads
+    #   - "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/fake-onlydomains.txt"      # scams, subscription traps, fake sites
+
+  # Domains that s-hole never blocks, with all their subdomains.
+  allowlist:
+    # - "example.com"
+
+  # How to answer a blocked query: "zero_ip" (0.0.0.0 for A, :: for AAAA) or
+  # "nxdomain" (no such name).
+  reply: "zero_ip"
+
+  # TTL, in seconds, on a blocked answer. 0 tells clients not to cache it, so
+  # an allowlist change takes effect at once, but clients ask more often.
+  reply_ttl_seconds: 300
+
+  # How often to download the blocklists again (Go duration: 1h, 24h, 168h).
+  refresh_interval: "24h"
+
+  # Directory for the downloaded blocklists, so a restart does not download
+  # them again.
+  cache_dir: "."
+
+query_log:
+  # Which queries s-hole records: "none", "blocked", or "all".
+  # This covers every place a queried domain is kept: the database, the log
+  # file, and the Top Domains and Top Clients panels on the dashboard.
+  # "none" records nothing. The dashboard then shows the live counters and the
+  # per-minute graph (counts only, kept in memory, never on disk).
+  # s-hole warns while this is "blocked" or "all".
+  mode: "none"
+
+  # How much of the client address s-hole keeps with a recorded query:
+  #   "drop"   - nothing. s-hole does not record which device asked.
+  #   "subnet" - the network part only (IPv4 /24, IPv6 /64). Use it on a
+  #              network with VLANs or several subnets. On a flat home LAN
+  #              every device has the same /24, so use "drop" there.
+  #   "full"   - the full address of each device.
+  # The setting applies when a query is recorded. Rows that are already stored
+  # keep their addresses. To remove them, delete the history (see "Delete the
+  # query history" in README.md).
+  # s-hole warns while this is "subnet" or "full" and mode is not "none".
+  clients: "drop"
+
+  # SQLite file for the query history: the Recent Queries panel, the stored
+  # Top Blocked list, and the 7-day graph. "off" stores no history.
+  database: "off"
+
+  # Where s-hole writes one text line per recorded query:
+  #   "off"    - nowhere.
+  #   "stdout" - standard output. Under systemd this is the system journal,
+  #              and under Docker the container log. s-hole cannot delete
+  #              lines there, so retention_days and purge do not reach them.
+  #   a path   - a text file. s-hole does not delete old lines from it.
+  # s-hole warns while this is not "off" and mode is not "none".
+  file: "off"
+
+  # Delete database rows older than this many days. 0 keeps them forever.
+  # s-hole warns while this is 0 or more than 7.
+  retention_days: 7
+
+  # How often s-hole writes recorded queries to the database. A longer
+  # interval writes to an SD card less often.
+  flush_interval: "30s"
+
+  # A display label for a client address in the dashboard and the log.
+  # A key is an exact IP or a CIDR. The value is the label.
+  # s-hole looks up the label from the stored client value, so a label never
+  # shows more than "clients" keeps:
+  #   clients: full   -> an exact-IP or CIDR key matches
+  #   clients: subnet -> only a CIDR key (or the network address) matches
+  #   clients: drop   -> no key matches
+  # An exact key wins over a CIDR. The most specific CIDR wins.
+  # A label such as "kids-ipad" identifies a person, so use them with care.
+  client_names:
+    # "192.168.1.42": kids-ipad
+    # "10.0.5.0/24": iot-vlan
+
+admin:
+  # Address and port for the dashboard and REST API. They have no login.
+  # "127.0.0.1:8080" (the default) allows this machine only.
+  # To open the dashboard from other devices, set "0.0.0.0:8080". Then every
+  # device on the LAN can read the query history and change the allowlist.
+  # s-hole warns while this is not a loopback address.
+  # Open the dashboard by IP address, "localhost", or this machine's hostname
+  # (for example http://raspberrypi.local:8080). s-hole refuses other names.
+  listen: "127.0.0.1:8080"
+
+  # Expose the Go profiler under /debug/pprof/ on the admin address. Use it
+  # only to look into a running problem, then turn it off. It shows internal
+  # state of the process. s-hole warns while this is true.
+  pprof: false
+
+# How often s-hole logs the stats line (msg=stats), with the privacy and
+# security warnings that apply.
+stats_interval: "5m"

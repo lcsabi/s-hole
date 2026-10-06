@@ -3,7 +3,7 @@
 // for historical queries surfaced through the REST API. Both implement
 // the Logger interface; querylog.Multi fans out to any combination.
 //
-// Both backends respect the log_queries config setting ("all", "blocked",
+// Both backends respect the query_log.mode config setting ("all", "blocked",
 // or "none") and never block the calling DNS goroutine: the SQLite logger
 // buffers entries in a channel and drops on overflow rather than applying
 // back-pressure to query handling. Drops are counted in DBLogger.dropped
@@ -11,7 +11,7 @@
 // see when flush_interval is too long for the query volume.
 //
 // The SQLite logger supports a TTL-based retention prune: when
-// query_db_retention_days is set, a goroutine deletes rows older than
+// query_log.retention_days is set, a goroutine deletes rows older than
 // the cutoff every pruneTickPeriod.
 //
 // Recent and TopBlocked accept a context.Context so HTTP handlers can

@@ -97,7 +97,7 @@ func startDoTServer(t *testing.T, certs *CertReloader) (dotAddr string, counter 
 	store := blocklist.NewStore()
 	store.Replace([]string{"ads.example.com"})
 	counter = stats.New()
-	h := NewHandler(store, counter, nil, nullLogger{}, "zero", 60, nil, false, "raw")
+	h := NewHandler(store, counter, nil, nullLogger{}, "zero", 60, nil, false, "full")
 
 	srv := NewServer(pc, ln, h)
 	srv.EnableDoT(dotLn)

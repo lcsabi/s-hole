@@ -1143,9 +1143,9 @@ func TestRunCheckConfig(t *testing.T) {
 		wantLog  []string
 	}{
 		{"plain config", "", 0, []string{"config OK"}},
-		{"invalid config", "block_mode: bogus\n", 1, []string{"level=ERROR"}},
+		{"invalid config", "blocking:\n  reply: bogus\n", 1, []string{"level=ERROR"}},
 		{"expired DoT certificate warns but passes",
-			"dot_listen: \":853\"\ntls_cert: \"" + certFile + "\"\ntls_key: \"" + keyFile + "\"\n",
+			"dns:\n  dot_listen: \":853\"\n  dot_cert: \"" + certFile + "\"\n  dot_key: \"" + keyFile + "\"\n",
 			0, []string{"DoT certificate expired", "level=WARN", "config OK"}},
 	}
 	for i, tc := range cases {
@@ -1302,9 +1302,9 @@ func TestChdirToConfigDir_NestedRelativeLoadsConfig(t *testing.T) {
 	if err := os.Mkdir(cfgDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("S_HOLE_QUERY_DB", "queries.db")
+	t.Setenv("S_HOLE_QUERY_LOG_DATABASE", "queries.db")
 	rel := filepath.Join("conf", "s-hole.yaml")
-	if err := os.WriteFile(rel, []byte("upstreams:\n  - 1.1.1.1:53\nquery_db: \"queries.db\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(rel, []byte("dns:\n  upstreams:\n    - 1.1.1.1:53\nquery_log:\n  database: \"queries.db\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1315,11 +1315,11 @@ func TestChdirToConfigDir_NestedRelativeLoadsConfig(t *testing.T) {
 	if _, err := os.Stat(rel); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("original relative path still names a file after chdir (stat err = %v); the test setup is wrong", err)
 	}
-	cfg, _, _, _, err := config.LoadAndValidate(got)
+	cfg, _, err := config.Load(got)
 	if err != nil {
-		t.Fatalf("LoadAndValidate(%q) = %v, want nil", got, err)
+		t.Fatalf("Load(%q) = %v, want nil", got, err)
 	}
-	if err := os.WriteFile(cfg.QueryDB, nil, 0o600); err != nil {
+	if err := os.WriteFile(cfg.QueryLog.Database, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(cfgDir, "queries.db")); err != nil {

@@ -349,7 +349,7 @@
 
     .check-result { font-size: 13px; flex-basis: 100%; }
     .check-result .dec-blocked { color: var(--red); font-weight: 700; }
-    .check-result .dec-whitelisted { color: var(--green); font-weight: 700; }
+    .check-result .dec-allowlisted { color: var(--green); font-weight: 700; }
     .check-result .dec-allowed { font-weight: 700; }
     .check-walk {
       margin-top: 5px;
@@ -675,9 +675,9 @@
     <div class="panel-hd">Actions</div>
     <div class="actions-body">
       <button class="btn-secondary" onclick="reloadBlocklists()" title="Re-downloads the blocklists. With DNS over TLS on, it also reloads the certificate files.">↺ Reload</button>
-      <form onsubmit="addWhitelist(event)" style="display:flex;gap:8px;align-items:center">
-        <input id="wl-input" type="text" placeholder="domain to whitelist…">
-        <button type="submit" class="btn-primary">+ Whitelist</button>
+      <form onsubmit="addAllowlist(event)" style="display:flex;gap:8px;align-items:center">
+        <input id="wl-input" type="text" placeholder="domain to allowlist…">
+        <button type="submit" class="btn-primary">+ Allowlist</button>
       </form>
       <form onsubmit="checkDomain(event)" style="display:flex;gap:8px;align-items:center">
         <input id="check-input" type="text" placeholder="why is this blocked?…">
@@ -1287,8 +1287,8 @@
         // The Top Clients panel describes itself from the active query_privacy
         // mode. "drop" stores no client, so the list is meaningless and the
         // panel says so instead of showing blank rows. "subnet" keeps the list
-        // but notes the entries are subnet-masked. "raw" is the plain list.
-        const privacy = s.query_privacy || 'raw';
+        // but notes the entries are subnet-masked. "full" is the plain list.
+        const privacy = s.query_privacy || 'drop';
         $('privacy-mode').textContent = privacy;
         const clients = s.top_clients || [];
         const cap = $('clients-cap');
@@ -1332,18 +1332,18 @@
       } catch (e) { flash('✗ ' + e.message, false); }
     }
 
-    async function addWhitelist(e) {
+    async function addAllowlist(e) {
       e.preventDefault();
       const input = $('wl-input');
       const domain = input.value.trim();
       if (!domain) return;
       try {
-        const res = await fetch('/api/whitelist', {
+        const res = await fetch('/api/allowlist', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ domain }),
         });
-        if (res.ok) { input.value = ''; flash(`✓ ${domain} whitelisted`, true); }
+        if (res.ok) { input.value = ''; flash(`✓ ${domain} allowlisted`, true); }
         else flash('✗ Request failed', false);
       } catch (e) { flash('✗ ' + e.message, false); }
     }
@@ -1356,7 +1356,7 @@
     }
 
     // Diagnostic: ask the server why a domain is (or is not) blocked. Shows the
-    // decision, the block entry that matched, any whitelist entry that overrode
+    // decision, the block entry that matched, any allowlist entry that overrode
     // it, and the full suffix walk that produced the decision. Changes no state.
     async function checkDomain(e) {
       e.preventDefault();
@@ -1371,17 +1371,17 @@
         let summary = `<span class="dec-${esc(r.decision)}">${esc(r.domain)}: ${r.decision.toUpperCase()}</span>`;
         if (r.decision === 'blocked') {
           summary += ` <span class="muted">matched ${esc(r.matched_block)}</span>`;
-        } else if (r.decision === 'whitelisted') {
-          summary += ` <span class="muted">by ${esc(r.matched_whitelist)}`;
+        } else if (r.decision === 'allowlisted') {
+          summary += ` <span class="muted">by ${esc(r.matched_allowlist)}`;
           summary += r.matched_block ? `, overrides block ${esc(r.matched_block)}</span>` : '</span>';
         }
 
         // Full walk: each label-suffix that was checked, most specific first,
-        // with a badge on the level that matched the block set or whitelist.
+        // with a badge on the level that matched the block set or allowlist.
         const walk = (r.walk || []).map(l => {
           let tags = '';
           if (l.blocked) tags += ' <span class="badge badge-block">BLOCK</span>';
-          if (l.whitelisted) tags += ' <span class="badge badge-allow">ALLOW</span>';
+          if (l.allowlisted) tags += ' <span class="badge badge-allow">ALLOW</span>';
           return `<div><span class="mono muted">${esc(l.suffix)}</span>${tags}</div>`;
         }).join('');
 

@@ -118,7 +118,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "# TYPE shole_cache_size gauge")
 		fmt.Fprintf(w, "shole_cache_size %d\n", size)
 		// Cache back-pressure: non-zero means the cache filled with live
-		// entries and dropped inserts. A sustained rate means cache_size is
+		// entries and dropped inserts. A sustained rate means dns.cache_entries is
 		// too small for the working set.
 		fmt.Fprintln(w, "# HELP shole_cache_dropped_total DNS cache entries dropped because the cache was full of unexpired entries.")
 		fmt.Fprintln(w, "# TYPE shole_cache_dropped_total counter")
@@ -151,9 +151,9 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
-	fmt.Fprintln(w, "# HELP shole_whitelist_size Current number of domains in the runtime whitelist.")
-	fmt.Fprintln(w, "# TYPE shole_whitelist_size gauge")
-	fmt.Fprintf(w, "shole_whitelist_size %d\n", s.store.WhitelistLen())
+	fmt.Fprintln(w, "# HELP shole_allowlist_size Current number of domains in the runtime allowlist.")
+	fmt.Fprintln(w, "# TYPE shole_allowlist_size gauge")
+	fmt.Fprintf(w, "shole_allowlist_size %d\n", s.store.AllowlistLen())
 
 	// Querylog back-pressure: non-zero means flush_interval is too long
 	// for the query volume or the database is too slow to drain the queue.

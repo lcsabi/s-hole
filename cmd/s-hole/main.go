@@ -7,8 +7,9 @@
 //   - parse flags; if -service is set, perform the SCM action and exit
 //   - when launched by the Windows SCM, change to the config file's
 //     directory, so relative paths resolve next to config.yaml (b/066)
-//   - load and validate config (YAML + S_HOLE_* env-var overrides); bail
-//     on any duration/enum failure
+//   - load the config (YAML + S_HOLE_* env-var overrides); log each config
+//     problem as a WARN and use the default for that setting, and bail only
+//     on a fatal mistake (see config.Load)
 //   - bind the plain DNS UDP and TCP sockets (dnsserver.Listen); a failure
 //     here is fatal, and Shutdown can always close them (b/063)
 //   - if dot_listen is set, load the DoT certificate and bind the
@@ -17,7 +18,7 @@
 //     response cache, DNS handler, and the DNS server on the bound sockets
 //   - construct the single-flight reload closure and the admin API server
 //     (which exposes /healthz, /readyz, /metrics, and, opt-in via
-//     enable_pprof, /debug/pprof/* alongside the REST API)
+//     admin.pprof, /debug/pprof/* alongside the REST API)
 //   - launch background tickers for the stats line and the blocklist reload,
 //     both panic-recovered
 //   - either enter the Windows SCM event loop (service mode) or run the DNS
@@ -153,10 +154,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	// -check-config is a dry run: it loads and validates the config exactly the
-	// way startup does (config.LoadAndValidate is the same call), then exits. It
-	// lets the installer reject a bad config before `systemctl restart`, so a
-	// config error surfaces on screen instead of as a failed start (ROADMAP #27).
+	// -check-config is a dry run: it loads the config with the same call as
+	// startup (config.Load), then exits. It fails on any config problem, which
+	// startup only warns about. It lets the installer reject a bad config before
+	// `systemctl restart`, so a config error surfaces on screen instead of as a
+	// failed or degraded start (ROADMAP #27).
 	if *checkConfig {
 		if code := runCheckConfig(mainLog, *cfgPath); code != 0 {
 			os.Exit(code)
@@ -165,8 +167,8 @@ func main() {
 	}
 
 	// Under the Windows SCM the working directory is C:\Windows\System32, so
-	// the sample config's relative query_db and cache_dir, and any relative
-	// log_file, put s-hole's files in the system folder (b/066). Change to the
+	// a relative query_log.database, query_log.file, or blocking.cache_dir puts
+	// s-hole's files in the system folder (b/066). Change to the
 	// config file's directory first, so relative paths resolve next to
 	// config.yaml, as they resolve in /var/lib/s-hole under systemd and in /app
 	// in Docker. The config is then loaded through its absolute path: a
@@ -182,10 +184,14 @@ func main() {
 		mainLog.Info("working directory set to the config directory", "dir", filepath.Dir(absCfg))
 	}
 
-	cfg, refreshInterval, statsInterval, dbFlushInterval, err := config.LoadAndValidate(*cfgPath)
+	cfg, problems, err := config.Load(*cfgPath)
+	logConfigProblems(mainLog, problems)
 	if err != nil {
 		mainLog.Error("config load failed", "err", err)
 		os.Exit(1)
+	}
+	for _, note := range cfg.UpstreamNotes() {
+		mainLog.Info(note)
 	}
 
 	// Bind the DNS listeners before anything else opens, so a port conflict
@@ -195,58 +201,58 @@ func main() {
 	// that is not listening serves no one, and an enabled DoT listener that
 	// did not come up would silently cut off the clients that need it
 	// (Android's strict Private DNS mode does not fall back to plain DNS).
-	dnsPC, dnsLn, err := dnsserver.Listen(cfg.Listen)
+	dnsPC, dnsLn, err := dnsserver.Listen(cfg.DNS.Listen)
 	if err != nil {
-		mainLog.Error("dns listen failed", "listen", cfg.Listen, "err", err,
-			"hint", "check for another program on the port (often the systemd-resolved stub on port 53), or fix listen")
+		mainLog.Error("dns listen failed", "listen", cfg.DNS.Listen, "err", err,
+			"hint", "check for another program on the port (often the systemd-resolved stub on port 53), or fix dns.listen")
 		os.Exit(1)
 	}
 	var dotCerts *dnsserver.CertReloader
 	var dotLn net.Listener
-	if cfg.DoTListen != "" {
-		dotCerts, err = dnsserver.NewCertReloader(cfg.TLSCert, cfg.TLSKey)
+	if cfg.DNS.DoTListen != "" {
+		dotCerts, err = dnsserver.NewCertReloader(cfg.DNS.DoTCert, cfg.DNS.DoTKey)
 		if err == nil {
-			dotLn, err = dnsserver.ListenDoT(cfg.DoTListen, dotCerts)
+			dotLn, err = dnsserver.ListenDoT(cfg.DNS.DoTListen, dotCerts)
 		}
 		if err != nil {
-			mainLog.Error("DoT listener failed", "dot_listen", cfg.DoTListen, "err", err,
-				"hint", "check for a port conflict, or fix dot_listen, tls_cert, and tls_key")
+			mainLog.Error("DoT listener failed", "dot_listen", cfg.DNS.DoTListen, "err", err,
+				"hint", "check for a port conflict, or fix dns.dot_listen, dns.dot_cert, and dns.dot_key")
 			os.Exit(1)
 		}
-		mainLog.Info("DoT certificate loaded", "cert", cfg.TLSCert, "expires", dotCerts.NotAfter().Format(time.RFC3339))
+		mainLog.Info("DoT certificate loaded", "cert", cfg.DNS.DoTCert, "expires", dotCerts.NotAfter().Format(time.RFC3339))
 		warnCertExpiry(mainLog, dotCerts)
 	}
 
 	store := blocklist.NewStore()
-	store.SetWhitelist(cfg.Whitelist)
+	store.SetAllowlist(cfg.Blocking.Allowlist)
 
-	if err := blocklist.Update(store, cfg.Blocklists, cfg.CacheDir, blocklist.CacheFirst); err != nil {
+	if err := blocklist.Update(store, cfg.Blocking.Lists, cfg.Blocking.CacheDir, blocklist.CacheFirst); err != nil {
 		mainLog.Warn("initial blocklist load failed", "err", err)
 	}
 
 	counter := stats.New()
 
-	fileLog := querylog.NewFileLogger(cfg.LogFile, cfg.LogQueries)
+	fileLog := newFileLogger(cfg.QueryLog)
 
 	var db *querylog.DBLogger
-	if cfg.QueryDB != "" {
-		db, err = querylog.NewDBLogger(cfg.QueryDB, cfg.LogQueries, dbFlushInterval, cfg.QueryDBRetentionDays)
+	if cfg.QueryLog.Database != "" {
+		db, err = querylog.NewDBLogger(cfg.QueryLog.Database, cfg.QueryLog.Mode, cfg.QueryLog.FlushInterval, cfg.QueryLog.RetentionDays)
 		if err != nil {
 			mainLog.Warn("query log database open failed", "err", err,
-				"hint", "the dashboard history and recent queries stay empty. Check query_db")
+				"hint", "the dashboard history and recent queries stay empty. Check query_log.database")
 		} else {
-			mainLog.Info("query log database opened", "path", cfg.QueryDB)
+			mainLog.Info("query log database opened", "path", cfg.QueryLog.Database)
 		}
 	}
 
 	var dnsCache *cache.Cache
-	if cfg.CacheSize > 0 {
-		dnsCache = cache.New(cfg.CacheSize)
-		mainLog.Info("DNS response cache enabled", "max_entries", cfg.CacheSize)
+	if cfg.DNS.CacheEntries > 0 {
+		dnsCache = cache.New(cfg.DNS.CacheEntries)
+		mainLog.Info("DNS response cache enabled", "max_entries", cfg.DNS.CacheEntries)
 	}
 
 	logger := buildMultiLogger(fileLog, db)
-	handler := dnsserver.NewHandler(store, counter, cfg.Upstreams, logger, cfg.BlockMode, cfg.BlockTTL, dnsCache, cfg.LocalPTR, cfg.QueryPrivacy)
+	handler := dnsserver.NewHandler(store, counter, cfg.DNS.Upstreams, logger, cfg.Blocking.Reply, cfg.Blocking.ReplyTTLSeconds, dnsCache, cfg.DNS.LocalPTR, cfg.QueryLog.Clients)
 	dnsServer := dnsserver.NewServer(dnsPC, dnsLn, handler)
 	if dotLn != nil {
 		dnsServer.EnableDoT(dotLn)
@@ -280,14 +286,14 @@ func main() {
 	}
 	reloadFn, stopReloads := newReloadFn(runCtx, mainLog, &reloadWG, reloadWork(mainLog, certs, func() {
 		mainLog.Info("refreshing blocklists")
-		if err := blocklist.Update(store, cfg.Blocklists, cfg.CacheDir, blocklist.DownloadFirst); err != nil {
+		if err := blocklist.Update(store, cfg.Blocking.Lists, cfg.Blocking.CacheDir, blocklist.DownloadFirst); err != nil {
 			mainLog.Warn("blocklist refresh failed", "err", err)
 		}
 	}))
 
 	apiServer := api.New(counter, db, store, dnsCache, reloadFn)
-	apiServer.SetQueryPrivacy(cfg.QueryPrivacy)
-	apiServer.SetClientNames(cfg.ClientNames)
+	apiServer.SetQueryPrivacy(cfg.QueryLog.Clients)
+	apiServer.SetClientNames(cfg.QueryLog.ClientNames)
 	// Bridge the dnsserver per-upstream transport-failure tracker to /metrics;
 	// api does not import dnsserver, so main wires the two.
 	apiServer.SetUpstreamTransportFailures(dnsserver.UpstreamTransportFailures)
@@ -295,7 +301,7 @@ func main() {
 		apiServer.SetDoTStatus(func() api.DoTStatus {
 			st := dotCerts.Status(time.Now())
 			return api.DoTStatus{
-				Listen:          cfg.DoTListen,
+				Listen:          cfg.DNS.DoTListen,
 				Names:           st.Names,
 				NotAfter:        st.NotAfter,
 				State:           st.State,
@@ -305,22 +311,20 @@ func main() {
 			}
 		})
 	}
-	if cfg.EnablePprof {
+	if cfg.Admin.Pprof {
 		apiServer.EnablePprof(true)
-		mainLog.Warn("pprof endpoints enabled", "api_listen", cfg.APIListen,
-			"hint", "the pprof endpoints have no authentication. Keep api_listen on a localhost address, or set enable_pprof to false")
 	}
-	// Bind the admin listener synchronously so a bad api_listen or a port
+	// Bind the admin listener synchronously so a bad admin.listen or a port
 	// conflict is caught here, in order, before the banner. DNS is the critical
 	// service, so a failed admin bind is a WARN and continue (fail-open), not
 	// fatal: killing DNS because the optional dashboard could not bind would
 	// invert the priority. The banner then reports the admin UI as unavailable
 	// instead of advertising a URL that refuses connections (b/052).
 	apiUp := false
-	if apiLn, err := net.Listen("tcp", cfg.APIListen); err != nil {
+	if apiLn, err := net.Listen("tcp", cfg.Admin.Listen); err != nil {
 		mainLog.Warn("admin UI failed to bind; DNS still serving",
-			"api_listen", cfg.APIListen, "err", err,
-			"hint", "check for a port conflict or fix api_listen")
+			"listen", cfg.Admin.Listen, "err", err,
+			"hint", "check for a port conflict or fix admin.listen")
 	} else {
 		apiUp = true
 		go func() {
@@ -330,16 +334,16 @@ func main() {
 		}()
 	}
 
-	_, dnsPort, _ := net.SplitHostPort(cfg.Listen)
+	_, dnsPort, _ := net.SplitHostPort(cfg.DNS.Listen)
 	var dotPort string
 	if dotLn != nil {
-		_, dotPort, _ = net.SplitHostPort(cfg.DoTListen)
+		_, dotPort, _ = net.SplitHostPort(cfg.DNS.DoTListen)
 	}
-	apiHost, apiPort, _ := net.SplitHostPort(cfg.APIListen)
+	apiHost, apiPort, _ := net.SplitHostPort(cfg.Admin.Listen)
 	printNetworkHint(dnsPort, dotPort, apiHost, apiPort, apiUp)
 
-	go runTicker(runCtx, statsInterval, counter.Log)
-	go runTicker(runCtx, refreshInterval, func() {
+	go runTicker(runCtx, cfg.StatsInterval, counter.Log)
+	go runTicker(runCtx, cfg.Blocking.RefreshInterval, func() {
 		mainLog.Info("reload requested via timer")
 		reloadFn()
 	})
@@ -374,7 +378,12 @@ func main() {
 						dnsCache.Close()
 					}
 				},
-				closeFileLog: fileLog.Close,
+				closeFileLog: func() error {
+					if fileLog != nil {
+						return fileLog.Close()
+					}
+					return nil
+				},
 				closeDB: func() error {
 					if db != nil {
 						return db.Close()
@@ -507,7 +516,7 @@ func printNetworkHint(dnsPort, dotPort, apiHost, apiPort string, apiUp bool) {
 				fmt.Printf("[main] |   Admin UI   -> http://%s:%s%s\n", h, apiPort, adminNote)
 			}
 		} else {
-			fmt.Println("[main] |   Admin UI   -> unavailable (api_listen bind failed)")
+			fmt.Println("[main] |   Admin UI   -> unavailable (admin.listen bind failed)")
 		}
 		fmt.Println("[main] +------------------------------------------------------")
 		return
@@ -525,7 +534,7 @@ func printNetworkHint(dnsPort, dotPort, apiHost, apiPort string, apiUp bool) {
 			fmt.Printf("[main] │  Admin UI   → http://%s:%s%s\n", h, apiPort, adminNote)
 		}
 	} else {
-		fmt.Println("[main] │  Admin UI   → unavailable (api_listen bind failed)")
+		fmt.Println("[main] │  Admin UI   → unavailable (admin.listen bind failed)")
 	}
 	fmt.Println("[main] └──────────────────────────────────────────────────────")
 }
@@ -608,7 +617,7 @@ func lanIPv4s(ifaces []ifaceAddrs) []string {
 }
 
 // isLoopbackHost reports whether host names a loopback address. An empty
-// host (api_listen ":8080") binds every interface and is therefore not
+// host (admin.listen ":8080") binds every interface and is therefore not
 // loopback.
 func isLoopbackHost(host string) bool {
 	if host == "localhost" {
@@ -628,12 +637,33 @@ func useASCIIBanner() bool {
 	return false
 }
 
-// buildMultiLogger fans out to the file logger and optionally the DB logger.
-func buildMultiLogger(fl *querylog.FileLogger, db *querylog.DBLogger) dnsserver.Logger {
-	if db == nil {
-		return fl
+// newFileLogger opens the query-line output that query_log.file selects:
+// nil when it is off, standard output for "stdout", or the file.
+func newFileLogger(ql config.QueryLog) *querylog.FileLogger {
+	switch ql.File {
+	case "":
+		return nil
+	case config.FileStdout:
+		return querylog.NewFileLogger("", ql.Mode)
+	default:
+		return querylog.NewFileLogger(ql.File, ql.Mode)
 	}
-	return querylog.NewMulti(fl, db)
+}
+
+// buildMultiLogger fans out to the query-log outputs that are on: the file
+// logger and the database logger, either of which may be nil. With both off,
+// it returns a logger that records nothing.
+func buildMultiLogger(fl *querylog.FileLogger, db *querylog.DBLogger) dnsserver.Logger {
+	switch {
+	case fl != nil && db != nil:
+		return querylog.NewMulti(fl, db)
+	case fl != nil:
+		return fl
+	case db != nil:
+		return db
+	default:
+		return querylog.NewMulti()
+	}
 }
 
 // runTicker invokes fn on a fixed interval until ctx is cancelled. Used
@@ -701,25 +731,40 @@ func chdirToConfigDir(cfgPath string, chdir func(string) error) (string, error) 
 	return abs, nil
 }
 
-// runCheckConfig is the -check-config dry run: it loads and validates the
-// config the way startup does and returns the process exit code. Validate has
+// runCheckConfig is the -check-config dry run: it loads the config the way
+// startup does and returns the process exit code. It is stricter than
+// startup: startup works around each config problem with the default, but the
+// dry run fails on any problem, so a typo is caught before a restart. Load has
 // already proved that a DoT certificate loads, but an expired certificate
 // still loads, so the dry run also prints the same expiry WARN as startup.
-// That is a warning, not a failure: startup would run with the certificate
-// too, and the dry run mirrors startup.
+// That is a warning, not a failure: the certificate still serves.
 func runCheckConfig(log *slog.Logger, path string) int {
-	cfg, _, _, _, err := config.LoadAndValidate(path)
+	cfg, problems, err := config.Load(path)
+	logConfigProblems(log, problems)
 	if err != nil {
 		log.Error("config load failed", "err", err)
 		return 1
 	}
-	if cfg.DoTListen != "" {
-		if certs, err := dnsserver.NewCertReloader(cfg.TLSCert, cfg.TLSKey); err == nil {
+	if cfg.DNS.DoTListen != "" {
+		if certs, err := dnsserver.NewCertReloader(cfg.DNS.DoTCert, cfg.DNS.DoTKey); err == nil {
 			warnCertExpiry(log, certs)
 		}
 	}
+	if len(problems) > 0 {
+		log.Error("config has problems", "count", len(problems), "path", path,
+			"hint", "s-hole would start and use the default for each setting above. Fix them, then run -check-config again")
+		return 1
+	}
 	log.Info("config OK", "path", path)
 	return 0
+}
+
+// logConfigProblems logs each config problem as a WARN. Startup then runs
+// with the default for each setting; -check-config fails.
+func logConfigProblems(log *slog.Logger, problems []config.Problem) {
+	for _, p := range problems {
+		log.Warn("config problem", "key", p.Key, "problem", p.Detail)
+	}
 }
 
 // certReloader is the part of *dnsserver.CertReloader the reload path uses.

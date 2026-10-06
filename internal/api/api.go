@@ -1,7 +1,7 @@
 // Package api implements the admin REST API and serves the embedded web UI.
 //
 // The HTTP server runs on a separate port from the DNS server (default
-// 127.0.0.1:8080, localhost only; set api_listen to "0.0.0.0:8080" to
+// 127.0.0.1:8080, localhost only; set admin.listen to "0.0.0.0:8080" to
 // expose to the LAN) and exposes JSON endpoints backed by the stats,
 // querylog, and blocklist subsystems. The server is unauthenticated and
 // intended for LAN-only deployment; conservative HTTP server timeouts
@@ -17,9 +17,9 @@
 //	GET    /api/queries/export   stream the filtered query log (?format=csv|json, default csv; same filters as /api/queries; optional ?limit=N, else all)
 //	GET    /api/top-blocked      all-time most-blocked domains from SQLite (?limit=N, default 50, max 1000)
 //	GET    /api/history          per-bucket query volume from SQLite (?window=24h&bucket=1h; bucket count capped at 1000)
-//	GET    /api/whitelist        runtime whitelist (sorted)
-//	POST   /api/whitelist        add a domain (ValidDomain-gated, 64 KiB cap)
-//	DELETE /api/whitelist        remove a domain
+//	GET    /api/allowlist        runtime allowlist (sorted)
+//	POST   /api/allowlist        add a domain (ValidDomain-gated, 64 KiB cap)
+//	DELETE /api/allowlist        remove a domain
 //	POST   /api/reload           reload the DoT certificate (if on) and refresh blocklists (single-flight)
 //	GET    /healthz              liveness probe (always 200 when running)
 //	GET    /readyz               readiness probe (200 once blocklist > 0)
@@ -69,7 +69,7 @@ type CacheStatser interface {
 // Server exposes the admin REST API and serves the web UI.
 type Server struct {
 	counter  *stats.Counter
-	db       *querylog.DBLogger // nil when query_db is not configured
+	db       *querylog.DBLogger // nil when query_log.database is off
 	store    *blocklist.Store
 	dnsCache CacheStatser // nil when caching is disabled
 	// reloadFn is the single-flight reload (the DoT certificate when DoT is
@@ -96,8 +96,8 @@ type Server struct {
 	// pointer, no-oped, and left Serve blocked with no one to drain it.
 	shutdownRequested atomic.Bool
 	enablePprof       bool
-	// queryPrivacy echoes the active query_privacy mode ("raw", "drop", or
-	// "subnet") on /api/stats. It is display metadata only; the client IP is
+	// queryPrivacy echoes the active query_log.clients mode ("drop",
+	// "subnet", or "full") on /api/stats. It is display metadata only; the client IP is
 	// masked in the DNS handler, so the API never sees an unmasked address to
 	// leak here.
 	queryPrivacy string
@@ -160,17 +160,26 @@ func (s *Server) EnablePprof(on bool) {
 	s.enablePprof = on
 }
 
-// SetQueryPrivacy records the active query_privacy mode for the /api/stats
-// echo. It is metadata only and does not affect masking, which happens in the
-// DNS handler. An empty mode reads as "raw" on the stats payload.
+// SetQueryPrivacy records the active query_log.clients mode for the
+// /api/stats echo. It is metadata only and does not affect masking, which
+// happens in the DNS handler.
 func (s *Server) SetQueryPrivacy(mode string) {
 	s.queryPrivacy = mode
+}
+
+// privacyMode is the client mode the API reports. An empty mode reads as
+// "drop", the same value the DNS handler applies to an unset mode.
+func (s *Server) privacyMode() string {
+	if s.queryPrivacy == "" {
+		return "drop"
+	}
+	return s.queryPrivacy
 }
 
 // SetClientNames installs the config client_names map as a display-time label
 // resolver for the Top Clients panel and the recent-queries list. The labels
 // are resolved against the already-masked client value, so they never expose
-// more than the active query_privacy mode. Call before Serve; an empty map
+// more than the active query_log.clients mode. Call before Serve; an empty map
 // leaves attribution off. Like SetQueryPrivacy, this does not affect masking.
 func (s *Server) SetClientNames(m map[string]string) {
 	s.labeler = newClientLabeler(m)
@@ -219,7 +228,7 @@ const (
 // ListenAndServe binds addr and serves the admin UI and REST API. It is the
 // one-call form (Listen then Serve). A caller that wants to detect a bind
 // failure synchronously, before backgrounding the serve loop, should bind with
-// net.Listen itself and call Serve; main does this so a bad api_listen is
+// net.Listen itself and call Serve; main does this so a bad admin.listen is
 // surfaced at startup instead of in a goroutine (b/052).
 func (s *Server) ListenAndServe(addr string) error {
 	ln, err := net.Listen("tcp", addr)
@@ -278,9 +287,9 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /api/queries/export", s.handleQueriesExport)
 	mux.HandleFunc("GET /api/top-blocked", s.handleTopBlocked)
 	mux.HandleFunc("GET /api/history", s.handleHistory)
-	mux.HandleFunc("GET /api/whitelist", s.handleWhitelistList)
-	mux.HandleFunc("POST /api/whitelist", s.handleWhitelistAdd)
-	mux.HandleFunc("DELETE /api/whitelist", s.handleWhitelistRemove)
+	mux.HandleFunc("GET /api/allowlist", s.handleAllowlistList)
+	mux.HandleFunc("POST /api/allowlist", s.handleAllowlistAdd)
+	mux.HandleFunc("DELETE /api/allowlist", s.handleAllowlistRemove)
 	mux.HandleFunc("POST /api/reload", s.handleReload)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleReady)
@@ -309,7 +318,7 @@ func (s *Server) handler() http.Handler {
 // fields stay at the top level (existing clients that decode into
 // stats.Summary are unaffected); Sources adds the per-source array. The type
 // lives here, not in the stats package, so stats does not take a dependency on
-// blocklist. QueryPrivacy echoes the active query_privacy mode so the UI can
+// blocklist. QueryPrivacy echoes the active query_log.clients mode so the UI can
 // describe the client column honestly (see the Top Clients panel).
 //
 // TopClients is redeclared here so it can carry the client_names label; the
@@ -372,10 +381,7 @@ type clientEntry struct {
 func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
 	snap := s.counter.Snapshot(10)
 	snap.BlocklistSize = s.store.Len()
-	privacy := s.queryPrivacy
-	if privacy == "" {
-		privacy = "raw"
-	}
+	privacy := s.privacyMode()
 	clients := make([]clientEntry, len(snap.TopClients))
 	for i, e := range snap.TopClients {
 		clients[i] = clientEntry{Name: e.Name, Count: e.Count, Label: s.labeler.label(e.Name)}
@@ -391,10 +397,10 @@ func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
 
 // handleCheck answers "why is this domain blocked?" by running the name through
 // the same block decision as a real query and returning the outcome plus the
-// full suffix walk (which parent matched, which whitelist entry overrode). It
+// full suffix walk (which parent matched, which allowlist entry overrode). It
 // is a diagnostic: it bumps no stats counter and writes no query-log row,
 // because it never touches the DNS handler path. It reveals nothing the UI
-// could not already infer from the block set and whitelist, so it does not
+// could not already infer from the block set and allowlist, so it does not
 // widen the read surface.
 func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 	domain := r.URL.Query().Get("domain")
@@ -515,9 +521,9 @@ type exportFilter struct {
 // large log holds flat memory. The rows are the same masked columns /api/queries
 // serves (CL 72 masks the client at write time), so the export cannot leak more
 // than the recent-query view. Unlike /api/queries it is uncapped by default
-// (?limit= is optional); the table is bounded by query_db_retention_days.
+// (?limit= is optional); the table is bounded by query_log.retention_days.
 //
-// The active query_privacy mode and log_queries mode ride on response headers
+// The active query_log.clients mode and query_log.mode ride on response headers
 // (and, for JSON, envelope fields), so a masked or empty value reads as
 // intentional. When query logging is off (s.db == nil) it returns a valid empty
 // export (a header-only CSV or an empty queries array), matching the
@@ -549,10 +555,7 @@ func (s *Server) handleQueriesExport(w http.ResponseWriter, r *http.Request) {
 		limit = n
 	}
 
-	privacy := s.queryPrivacy
-	if privacy == "" {
-		privacy = "raw"
-	}
+	privacy := s.privacyMode()
 	logging := "off"
 	if s.db != nil {
 		logging = s.db.LogQueries()
@@ -809,7 +812,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		Window int64 `json:"window"` // effective window, seconds
 		Bucket int64 `json:"bucket"` // effective bucket, seconds
 		// Logging is the effective query-log mode the series reflects: "all",
-		// "blocked", "none", or "off" when query_db is unset. The dashboard reads
+		// "blocked", "none", or "off" when query_log.database is off. The dashboard reads
 		// it to draw the graph honestly (a single blocked line under "blocked", an
 		// empty state under "none"/"off") instead of a misleading total.
 		Logging string            `json:"logging"`
@@ -840,11 +843,11 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
-func (s *Server) handleWhitelistList(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleAllowlistList(w http.ResponseWriter, _ *http.Request) {
 	type response struct {
 		Domains []string `json:"domains"`
 	}
-	domains := s.store.GetWhitelist()
+	domains := s.store.GetAllowlist()
 	if domains == nil {
 		domains = []string{}
 	}
@@ -853,7 +856,7 @@ func (s *Server) handleWhitelistList(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, response{Domains: domains})
 }
 
-func (s *Server) handleWhitelistAdd(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleAllowlistAdd(w http.ResponseWriter, r *http.Request) {
 	// Cap the request body so an attacker on the LAN cannot exhaust memory
 	// by streaming an unbounded JSON payload to the unauthenticated server.
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
@@ -869,19 +872,19 @@ func (s *Server) handleWhitelistAdd(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid domain (max 253 chars, must contain a dot, alphanumerics/hyphen/underscore only)", http.StatusBadRequest)
 		return
 	}
-	s.store.AddToWhitelist(domain)
-	logger.Info("whitelist entry added", "domain", domain, "client", clientIP(r))
-	writeJSON(w, map[string]string{"domain": domain, "status": "whitelisted"})
+	s.store.AddToAllowlist(domain)
+	logger.Info("allowlist entry added", "domain", domain, "client", clientIP(r))
+	writeJSON(w, map[string]string{"domain": domain, "status": "allowlisted"})
 }
 
-func (s *Server) handleWhitelistRemove(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleAllowlistRemove(w http.ResponseWriter, r *http.Request) {
 	domain := strings.TrimSpace(r.URL.Query().Get("domain"))
 	if domain == "" {
 		http.Error(w, "missing ?domain= query parameter", http.StatusBadRequest)
 		return
 	}
-	s.store.RemoveFromWhitelist(domain)
-	logger.Info("whitelist entry removed", "domain", domain, "client", clientIP(r))
+	s.store.RemoveFromAllowlist(domain)
+	logger.Info("allowlist entry removed", "domain", domain, "client", clientIP(r))
 	writeJSON(w, map[string]string{"domain": domain, "status": "removed"})
 }
 

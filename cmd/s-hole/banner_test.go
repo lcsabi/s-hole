@@ -63,6 +63,8 @@ func TestPrintNetworkHint_DNSLinesFollowListenHost(t *testing.T) {
 		{"127.0.0.1", []string{"127.0.0.1:53 (this machine only)"}},
 		{"127.0.0.53", []string{"127.0.0.53:53 (this machine only)"}},
 		{"::1", []string{"[::1]:53 (this machine only)"}},
+		// "localhost" is a loopback listener too: one line, no LAN address.
+		{"localhost", []string{"localhost:53 (this machine only)"}},
 	}
 	if len(lan) > 0 {
 		// One of the machine's own LAN addresses is still a single line.
@@ -88,7 +90,8 @@ func TestPrintNetworkHint_DNSLinesFollowListenHost(t *testing.T) {
 }
 
 func TestPrintNetworkHint_DNSLineUsesThePort(t *testing.T) {
-	// b/088: the bound address is shown with the dns.listen port.
+	// b/088: the bound address, or "localhost", is shown with the dns.listen
+	// port.
 	dns, _ := bannerLines(t, false, "192.0.2.10", "5353", "", "127.0.0.1")
 	if !reflect.DeepEqual(dns, []string{"192.0.2.10:5353"}) {
 		t.Errorf("DNS lines = %q, want [192.0.2.10:5353]", dns)
@@ -97,6 +100,12 @@ func TestPrintNetworkHint_DNSLineUsesThePort(t *testing.T) {
 	if !reflect.DeepEqual(dns, []string{"[::1]:5353 (this machine only)"}) {
 		t.Errorf("DNS lines = %q, want [[::1]:5353 (this machine only)]", dns)
 	}
+	for _, ascii := range []bool{false, true} {
+		dns, _ = bannerLines(t, ascii, "localhost", "5354", "", "127.0.0.1")
+		if !reflect.DeepEqual(dns, []string{"localhost:5354 (this machine only)"}) {
+			t.Errorf("ascii=%v: DNS lines = %q, want [localhost:5354 (this machine only)]", ascii, dns)
+		}
+	}
 }
 
 func TestPrintNetworkHint_OtherLinesDoNotChange(t *testing.T) {
@@ -104,7 +113,7 @@ func TestPrintNetworkHint_OtherLinesDoNotChange(t *testing.T) {
 	for _, ascii := range []bool{false, true} {
 		for _, apiHost := range []string{"0.0.0.0", "127.0.0.1"} {
 			_, base := bannerLines(t, ascii, "", "53", "853", apiHost)
-			for _, dnsHost := range []string{"0.0.0.0", "192.0.2.10", "127.0.0.1", "::1"} {
+			for _, dnsHost := range []string{"0.0.0.0", "192.0.2.10", "127.0.0.1", "::1", "localhost"} {
 				_, other := bannerLines(t, ascii, dnsHost, "53", "853", apiHost)
 				if !reflect.DeepEqual(other, base) {
 					t.Errorf("ascii=%v apiHost=%s dnsHost=%s: other lines = %q, want %q", ascii, apiHost, dnsHost, other, base)

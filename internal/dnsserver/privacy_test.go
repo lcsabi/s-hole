@@ -153,23 +153,27 @@ func writeFailure() error {
 }
 
 func TestServeDNS_WriteFailureWarnings(t *testing.T) {
-	// D3: a WARN about one query carries the domain only under mode "all",
-	// never the client address. The error is shown as the operation and the
-	// underlying error, without the socket addresses.
+	// D3 and b/082: a WARN about one query carries the domain only under mode
+	// "all", never the client address. Under "all" the domain is in
+	// lowercase, the form the query log records, also when the client sent
+	// mixed case (as a dns-0x20 forwarder does). The error is shown as the
+	// operation and the underlying error, without the socket addresses.
 	upstream, _ := startMockUpstream(t, net.IPv4(4, 4, 4, 4))
+	// The cache key keeps the case of the name (b/037), so the cached path
+	// stores the answer under the mixed-case name the client sends.
+	const cachedName = "CaChEd.Example.COM."
 	paths := []struct {
-		name  string
-		query func() *dns.Msg
-		qname string
+		name      string
+		blockMode string
+		sent      string
+		qtype     uint16
+		want      string
 	}{
-		{"sinkhole", func() *dns.Msg { return buildReq("Ads.Example.com") }, "ads.example.com."},
-		{"cache", func() *dns.Msg { return buildReq("cached.example.com") }, "cached.example.com."},
-		{"forward", func() *dns.Msg { return buildReq("fresh.example.com") }, "fresh.example.com."},
-		{"local PTR", func() *dns.Msg {
-			m := new(dns.Msg)
-			m.SetQuestion("5.1.168.192.in-addr.arpa.", dns.TypePTR)
-			return m
-		}, "5.1.168.192.in-addr.arpa."},
+		{"sinkhole zero_ip", "zero", "Ads.EXAMPLE.com.", dns.TypeA, "ads.example.com."},
+		{"sinkhole nxdomain", "nxdomain", "ADS.Example.Com.", dns.TypeAAAA, "ads.example.com."},
+		{"cache", "zero", cachedName, dns.TypeA, "cached.example.com."},
+		{"forward", "zero", "FrEsH.Example.COM.", dns.TypeA, "fresh.example.com."},
+		{"local PTR", "zero", "5.1.168.192.IN-ADDR.Arpa.", dns.TypePTR, "5.1.168.192.in-addr.arpa."},
 	}
 	for _, mode := range []string{"all", "blocked", "none"} {
 		for _, p := range paths {
@@ -178,15 +182,21 @@ func TestServeDNS_WriteFailureWarnings(t *testing.T) {
 				store.Replace([]string{"ads.example.com"})
 				c := cache.New(10)
 				defer c.Close()
-				q := dns.Question{Name: "cached.example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+				q := dns.Question{Name: cachedName, Qtype: dns.TypeA, Qclass: dns.ClassINET}
 				c.Set(q, buildResp(q, net.IPv4(1, 2, 3, 4), 300))
-				h := NewHandler(store, stats.New(), []string{upstream}, nullLogger{}, "zero", 60, c, true, "full")
+				qlog := &captureLogger{}
+				h := NewHandler(store, stats.New(), []string{upstream}, qlog, p.blockMode, 60, c, true, "full")
 				h.SetQueryLogMode(mode)
 				app := captureAppLog(t)
 
 				w := fakeClient()
 				w.writeError = writeFailure()
-				h.ServeDNS(w, p.query())
+				req := new(dns.Msg)
+				req.SetQuestion(p.sent, p.qtype)
+				h.ServeDNS(w, req)
+				if p.name == "cache" && !qlog.last.CacheHit {
+					t.Fatalf("the query did not hit the cache: %+v", qlog.last)
+				}
 
 				var warns []map[string]any
 				for _, r := range app.records(t) {
@@ -202,8 +212,14 @@ func TestServeDNS_WriteFailureWarnings(t *testing.T) {
 				}
 				domain, hasDomain := warns[0]["domain"].(string)
 				if mode == "all" {
-					if !hasDomain || !strings.EqualFold(domain, p.qname) {
-						t.Errorf("domain = %v, want %s under mode all", warns[0]["domain"], p.qname)
+					if !hasDomain || domain != p.want {
+						t.Errorf("domain = %v, want %q (lowercase) under mode all", warns[0]["domain"], p.want)
+					}
+					if qlog.last.Domain != domain {
+						t.Errorf("WARN domain %q differs from the query log domain %q", domain, qlog.last.Domain)
+					}
+					if strings.Contains(app.text(), strings.TrimSuffix(p.sent, ".")) {
+						t.Errorf("application log holds the mixed-case name %q:\n%s", p.sent, app.text())
 					}
 				} else if _, ok := warns[0]["domain"]; ok {
 					t.Errorf("WARN carries the domain under mode %q: %v", mode, warns[0])
@@ -214,7 +230,7 @@ func TestServeDNS_WriteFailureWarnings(t *testing.T) {
 						t.Errorf("application log holds %q:\n%s", leak, app.text())
 					}
 				}
-				if mode != "all" && strings.Contains(text, strings.TrimSuffix(p.qname, ".")) {
+				if mode != "all" && strings.Contains(text, strings.TrimSuffix(p.want, ".")) {
 					t.Errorf("application log names the query under mode %q:\n%s", mode, app.text())
 				}
 			})

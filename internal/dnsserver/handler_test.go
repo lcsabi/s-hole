@@ -99,8 +99,8 @@ func TestMaskClientIP(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := maskClientIP(tc.ip, tc.mode); got != tc.want {
-				t.Errorf("maskClientIP(%q, %q) = %q, want %q", tc.ip, tc.mode, got, tc.want)
+			if got := querylog.MaskClientIP(tc.ip, tc.mode); got != tc.want {
+				t.Errorf("MaskClientIP(%q, %q) = %q, want %q", tc.ip, tc.mode, got, tc.want)
 			}
 		})
 	}

@@ -128,10 +128,18 @@ type DBLogger struct {
 // SetMaxOpenConns(1) in NewDBLogger (b/038). These per-connection pragmas
 // (all but journal_mode, which is stored in the file) reliably apply because
 // that single connection serves every query.
+//
+// secure_delete=ON makes a DELETE overwrite the deleted rows with zeros.
+// Without it SQLite only marks the space free, and a pruned or purged query
+// stayed readable in the file (b/077). FAST is not enough: it leaves whole
+// freed pages untouched. journal_size_limit truncates the WAL back to 4 MiB
+// after each checkpoint, so the WAL does not keep old page images either.
 const pragmas = `
 PRAGMA busy_timeout=5000;
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
+PRAGMA secure_delete=ON;
+PRAGMA journal_size_limit=4194304;
 PRAGMA cache_size=-8000;
 PRAGMA temp_store=MEMORY;
 `
@@ -238,6 +246,10 @@ func (d *DBLogger) runPrune() {
 	}
 }
 
+// prune deletes the rows older than retentionDays. secure_delete overwrites
+// them in the database pages, and a TRUNCATE checkpoint then copies those
+// pages into the database file and empties the WAL, so a deleted row is gone
+// from both files, not only from the table (b/077).
 func (d *DBLogger) prune() {
 	cutoff := time.Now().Add(-time.Duration(d.retentionDays) * 24 * time.Hour).Format(time.RFC3339)
 	res, err := d.db.Exec("DELETE FROM queries WHERE ts < ?", cutoff)
@@ -245,9 +257,108 @@ func (d *DBLogger) prune() {
 		logger.Warn("query log retention prune failed", "err", err, "cutoff", cutoff)
 		return
 	}
-	if n, _ := res.RowsAffected(); n > 0 {
-		logger.Info("query log retention prune done", "deleted", n, "cutoff", cutoff)
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return
 	}
+	logger.Info("query log retention prune done", "deleted", n, "cutoff", cutoff)
+	d.checkpoint()
+}
+
+// checkpoint copies the WAL into the database file and truncates the WAL to
+// zero bytes. A failure leaves the data in the WAL until SQLite's next
+// automatic checkpoint, so it is a WARN.
+func (d *DBLogger) checkpoint() {
+	if _, err := d.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		logger.Warn("query log checkpoint failed", "err", err)
+	}
+}
+
+// StaleReport describes the stored rows that hold more than the current
+// query_log settings would write: rows written under an older, less private
+// setting. Rows is 0 when there are none. Retention removes the newest of
+// them last, so Expires is that row's time plus the retention period; it is
+// zero when retention is off.
+type StaleReport struct {
+	Rows    int64
+	Newest  time.Time // time of the newest stale row
+	Expires time.Time // when retention removes the last stale row; zero if retention is off
+}
+
+// StaleRows counts the stored rows that hold more than the current settings
+// would write: any row under mode "none", an allowed row under "blocked", a
+// row with a client address under clients "drop", and a row whose client is
+// not masked under clients "subnet". It only reads. s-hole never rewrites or
+// deletes such rows on its own: the operator decides, with a purge or by
+// waiting for retention. main logs the result as a privacy warning.
+//
+// The query scans the table when the database holds no stale rows (no index
+// covers client_ip), which is about 100 to 200 ms for 350,000 rows on a
+// Raspberry Pi 5. It runs at startup and once an hour, off the DNS path.
+func (d *DBLogger) StaleRows(ctx context.Context, clients string) (StaleReport, error) {
+	var conds []string
+	var args []any
+	switch d.logQueries {
+	case "none":
+		conds = append(conds, "1")
+	case "blocked":
+		conds = append(conds, "blocked = 0")
+	}
+	switch clients {
+	case "drop", "":
+		conds = append(conds, "client_ip != ''")
+	case "subnet":
+		unmasked, err := d.unmaskedClients(ctx)
+		if err != nil {
+			return StaleReport{}, err
+		}
+		if len(unmasked) > 0 {
+			conds = append(conds, "client_ip IN (?"+strings.Repeat(",?", len(unmasked)-1)+")")
+			for _, c := range unmasked {
+				args = append(args, c)
+			}
+		}
+	}
+	if len(conds) == 0 {
+		return StaleReport{}, nil
+	}
+	var rep StaleReport
+	var newest sql.NullString
+	err := d.db.QueryRowContext(ctx, "SELECT COUNT(*), MAX(ts) FROM queries WHERE "+strings.Join(conds, " OR "), args...).Scan(&rep.Rows, &newest)
+	if err != nil {
+		return StaleReport{}, err
+	}
+	if rep.Rows == 0 || !newest.Valid {
+		return StaleReport{}, nil
+	}
+	if t, err := time.Parse(time.RFC3339, newest.String); err == nil {
+		rep.Newest = t
+		if d.retentionDays > 0 {
+			rep.Expires = t.Add(time.Duration(d.retentionDays) * 24 * time.Hour)
+		}
+	}
+	return rep, nil
+}
+
+// unmaskedClients returns the distinct stored client values that subnet
+// masking would change, that is, full addresses. A home has a few dozen.
+func (d *DBLogger) unmaskedClients(ctx context.Context) ([]string, error) {
+	rows, err := d.db.QueryContext(ctx, "SELECT DISTINCT client_ip FROM queries WHERE client_ip != ''")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return nil, err
+		}
+		if MaskClientIP(c, "subnet") != c {
+			out = append(out, c)
+		}
+	}
+	return out, rows.Err()
 }
 
 // Log enqueues a single entry for asynchronous insertion. Respects the

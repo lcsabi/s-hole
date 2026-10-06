@@ -22,6 +22,7 @@ package querylog
 import (
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -252,5 +253,37 @@ func NewMulti(loggers ...Logger) *Multi {
 func (m *Multi) Log(rec Record) {
 	for _, l := range m.loggers {
 		l.Log(rec)
+	}
+}
+
+// MaskClientIP applies the query_log.clients transform to a client address
+// before it is recorded. The modes are:
+//
+//	drop   return "" so no client identity is stored (the default, and the
+//	       result for any unknown mode, so a bad value fails closed).
+//	subnet zero the host bits: IPv4 to /24, IPv6 to /64, keeping the subnet as
+//	       a meaningful group on segmented or VLAN networks.
+//	full   return the address unchanged.
+//
+// A value that net.ParseIP cannot read (for example the "unknown" sentinel the
+// DNS handler uses when it has no address) is returned unchanged under subnet,
+// so masking never invents an address. The DNS handler masks every query with
+// it, and StaleRows uses it to find stored values that are less masked than
+// the current mode.
+func MaskClientIP(ip, mode string) string {
+	switch mode {
+	case "full":
+		return ip
+	case "subnet":
+		parsed := net.ParseIP(ip)
+		if parsed == nil {
+			return ip
+		}
+		if v4 := parsed.To4(); v4 != nil {
+			return v4.Mask(net.CIDRMask(24, 32)).String()
+		}
+		return parsed.Mask(net.CIDRMask(64, 128)).String()
+	default:
+		return ""
 	}
 }

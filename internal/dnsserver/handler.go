@@ -131,7 +131,7 @@ type Handler struct {
 // always forwards on a cache miss). localPTR enables authoritative NXDOMAIN
 // replies for RFC 6303 private-range PTR queries; see privateReverseZones.
 // queryPrivacy selects how the client IP is stored ("drop", "subnet", or
-// "full"); see maskClientIP.
+// "full"); see querylog.MaskClientIP.
 func NewHandler(
 	store *blocklist.Store,
 	counter *stats.Counter,
@@ -212,8 +212,9 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	domain := q.Name // already has trailing dot
 	// Mask the client once, at this single write-time choke point, so the
 	// stats counter (Top Clients) and every query-log sink downstream see the
-	// same value. See maskClientIP and the query_log.clients config setting.
-	clientIP := maskClientIP(clientAddr(w), h.queryPrivacy)
+	// same value. See querylog.MaskClientIP and the query_log.clients config
+	// setting.
+	clientIP := querylog.MaskClientIP(clientAddr(w), h.queryPrivacy)
 
 	// RFC 6303: answer PTR queries for private-range zones (10/8, 172.16/12,
 	// 192.168/16, fc00::/7, fe80::/10) locally with authoritative NXDOMAIN.
@@ -388,35 +389,5 @@ func clientAddr(w dns.ResponseWriter) string {
 			return a.String()
 		}
 		return host
-	}
-}
-
-// maskClientIP applies the query_log.clients transform to a client address
-// before it is recorded. The modes are:
-//
-//	drop   return "" so no client identity is stored (the default, and the
-//	       result for any unknown mode, so a bad value fails closed).
-//	subnet zero the host bits: IPv4 to /24, IPv6 to /64, keeping the subnet as
-//	       a meaningful group on segmented or VLAN networks.
-//	full   return the address unchanged.
-//
-// A value that net.ParseIP cannot read (for example the "unknown" sentinel from
-// clientAddr) is returned unchanged under subnet, so masking never invents an
-// address.
-func maskClientIP(ip, mode string) string {
-	switch mode {
-	case "full":
-		return ip
-	case "subnet":
-		parsed := net.ParseIP(ip)
-		if parsed == nil {
-			return ip
-		}
-		if v4 := parsed.To4(); v4 != nil {
-			return v4.Mask(net.CIDRMask(24, 32)).String()
-		}
-		return parsed.Mask(net.CIDRMask(64, 128)).String()
-	default:
-		return ""
 	}
 }

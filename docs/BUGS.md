@@ -2710,3 +2710,21 @@ the Windows service check for CL 93.
 The banner shows only the bound address when `dns.listen` names one, with
 "(this machine only)" for a loopback address. A wildcard listener still shows
 every LAN address.
+
+## b/089: blocklist: a blocking.cache_dir that did not exist was never created
+
+**Priority:** P3
+**Component:** blocklist
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-06
+
+### Description
+
+If `blocking.cache_dir` named a directory that did not exist, s-hole did not
+create it. Every cache write failed, so each start downloaded every list
+again. Found on the Raspberry Pi during the CL 93 memory check.
+
+### Fix
+
+s-hole creates the directory, owner-only (`0700`), before it writes a cache
+file.

@@ -117,7 +117,7 @@ blocking:
   refresh_interval: "24h"
 
   # Directory for the downloaded blocklists, so a restart does not download
-  # them again.
+  # them again. s-hole creates it if it does not exist.
   cache_dir: "."
 
 query_log:

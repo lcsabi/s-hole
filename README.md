@@ -275,7 +275,7 @@ All configuration lives in `config.yaml`, in four sections (`dns`, `blocking`, `
 | `blocking.reply` | `"zero_ip"` | `"zero_ip"`, `"nxdomain"` | Answer for a blocked query: `0.0.0.0`/`::`, or "no such name" | |
 | `blocking.reply_ttl_seconds` | `300` | `0` to `4294967295` | TTL of a blocked answer; `0` tells clients not to cache it | |
 | `blocking.refresh_interval` | `"24h"` | positive duration | How often to download the blocklists again | |
-| `blocking.cache_dir` | `"."` | directory | Where downloaded blocklists are kept, so a restart does not download them | |
+| `blocking.cache_dir` | `"."` | directory | Where downloaded blocklists are kept, so a restart does not download them. s-hole creates the directory (mode `700`) if it does not exist | |
 | `query_log.mode` | `"none"` | `"none"`, `"blocked"`, `"all"` | Which queries s-hole records, in the database, the log file, and the Top lists | when not `"none"` |
 | `query_log.clients` | `"drop"` | `"drop"`, `"subnet"`, `"full"` | How much of the client address a recorded query keeps: nothing, IPv4 /24 and IPv6 /64, or all of it | when not `"drop"` and mode is not `"none"` |
 | `query_log.database` | `"off"` | `"off"` or a file path | SQLite file for the query history (Recent Queries, Stored list, 7-day graph) | |

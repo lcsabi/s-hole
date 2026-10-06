@@ -182,6 +182,10 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 	// user, such as root-owned files from an older Docker image), the list is
 	// still parsed from the download and used, with a WARN: before, the
 	// source failed and s-hole could start with no blocklist at all.
+	//
+	// A cache_dir that does not exist yet is created owner-only (b/089). If
+	// that fails, os.Create fails too and reports it.
+	_ = os.MkdirAll(cacheDir, 0o700)
 	tmpPath := cachePath + ".tmp"
 	body := io.LimitReader(resp.Body, maxBodyBytes)
 	f, err := os.Create(tmpPath)

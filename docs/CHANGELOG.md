@@ -272,6 +272,9 @@ layout, so a 1.x config needs an edit. (CL 93)
 - **The Router setup banner listed LAN addresses that s-hole did not listen
   on** when `dns.listen` named one address; it now shows that address
   (b/088). (CL 93)
+- **A `blocking.cache_dir` that did not exist was never created**, so every
+  start downloaded every list again; s-hole now creates it, mode `700`
+  (b/089). (CL 93)
 - **A blocklist download that breaks during the transfer now uses the cache.**
   If the connection closed or timed out while s-hole read the list, s-hole
   dropped the list's domains from the block set until the next good download,

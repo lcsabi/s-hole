@@ -86,18 +86,29 @@ func (f *failureLog) flush() {
 	logger.Warn("queries could not be resolved", attrs...)
 }
 
-// RunFailureReport logs the unresolved-query summary once per interval until
-// ctx is cancelled. main runs it in a goroutine next to the stats ticker.
+// RunFailureReport logs the unresolved-query summary and the plaintext
+// fallback count once per interval until ctx is cancelled. main runs it in a
+// goroutine next to the stats ticker.
 func (h *Handler) RunFailureReport(ctx context.Context) {
 	t := time.NewTicker(failureReportInterval)
 	defer t.Stop()
+	last := PlaintextFallbacks()
+	report := func() {
+		h.failures.flush()
+		now := PlaintextFallbacks()
+		if n := now - last; n > 0 {
+			logger.Warn("queries were sent unencrypted", "queries", n, "interval", failureReportInterval.String(),
+				"hint", "every DoH upstream failed, so s-hole used a plain upstream and the queries left the network unencrypted. Check the network path to the DoH upstreams; for DoH only, remove the plain upstreams")
+		}
+		last = now
+	}
 	for {
 		select {
 		case <-ctx.Done():
-			h.failures.flush()
+			report()
 			return
 		case <-t.C:
-			h.failures.flush()
+			report()
 		}
 	}
 }

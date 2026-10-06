@@ -137,6 +137,9 @@ type Server struct {
 	// purgeFn deletes the query history and the other stored data; main
 	// wires it (SetPurge). nil answers 503.
 	purgeFn func(context.Context) PurgeReport
+	// plaintextFallbacks returns the plaintext fallback count for /metrics
+	// (dnsserver.PlaintextFallbacks); nil leaves the metric off.
+	plaintextFallbacks func() uint64
 	// fileLogDropped returns the query_log.file drop count for /metrics; nil
 	// while the file output is off.
 	fileLogDropped func() uint64
@@ -207,6 +210,13 @@ func (s *Server) SetClientNames(m map[string]string) {
 // not import dnsserver.
 func (s *Server) SetUpstreamTransportFailures(fn func() map[string]uint64) {
 	s.upstreamTransportFailures = fn
+}
+
+// SetPlaintextFallbacks wires the plaintext fallback counter
+// (dnsserver.PlaintextFallbacks) so /metrics can emit
+// shole_upstream_plaintext_fallback_total. Call before Serve.
+func (s *Server) SetPlaintextFallbacks(fn func() uint64) {
+	s.plaintextFallbacks = fn
 }
 
 // SetFileLogDropped wires the query_log.file drop counter

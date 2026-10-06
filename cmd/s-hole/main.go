@@ -203,6 +203,7 @@ func main() {
 	for _, note := range cfg.UpstreamNotes() {
 		mainLog.Info(note)
 	}
+	logSettings(mainLog, cfg.Warnings())
 
 	// Bind the DNS listeners before anything else opens, so a port conflict
 	// or a bad listen address exits here with nothing half-built. Binding
@@ -308,6 +309,7 @@ func main() {
 	// Bridge the dnsserver per-upstream transport-failure tracker to /metrics;
 	// api does not import dnsserver, so main wires the two.
 	apiServer.SetUpstreamTransportFailures(dnsserver.UpstreamTransportFailures)
+	apiServer.SetPlaintextFallbacks(dnsserver.PlaintextFallbacks)
 	if fileLog != nil {
 		apiServer.SetFileLogDropped(fileLog.Dropped)
 	}
@@ -357,7 +359,18 @@ func main() {
 	apiHost, apiPort, _ := net.SplitHostPort(cfg.Admin.Listen)
 	printNetworkHint(dnsPort, dotPort, apiHost, apiPort, apiUp)
 
-	go runTicker(runCtx, cfg.StatsInterval, counter.Log)
+	report := &privacyReport{settings: cfg.Warnings(), plaintext: dnsserver.PlaintextFallbacks}
+	if db != nil {
+		go func() {
+			report.checkStale(runCtx, mainLog, db, cfg.QueryLog.Clients, true)
+			report.runStaleChecks(runCtx, mainLog, db, cfg.QueryLog.Clients)
+		}()
+	}
+	go runResolverCheck(runCtx, mainLog, cfg.DNS.Listen)
+	go runTicker(runCtx, cfg.StatsInterval, func() {
+		counter.Log()
+		report.logPeriodic(mainLog)
+	})
 	go handler.RunFailureReport(runCtx)
 	go runTicker(runCtx, cfg.Blocking.RefreshInterval, func() {
 		mainLog.Info("reload requested via timer")
@@ -770,6 +783,10 @@ func runCheckConfig(log *slog.Logger, path string) int {
 			warnCertExpiry(log, certs)
 		}
 	}
+	// A setting that is less private than its default is the operator's
+	// choice, not a mistake, so it is a warning here and does not fail the
+	// check.
+	logSettings(log, cfg.Warnings())
 	if len(problems) > 0 {
 		log.Error("config has problems", "count", len(problems), "path", path,
 			"hint", "s-hole would start and use the default for each setting above. Fix them, then run -check-config again")

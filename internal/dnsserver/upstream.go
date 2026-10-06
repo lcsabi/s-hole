@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
@@ -138,6 +139,7 @@ func forwardWith(ctx context.Context, req *dns.Msg, upstreams []string, tracker 
 		resp, err := exchange(ctx, req, upstream)
 		if err == nil {
 			tracker.recordSuccess(upstream)
+			countPlaintextFallback(upstream, upstreams)
 			return resp, nil
 		}
 		tracker.recordFailure(upstream, time.Now())
@@ -158,6 +160,7 @@ func forwardWith(ctx context.Context, req *dns.Msg, upstreams []string, tracker 
 		resp, err := exchange(ctx, req, upstream)
 		if err == nil {
 			tracker.recordSuccess(upstream)
+			countPlaintextFallback(upstream, upstreams)
 			return resp, nil
 		}
 		tracker.recordFailure(upstream, time.Now())
@@ -172,6 +175,33 @@ func forwardWith(ctx context.Context, req *dns.Msg, upstreams []string, tracker 
 		}
 	}
 	return nil, fail
+}
+
+// plaintextFallbacks counts queries answered by a plain upstream while the
+// list also has a DoH upstream: queries that left the network unencrypted
+// because every DoH upstream had failed. A list with no DoH upstream is a
+// config choice that config.Warnings reports, so its queries are not counted
+// here.
+var plaintextFallbacks atomic.Uint64
+
+// PlaintextFallbacks returns the number of queries sent to a plain upstream
+// because every DoH upstream had failed, since startup. /metrics shows it as
+// shole_upstream_plaintext_fallback_total, and main repeats it in the privacy
+// warnings.
+func PlaintextFallbacks() uint64 {
+	return plaintextFallbacks.Load()
+}
+
+func countPlaintextFallback(used string, upstreams []string) {
+	if strings.HasPrefix(used, "https://") {
+		return
+	}
+	for _, u := range upstreams {
+		if strings.HasPrefix(u, "https://") {
+			plaintextFallbacks.Add(1)
+			return
+		}
+	}
 }
 
 // ForwardError reports that every upstream failed for one query. It names

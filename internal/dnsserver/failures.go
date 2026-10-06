@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/lcsabi/s-hole/internal/redact"
 )
 
 // failureReportInterval is how often the unresolved-query summary is logged.
@@ -45,7 +47,7 @@ func (f *failureLog) record(err error, domain string) {
 	var fe *ForwardError
 	if errors.As(err, &fe) {
 		for _, c := range fe.Causes {
-			f.causes[c.Upstream] = c.Err.Error()
+			f.causes[redact.URL(c.Upstream)] = c.Err.Error()
 			if clockSuspect(c.Err) {
 				f.clock = true
 			}

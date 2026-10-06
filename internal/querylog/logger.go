@@ -37,7 +37,7 @@ var logger = logging.For("querylog")
 
 // FileLogger writes one line per recorded query to a file or to standard
 // output (query_log.file). The format is fixed for easy parsing by shell
-// tools (grep, tail): "<RFC3339> <ALLOW|BLOCK> <client> <domain>", with an
+// tools (grep, tail): "<RFC3339 UTC> <ALLOW|BLOCK> <client> <domain>", with an
 // optional trailing marker on ALLOW lines: " CACHED" on a cache hit or
 // " FAILED" on a failed query (unresolved or a relayed upstream failure).
 // The two markers are mutually exclusive, and a blocked query carries
@@ -123,7 +123,7 @@ func (l *FileLogger) Log(rec Record) {
 	} else if rec.Failed() {
 		marker = " FAILED"
 	}
-	line := fmt.Sprintf("%s %s %s %s%s\n", time.Now().Format(time.RFC3339), action, rec.ClientIP, rec.Domain, marker)
+	line := fmt.Sprintf("%s %s %s %s%s\n", time.Now().UTC().Format(time.RFC3339), action, rec.ClientIP, rec.Domain, marker)
 	select {
 	case l.ch <- line:
 	default:

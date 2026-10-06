@@ -54,6 +54,7 @@ import (
 	"github.com/lcsabi/s-hole/internal/blocklist"
 	"github.com/lcsabi/s-hole/internal/logging"
 	"github.com/lcsabi/s-hole/internal/querylog"
+	"github.com/lcsabi/s-hole/internal/redact"
 	"github.com/lcsabi/s-hole/internal/stats"
 )
 
@@ -414,6 +415,18 @@ func (s *Server) dotSummary(now time.Time) dotResponse {
 	return resp
 }
 
+// redactSources copies the per-source health with the URL secrets hidden
+// (see redact.URL): a private list URL can carry a token in its user info or
+// query string, and /api/stats has no login.
+func redactSources(in []blocklist.SourceStatus) []blocklist.SourceStatus {
+	out := make([]blocklist.SourceStatus, len(in))
+	for i, src := range in {
+		src.URL = redact.URL(src.URL)
+		out[i] = src
+	}
+	return out
+}
+
 // clientEntry is a Top Clients row: the masked client value (Name), its query
 // count, and an optional config-resolved display label.
 type clientEntry struct {
@@ -433,7 +446,7 @@ func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, statsResponse{
 		Summary:      snap,
 		TopClients:   clients,
-		Sources:      s.store.Sources(),
+		Sources:      redactSources(s.store.Sources()),
 		QueryPrivacy: privacy,
 		DoT:          s.dotSummary(time.Now()),
 	})

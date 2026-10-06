@@ -39,6 +39,15 @@ CREATE INDEX IF NOT EXISTS idx_queries_domain  ON queries(domain);
 // column, so migrate is a no-op on it. Existing rows take the column DEFAULT,
 // so cache_hit reads 0 (not cached), and rcode/synthesized read 0 (so an old
 // row is never counted as a failed query), for rows written before the upgrade.
+//
+// It also rewrites rows from builds before CL 93 into today's form. Those
+// stored ts in the host's local time with an offset, which compares wrongly
+// as text after a time-zone or DST change; they now hold UTC ("...Z").
+// They stored the domain with the client's letter case; they now hold it in
+// lowercase (b/082). SQLite's strftime reads the offset. A row whose ts it
+// cannot read is left as it is, so the migration cannot fail on one bad row.
+// A database that is already migrated matches no row, so the cost after the
+// first start is one index scan.
 func migrate(db *sql.DB) error {
 	if err := ensureColumn(db, "queries", "cache_hit", "ALTER TABLE queries ADD COLUMN cache_hit INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
@@ -46,7 +55,19 @@ func migrate(db *sql.DB) error {
 	if err := ensureColumn(db, "queries", "rcode", "ALTER TABLE queries ADD COLUMN rcode INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
-	return ensureColumn(db, "queries", "synthesized", "ALTER TABLE queries ADD COLUMN synthesized INTEGER NOT NULL DEFAULT 0")
+	if err := ensureColumn(db, "queries", "synthesized", "ALTER TABLE queries ADD COLUMN synthesized INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	res, err := db.Exec(`UPDATE queries SET ts = strftime('%Y-%m-%dT%H:%M:%SZ', ts)
+		WHERE ts NOT LIKE '%Z' AND strftime('%Y-%m-%dT%H:%M:%SZ', ts) IS NOT NULL`)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		logger.Info("query log timestamps converted to UTC", "rows", n)
+	}
+	_, err = db.Exec("UPDATE queries SET domain = lower(domain) WHERE domain <> lower(domain)")
+	return err
 }
 
 // ensureColumn runs ddl to add column to table only when the column is not
@@ -255,7 +276,7 @@ func (d *DBLogger) runPrune() {
 // pages into the database file and empties the WAL, so a deleted row is gone
 // from both files, not only from the table (b/077).
 func (d *DBLogger) prune() {
-	cutoff := time.Now().Add(-time.Duration(d.retentionDays) * 24 * time.Hour).Format(time.RFC3339)
+	cutoff := time.Now().UTC().Add(-time.Duration(d.retentionDays) * 24 * time.Hour).Format(time.RFC3339)
 	res, err := d.db.Exec("DELETE FROM queries WHERE ts < ?", cutoff)
 	if err != nil {
 		logger.Warn("query log retention prune failed", "err", err, "cutoff", cutoff)
@@ -521,7 +542,7 @@ func (d *DBLogger) flush(batch []entry) {
 	defer stmt.Close()
 
 	for _, e := range batch {
-		if _, err := stmt.Exec(e.ts.Format(time.RFC3339), e.clientIP, e.domain, b2i(e.blocked), b2i(e.cacheHit), e.rcode, b2i(e.synthesized)); err != nil {
+		if _, err := stmt.Exec(e.ts.UTC().Format(time.RFC3339), e.clientIP, e.domain, b2i(e.blocked), b2i(e.cacheHit), e.rcode, b2i(e.synthesized)); err != nil {
 			logger.Warn("query log insert failed", "err", err)
 		}
 	}
@@ -589,8 +610,9 @@ type QueryFilter struct {
 func (f QueryFilter) where() (clause string, args []any) {
 	var conds []string
 	if f.Domain != "" {
-		// Domains are stored lowercase, so lowercasing the term makes the match
-		// case-insensitive. Escape the LIKE metacharacters so a typed % or _ is a
+		// Domains are stored lowercase (the DNS handler lowercases the name, and
+		// SQLite's LIKE ignores ASCII case anyway), so lowercasing the term
+		// makes the match case-insensitive. Escape the LIKE metacharacters so a typed % or _ is a
 		// literal, not a wildcard.
 		conds = append(conds, "domain LIKE ? ESCAPE '\\'")
 		args = append(args, "%"+escapeLike(strings.ToLower(f.Domain))+"%")
@@ -737,11 +759,10 @@ type Bucket struct {
 // zero counts so the graph draws a continuous line. ctx is honored as a query
 // deadline.
 //
-// ts is RFC3339 text with a timezone offset, so the bucket key is computed from
-// the UTC epoch (strftime('%s', ts) parses the offset) rather than from the
-// text. The WHERE cutoff stays an RFC3339 string to reuse idx_queries_ts and to
-// match the prune path. The only imprecision is a one-bucket boundary wobble at
-// the far window edge across a DST change, which is cosmetic on a graph.
+// ts is RFC3339 text in UTC ("...Z", see migrate), so the WHERE cutoff, a UTC
+// RFC3339 string, compares correctly as text and reuses idx_queries_ts like
+// the prune path. The bucket key is computed from the epoch
+// (strftime('%s', ts)).
 func (d *DBLogger) History(ctx context.Context, window, bucket time.Duration) ([]Bucket, error) {
 	bucketSecs := int64(bucket / time.Second)
 	if bucketSecs <= 0 {
@@ -752,7 +773,7 @@ func (d *DBLogger) History(ctx context.Context, window, bucket time.Duration) ([
 		n = 1
 	}
 
-	cutoff := time.Now().Add(-window).Format(time.RFC3339)
+	cutoff := time.Now().UTC().Add(-window).Format(time.RFC3339)
 	// The two failure CASE sums encode the same rule as Record.Unresolved /
 	// Record.UpstreamError and the Search filter (rcode 2 = SERVFAIL, 5 =
 	// REFUSED); keep the three in step. The literals are constants, not caller

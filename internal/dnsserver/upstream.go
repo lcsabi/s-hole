@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/lcsabi/s-hole/internal/redact"
 	"github.com/miekg/dns"
 )
 
@@ -329,25 +331,35 @@ func exchangeDoH(ctx context.Context, req *dns.Msg, upstream string) (*dns.Msg, 
 	}
 	httpReq.Header.Set("Content-Type", dohMediaType)
 	httpReq.Header.Set("Accept", dohMediaType)
+	// A fixed User-Agent with no version, as for the blocklist downloads.
+	httpReq.Header.Set("User-Agent", "s-hole")
 
+	// The errors below reach the unresolved-query summary in the log, so they
+	// name the upstream with its secrets hidden (redact.URL). The HTTP error
+	// itself prints the URL, so it is not wrapped; its kind is kept.
+	shown := redact.URL(upstream)
 	httpResp, err := dohClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("DoH request to %s: %w", upstream, err)
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
+		return nil, fmt.Errorf("DoH request to %s: %w", shown, err)
 	}
 	defer httpResp.Body.Close()
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("DoH request to %s: status %d", upstream, httpResp.StatusCode)
+		return nil, fmt.Errorf("DoH request to %s: status %d", shown, httpResp.StatusCode)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(httpResp.Body, maxDoHResponse))
 	if err != nil {
-		return nil, fmt.Errorf("reading DoH response from %s: %w", upstream, err)
+		return nil, fmt.Errorf("reading DoH response from %s: %w", shown, err)
 	}
 
 	var out dns.Msg
 	if err := out.Unpack(body); err != nil {
-		return nil, fmt.Errorf("unpacking DoH response from %s: %w", upstream, err)
+		return nil, fmt.Errorf("unpacking DoH response from %s: %w", shown, err)
 	}
 	out.Id = req.Id
 	return &out, nil

@@ -240,6 +240,7 @@ func main() {
 	if err := blocklist.Update(store, cfg.Blocking.Lists, cfg.Blocking.CacheDir, blocklist.CacheFirst); err != nil {
 		mainLog.Warn("initial blocklist load failed", "err", err)
 	}
+	releaseMemory()
 
 	counter := stats.New()
 
@@ -301,6 +302,7 @@ func main() {
 		if err := blocklist.Update(store, cfg.Blocking.Lists, cfg.Blocking.CacheDir, blocklist.DownloadFirst); err != nil {
 			mainLog.Warn("blocklist refresh failed", "err", err)
 		}
+		releaseMemory()
 	}))
 
 	apiServer := api.New(counter, db, store, dnsCache, reloadFn)
@@ -698,6 +700,18 @@ func buildMultiLogger(fl *querylog.FileLogger, db *querylog.DBLogger) dnsserver.
 	default:
 		return querylog.NewMulti()
 	}
+}
+
+// releaseMemory returns the memory a blocklist load freed to the OS. A load
+// allocates about 250 bytes of short-lived memory per domain (ROADMAP #32),
+// and the Go runtime keeps freed heap for reuse: on a Raspberry Pi 5 with
+// 405,000 domains, RSS stayed at 105 to 125 MB after a reload, against 65 MB
+// before it, for minutes (b/083). On a 512 MB or 1 GB board that is the
+// figure that matters. debug.FreeOSMemory forces a collection and returns
+// the free pages at once. It costs a few tens of milliseconds, once per load,
+// off the DNS path.
+func releaseMemory() {
+	debug.FreeOSMemory()
 }
 
 // runTicker invokes fn on a fixed interval until ctx is cancelled. Used

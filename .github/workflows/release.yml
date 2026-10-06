@@ -53,7 +53,7 @@ jobs:
 
           stage="dist/s-hole_${VERSION}_${SLUG}"
           mkdir -p "$stage"
-          go build -ldflags="-s -w \
+          go build -trimpath -ldflags="-s -w \
             -X '${VPKG}.Version=${VERSION}' \
             -X '${VPKG}.Commit=${COMMIT}' \
             -X '${VPKG}.BuildDate=${BUILD_DATE}'" \

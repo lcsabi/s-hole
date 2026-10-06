@@ -218,7 +218,13 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	q := req.Question[0]
-	domain := q.Name // already has trailing dot
+	// The name as s-hole records it: lowercase, with the trailing dot. DNS
+	// names are case-insensitive, and a dns-0x20 forwarder randomizes the
+	// case, so recording q.Name as sent split one domain into several rows in
+	// Top Blocked and missed the domain filter (b/082). Replies still echo
+	// q.Name exactly, which the forwarder checks. strings.ToLower returns the
+	// string unchanged, without an allocation, when it is lowercase already.
+	domain := strings.ToLower(q.Name)
 	// Mask the client once, at this single write-time choke point, so the
 	// stats counter (Top Clients) and every query-log sink downstream see the
 	// same value. See querylog.MaskClientIP and the query_log.clients config
@@ -267,6 +273,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			// Relayed from cache, not synthesized. The cache stores only
 			// NOERROR-with-answers replies, so cached.Rcode is NOERROR.
 			h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, CacheHit: true, Rcode: cached.Rcode})
+			fitUDP(w, req, cached)
 			if err := w.WriteMsg(cached); err != nil {
 				logger.Warn("write cached response failed", h.warnAttrs(err, domain)...)
 			}
@@ -311,9 +318,28 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		h.cache.Set(q, resp)
 	}
 
+	fitUDP(w, req, resp)
 	if err := w.WriteMsg(resp); err != nil {
 		logger.Warn("write response failed", h.warnAttrs(err, domain)...)
 	}
+}
+
+// fitUDP truncates a relayed reply to the size the client can take over
+// UDP: 512 bytes without EDNS0, or the buffer size the client advertised.
+// An upstream reply can be larger: after a TC retry over TCP, or from a DoH
+// upstream, which has no UDP size limit. A larger UDP reply is dropped or
+// cut by the network or the client's stub (b/081). Truncate sets the TC bit,
+// so the client asks again over TCP and gets the full reply. TCP and DoT
+// replies are not changed.
+func fitUDP(w dns.ResponseWriter, req, resp *dns.Msg) {
+	if _, udp := w.RemoteAddr().(*net.UDPAddr); !udp {
+		return
+	}
+	size := dns.MinMsgSize
+	if opt := req.IsEdns0(); opt != nil && int(opt.UDPSize()) > size {
+		size = int(opt.UDPSize())
+	}
+	resp.Truncate(size)
 }
 
 func (h *Handler) writeSinkhole(w dns.ResponseWriter, req *dns.Msg, q dns.Question) {

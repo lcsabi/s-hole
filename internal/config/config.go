@@ -43,6 +43,7 @@ import (
 	"time"
 
 	"github.com/lcsabi/s-hole/internal/blocklist"
+	"github.com/lcsabi/s-hole/internal/redact"
 	"gopkg.in/yaml.v3"
 )
 
@@ -467,7 +468,7 @@ func (c *Config) check() ([]Problem, error) {
 		var dropped []string
 		c.DNS.Upstreams, dropped = filterUpstreams(c.DNS.Upstreams)
 		for _, u := range dropped {
-			probs = append(probs, Problem{Key: "dns.upstreams", Detail: fmt.Sprintf("%q is malformed and is ignored (use IP:port, such as 9.9.9.9:53, or a DoH URL with an IP host and a path, such as https://9.9.9.9/dns-query, with no user name or password)", RedactURL(u))})
+			probs = append(probs, Problem{Key: "dns.upstreams", Detail: fmt.Sprintf("%q is malformed and is ignored (use IP:port, such as 9.9.9.9:53, or a DoH URL with an IP host and a path, such as https://9.9.9.9/dns-query, with no user name or password)", redact.URL(u))})
 		}
 		if len(c.DNS.Upstreams) == 0 {
 			return probs, errors.New("dns.upstreams: every entry is malformed, so s-hole cannot forward any query (use IP:port, such as 9.9.9.9:53, or a DoH URL such as https://9.9.9.9/dns-query)")
@@ -812,46 +813,6 @@ func filterUpstreams(upstreams []string) (valid, dropped []string) {
 		valid = append(valid, u)
 	}
 	return valid, dropped
-}
-
-// RedactURL hides the parts of a URL that can hold a secret: the user info
-// becomes "redacted" and the query string is replaced by "redacted". A URL
-// that url.Parse rejects (a bad port, an open IPv6 bracket) can still hold
-// user info, so that case is redacted by hand: everything before the last
-// "@" in the authority is replaced. A string with neither part is returned
-// unchanged. Logs, /metrics, and /api/stats show URLs through it, so a token
-// in a private blocklist URL or a DoH path never reaches them.
-func RedactURL(u string) string {
-	parsed, err := url.Parse(u)
-	if err == nil {
-		changed := false
-		if parsed.User != nil {
-			parsed.User = url.User("redacted")
-			changed = true
-		}
-		if parsed.RawQuery != "" {
-			parsed.RawQuery = "redacted"
-			changed = true
-		}
-		if !changed {
-			return u
-		}
-		return parsed.String()
-	}
-	scheme, rest, ok := strings.Cut(u, "://")
-	if !ok {
-		return u
-	}
-	authority, path, hasPath := strings.Cut(rest, "/")
-	at := strings.LastIndex(authority, "@")
-	if at < 0 {
-		return u
-	}
-	out := scheme + "://redacted" + authority[at:]
-	if hasPath {
-		out += "/" + path
-	}
-	return out
 }
 
 // normalizeDoHURL reports whether u is a usable DoH upstream and returns its

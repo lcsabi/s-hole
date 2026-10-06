@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net"
 	"strings"
+
+	"github.com/lcsabi/s-hole/internal/redact"
 )
 
 // Warning is a setting that is less private or less secure than its
@@ -94,7 +96,7 @@ func (c *Config) Warnings() []Warning {
 	}
 	for _, u := range c.Blocking.Lists {
 		if strings.HasPrefix(strings.ToLower(u), "http://") {
-			add("blocking.lists", fmt.Sprintf("%s is downloaded over plain HTTP: anyone on the network path can change the list and unblock trackers", RedactURL(u)),
+			add("blocking.lists", fmt.Sprintf("%s is downloaded over plain HTTP: anyone on the network path can change the list and unblock trackers", redact.URL(u)),
 				"use the https:// URL of the list")
 		}
 	}

@@ -1,6 +1,8 @@
 package api
 
 import (
+	"github.com/lcsabi/s-hole/internal/redact"
+
 	"fmt"
 	"net/http"
 	"runtime/metrics"
@@ -88,7 +90,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 			fmt.Fprintln(w, "# HELP shole_upstream_transport_failures_total Per-upstream cumulative transport failures (no usable answer: a timeout, a refused connection, or for a DoH upstream a non-200 status or unparsable body) seen by the forward cooldown tracker.")
 			fmt.Fprintln(w, "# TYPE shole_upstream_transport_failures_total counter")
 			for addr, n := range failures {
-				fmt.Fprintf(w, "shole_upstream_transport_failures_total{upstream=\"%s\"} %d\n", escapeLabel(addr), n)
+				fmt.Fprintf(w, "shole_upstream_transport_failures_total{upstream=\"%s\"} %d\n", escapeLabel(redact.URL(addr)), n)
 			}
 		}
 	}
@@ -138,7 +140,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "# HELP shole_blocklist_source_size Domains contributed by one blocklist source (pre-dedup).")
 		fmt.Fprintln(w, "# TYPE shole_blocklist_source_size gauge")
 		for _, src := range sources {
-			fmt.Fprintf(w, "shole_blocklist_source_size{url=\"%s\"} %d\n", escapeLabel(src.URL), src.Count)
+			fmt.Fprintf(w, "shole_blocklist_source_size{url=\"%s\"} %d\n", escapeLabel(redact.URL(src.URL)), src.Count)
 		}
 		fmt.Fprintln(w, "# HELP shole_blocklist_source_stale Whether a blocklist source is serving stale or no data (1) or fresh data (0).")
 		fmt.Fprintln(w, "# TYPE shole_blocklist_source_stale gauge")
@@ -147,7 +149,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 			if src.Stale {
 				stale = 1
 			}
-			fmt.Fprintf(w, "shole_blocklist_source_stale{url=\"%s\"} %d\n", escapeLabel(src.URL), stale)
+			fmt.Fprintf(w, "shole_blocklist_source_stale{url=\"%s\"} %d\n", escapeLabel(redact.URL(src.URL)), stale)
 		}
 	}
 

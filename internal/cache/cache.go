@@ -221,9 +221,17 @@ func key(q dns.Question) string {
 	return q.Name + "\x00" + dns.Type(q.Qtype).String() + "\x00" + dns.Class(q.Qclass).String()
 }
 
+// decrementTTLs ages the cached records by elapsed seconds. It skips the
+// EDNS0 OPT record: OPT has no TTL, and its TTL field holds the extended
+// rcode, the EDNS version, and the DO flag. Decrementing it cleared DO after
+// a few seconds and wrote junk into the flag bits, so a client that asked
+// for DNSSEC records got a reply that said it had not (b/072).
 func decrementTTLs(msg *dns.Msg, elapsed uint32) {
 	for _, section := range [][]dns.RR{msg.Answer, msg.Ns, msg.Extra} {
 		for _, rr := range section {
+			if rr.Header().Rrtype == dns.TypeOPT {
+				continue
+			}
 			hdr := rr.Header()
 			if hdr.Ttl > elapsed {
 				hdr.Ttl -= elapsed

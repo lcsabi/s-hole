@@ -4,15 +4,18 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/lcsabi/s-hole/internal/logging"
+	"github.com/lcsabi/s-hole/internal/redact"
 )
 
 var logger = logging.For("blocklist")
@@ -65,7 +68,7 @@ func Update(store *Store, urls []string, cacheDir string, mode Mode) error {
 		domains, meta, err := fetchList(u, cacheDir, mode)
 		if err != nil {
 			lastErr = err
-			logger.Warn("blocklist load failed", "url", u, "err", err)
+			logger.Warn("blocklist load failed", "url", redact.URL(u), "err", err)
 			// Record the failure so a down source is visible by URL, instead
 			// of hiding behind a drop in the aggregate. Zero LastRefresh
 			// distinguishes a never-loaded source from a stale-cache fallback.
@@ -80,7 +83,7 @@ func Update(store *Store, urls []string, cacheDir string, mode Mode) error {
 			LastRefresh: meta.snapshot,
 			Stale:       meta.from == fromStaleCache,
 		})
-		logger.Info("loaded", "url", u, "domains", len(domains), "from", meta.from)
+		logger.Info("loaded", "url", redact.URL(u), "domains", len(domains), "from", meta.from)
 	}
 	// Publish per-source health even when every source failed, so the
 	// dashboard shows the outage rather than the last good snapshot.
@@ -138,11 +141,19 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 		}
 	}
 
-	resp, err := httpClient.Get(url) //nolint:gosec // URL comes from operator config
+	req, err := http.NewRequest(http.MethodGet, url, nil) //nolint:gosec // URL comes from operator config
+	if err != nil {
+		return nil, sourceMeta{}, fmt.Errorf("%q: %w", redact.URL(url), err)
+	}
+	// A fixed User-Agent with no version: Go's default names the Go release,
+	// which tells the list host more about this machine than it needs.
+	req.Header.Set("User-Agent", "s-hole")
+	resp, err := httpClient.Do(req)
+	err = redactURLError(err)
 	if err != nil {
 		// Fall back to stale cache if download fails.
 		if info, statErr := os.Stat(cachePath); statErr == nil {
-			logger.Warn("download failed, using stale cache", "url", url, "err", err)
+			logger.Warn("download failed, using stale cache", "url", redact.URL(url), "err", err)
 			domains, loadErr := loadFromFile(cachePath)
 			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime()}, loadErr
 		}
@@ -153,11 +164,11 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 	if resp.StatusCode != http.StatusOK {
 		// Do not write the error-page body to the cache file.
 		if info, statErr := os.Stat(cachePath); statErr == nil {
-			logger.Warn("non-200 response, using stale cache", "url", url, "status", resp.StatusCode)
+			logger.Warn("non-200 response, using stale cache", "url", redact.URL(url), "status", resp.StatusCode)
 			domains, loadErr := loadFromFile(cachePath)
 			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime()}, loadErr
 		}
-		return nil, sourceMeta{}, fmt.Errorf("%q: HTTP %d", url, resp.StatusCode)
+		return nil, sourceMeta{}, fmt.Errorf("%q: HTTP %d", redact.URL(url), resp.StatusCode)
 	}
 
 	// Atomic write: stream to a sibling .tmp file, then os.Rename on success.
@@ -191,7 +202,7 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 	if readErr != nil {
 		_ = os.Remove(tmpPath)
 		if info, statErr := os.Stat(cachePath); statErr == nil {
-			logger.Warn("download failed, using stale cache", "url", url, "err", readErr)
+			logger.Warn("download failed, using stale cache", "url", redact.URL(url), "err", readErr)
 			domains, loadErr := loadFromFile(cachePath)
 			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime()}, loadErr
 		}
@@ -206,11 +217,11 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 	if n, _ := io.ReadFull(resp.Body, probe[:]); n > 0 {
 		_ = os.Remove(tmpPath)
 		if info, statErr := os.Stat(cachePath); statErr == nil {
-			logger.Warn("response truncated at cap, using stale cache", "url", url, "cap_bytes", maxBodyBytes)
+			logger.Warn("response truncated at cap, using stale cache", "url", redact.URL(url), "cap_bytes", maxBodyBytes)
 			domains, loadErr := loadFromFile(cachePath)
 			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime()}, loadErr
 		}
-		return nil, sourceMeta{}, fmt.Errorf("%q: response exceeded %d-byte cap", url, maxBodyBytes)
+		return nil, sourceMeta{}, fmt.Errorf("%q: response exceeded %d-byte cap", redact.URL(url), maxBodyBytes)
 	}
 	if err := os.Rename(tmpPath, cachePath); err != nil {
 		_ = os.Remove(tmpPath)
@@ -327,6 +338,19 @@ func PurgeCache(cacheDir string) (int, error) {
 		removed++
 	}
 	return removed, firstErr
+}
+
+// redactURLError hides the secret parts of the URL inside an HTTP client
+// error: *url.Error prints the full URL, query string included, and the
+// error is logged and shown on the dashboard.
+func redactURLError(err error) error {
+	var ue *neturl.Error
+	if errors.As(err, &ue) {
+		cp := *ue
+		cp.URL = redact.URL(ue.URL)
+		return &cp
+	}
+	return err
 }
 
 // cacheFilename maps a URL to a stable, collision-free cache filename by

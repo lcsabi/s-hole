@@ -269,6 +269,9 @@ layout, so a 1.x config needs an edit. (CL 93)
   (CL 93)
 - **A blocklist whose cache file could not be written failed to load**; the
   downloaded list is now used with a warning. (CL 93)
+- **The Router setup banner listed LAN addresses that s-hole did not listen
+  on** when `dns.listen` named one address; it now shows that address
+  (b/088). (CL 93)
 - **A blocklist download that breaks during the transfer now uses the cache.**
   If the connection closed or timed out while s-hole read the list, s-hole
   dropped the list's domains from the block set until the next good download,

@@ -113,7 +113,7 @@ func TestPrintNetworkHint_EmitsBanner(t *testing.T) {
 	t.Setenv("S_HOLE_LOG_FORMAT", "")
 	t.Setenv("S_HOLE_ASCII_BANNER", "")
 	out := captureStdout(t, func() {
-		printNetworkHint("53", "", "0.0.0.0", "8080", true)
+		printNetworkHint("", "53", "", "0.0.0.0", "8080", true)
 	})
 	if !strings.Contains(out, "Router setup") {
 		t.Skipf("no LAN interface in test env; banner skipped (got: %q)", out)
@@ -132,7 +132,7 @@ func TestPrintNetworkHint_AdminDownShowsUnavailable(t *testing.T) {
 	t.Setenv("S_HOLE_LOG_FORMAT", "")
 	t.Setenv("S_HOLE_ASCII_BANNER", "")
 	out := captureStdout(t, func() {
-		printNetworkHint("53", "", "127.0.0.1", "8080", false)
+		printNetworkHint("", "53", "", "127.0.0.1", "8080", false)
 	})
 	if !strings.Contains(out, "Router setup") {
 		t.Skipf("no LAN interface in test env; banner skipped (got: %q)", out)
@@ -152,7 +152,7 @@ func TestPrintNetworkHint_LoopbackAPIPointsAtLocalhost(t *testing.T) {
 	t.Setenv("S_HOLE_LOG_FORMAT", "")
 	t.Setenv("S_HOLE_ASCII_BANNER", "")
 	out := captureStdout(t, func() {
-		printNetworkHint("53", "", "127.0.0.1", "8080", true)
+		printNetworkHint("", "53", "", "127.0.0.1", "8080", true)
 	})
 	if !strings.Contains(out, "Router setup") {
 		t.Skipf("no LAN interface in test env; banner skipped (got: %q)", out)
@@ -190,7 +190,7 @@ func TestIsLoopbackHost(t *testing.T) {
 func TestPrintNetworkHint_ASCIIFallback(t *testing.T) {
 	t.Setenv("S_HOLE_ASCII_BANNER", "1")
 	out := captureStdout(t, func() {
-		printNetworkHint("53", "", "0.0.0.0", "8080", true)
+		printNetworkHint("", "53", "", "0.0.0.0", "8080", true)
 	})
 	if strings.Contains(out, "─") || strings.Contains(out, "│") || strings.Contains(out, "┌") {
 		t.Errorf("ASCII fallback still emitted box-drawing characters:\n%s", out)
@@ -1082,7 +1082,7 @@ func TestPrintNetworkHint_DoTLine(t *testing.T) {
 	for _, ascii := range []string{"", "1"} {
 		t.Setenv("S_HOLE_ASCII_BANNER", ascii)
 		out := captureStdout(t, func() {
-			printNetworkHint("53", "853", "127.0.0.1", "8080", true)
+			printNetworkHint("", "53", "853", "127.0.0.1", "8080", true)
 		})
 		if !strings.Contains(out, "Router setup") {
 			t.Skipf("no LAN interface in test env; banner skipped (got: %q)", out)
@@ -1092,7 +1092,7 @@ func TestPrintNetworkHint_DoTLine(t *testing.T) {
 		}
 	}
 	out := captureStdout(t, func() {
-		printNetworkHint("53", "", "127.0.0.1", "8080", true)
+		printNetworkHint("", "53", "", "127.0.0.1", "8080", true)
 	})
 	if strings.Contains(out, "DoT") {
 		t.Errorf("banner shows a DoT line with DoT off; got: %q", out)

@@ -372,13 +372,13 @@ func main() {
 		}()
 	}
 
-	_, dnsPort, _ := net.SplitHostPort(cfg.DNS.Listen)
+	dnsHost, dnsPort, _ := net.SplitHostPort(cfg.DNS.Listen)
 	var dotPort string
 	if dotLn != nil {
 		_, dotPort, _ = net.SplitHostPort(cfg.DNS.DoTListen)
 	}
 	apiHost, apiPort, _ := net.SplitHostPort(cfg.Admin.Listen)
-	printNetworkHint(dnsPort, dotPort, apiHost, apiPort, apiUp)
+	printNetworkHint(dnsHost, dnsPort, dotPort, apiHost, apiPort, apiUp)
 
 	report := &privacyReport{settings: cfg.Warnings(), plaintext: dnsserver.PlaintextFallbacks, refused: dnsserver.RefusedQueries}
 	apiServer.SetWarnings(report.current)
@@ -540,11 +540,23 @@ func blockUntilStopped(start func() error, stop func(), done <-chan struct{}) in
 // listener failed to bind, so the banner says the UI is unavailable rather
 // than advertising a URL that refuses connections (b/052). A non-empty
 // dotPort adds a DoT line; it names the port and not an address, because a
-// DoT client connects by the hostname in the certificate, not by IP.
-func printNetworkHint(dnsPort, dotPort, apiHost, apiPort string, apiUp bool) {
+// DoT client connects by the hostname in the certificate, not by IP. The DNS
+// lines follow dns.listen the same way: a listener bound to one address shows
+// only that address, so the banner never names an address that gets no
+// answer.
+func printNetworkHint(dnsHost, dnsPort, dotPort, apiHost, apiPort string, apiUp bool) {
 	lanIPs := lanIPv4s(systemInterfaces())
 	if len(lanIPs) == 0 {
 		return
+	}
+
+	dnsHosts := lanIPs
+	dnsNote := ""
+	if ip := net.ParseIP(dnsHost); ip != nil && !ip.IsUnspecified() {
+		dnsHosts = []string{dnsHost}
+		if ip.IsLoopback() {
+			dnsNote = " (this machine only)"
+		}
 	}
 
 	adminHosts := lanIPs
@@ -556,8 +568,8 @@ func printNetworkHint(dnsPort, dotPort, apiHost, apiPort string, apiUp bool) {
 
 	if useASCIIBanner() {
 		fmt.Println("[main] +-- Router setup ---------------------------------------")
-		for _, ip := range lanIPs {
-			fmt.Printf("[main] |   DNS server -> %s:%s\n", ip, dnsPort)
+		for _, h := range dnsHosts {
+			fmt.Printf("[main] |   DNS server -> %s%s\n", net.JoinHostPort(h, dnsPort), dnsNote)
 		}
 		if dotPort != "" {
 			fmt.Printf("[main] |   DoT        -> port %s (clients connect by the certificate's hostname)\n", dotPort)
@@ -574,8 +586,8 @@ func printNetworkHint(dnsPort, dotPort, apiHost, apiPort string, apiUp bool) {
 	}
 
 	fmt.Println("[main] ┌─ Router setup ───────────────────────────────────────")
-	for _, ip := range lanIPs {
-		fmt.Printf("[main] │  DNS server → %s:%s\n", ip, dnsPort)
+	for _, h := range dnsHosts {
+		fmt.Printf("[main] │  DNS server → %s%s\n", net.JoinHostPort(h, dnsPort), dnsNote)
 	}
 	if dotPort != "" {
 		fmt.Printf("[main] │  DoT        → port %s (clients connect by the certificate's hostname)\n", dotPort)

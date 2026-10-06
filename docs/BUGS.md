@@ -2690,3 +2690,23 @@ with Go 1.26. Dependabot cannot track an unversioned tag.
 The image runs as UID 65532 with a file capability for port 53, the builder
 is `golang:1.26-alpine` and cross-compiles from `$BUILDPLATFORM`, and builds
 use `-trimpath`.
+
+## b/088: main: the Router setup banner ignored the dns.listen address
+
+**Priority:** P3
+**Component:** main
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-06
+
+### Description
+
+With `dns.listen` bound to one address, such as `127.0.0.1:5399`, the
+"Router setup" banner still listed every LAN address as the DNS server. A
+router or device set to one of those addresses got no answer. Found during
+the Windows service check for CL 93.
+
+### Fix
+
+The banner shows only the bound address when `dns.listen` names one, with
+"(this machine only)" for a loopback address. A wildcard listener still shows
+every LAN address.

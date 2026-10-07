@@ -16,9 +16,9 @@ usage() {
   cat <<'USAGE'
 Usage: sudo bash install-linux.sh [options] [BINARY] [CONFIG_SRC]
 
-Installs s-hole as a systemd service: creates the s-hole system user, installs
-the binary and config, writes the unit, then starts and health-checks the
-service.
+Installs s-hole as a systemd service: checks the config with the new binary,
+creates the s-hole system user, installs the binary and config, writes the
+unit, then starts and health-checks the service.
 
 Arguments (positional, after any options):
   BINARY       Path to the s-hole binary to install. Default: ./s-hole
@@ -134,9 +134,9 @@ fi
 if ! check_out=$("$BINARY" -check-config -config "$check_cfg" 2>&1); then
   printf '%s\n' "$check_out" >&2
   echo "error: this s-hole build does not accept $check_cfg" >&2
-  echo "       Nothing was installed or changed." >&2
+  echo "       The installer changed nothing." >&2
   if grep -q 'was renamed to' <<<"$check_out"; then
-    echo "       The config uses s-hole 1.x keys. See \"Upgrade to 2.0\" in CHANGELOG.md." >&2
+    echo "       The config uses s-hole 1.x keys. See \"Upgrade to 2.0\" in the 2.0.0 release notes (docs/CHANGELOG.md)." >&2
   fi
   echo "       Fix $check_cfg, then run the installer again." >&2
   exit 1

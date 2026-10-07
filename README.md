@@ -105,7 +105,7 @@ To delete everything s-hole stored, run on the s-hole host:
 s-hole -purge -config /etc/s-hole/config.yaml     # sudo for the systemd install
 ```
 
-On the s-hole host, the dashboard's **Delete history** button does the same. When s-hole runs, it deletes the history through the running process, so the data in memory goes too. When s-hole is stopped, the command deletes the files itself. Relative paths in the config then start in the current directory, so run the command from s-hole's working directory: `cd /var/lib/s-hole` first for the systemd install. On Windows, s-hole uses the folder of `config.yaml`. If a file is not there, the command says `not found at` and the path it tried.
+On the s-hole host, the dashboard's **Delete history** button does the same. When s-hole runs, it deletes the history through the running process, so the data in memory goes too. When s-hole is stopped, the command deletes the files itself. Relative paths in the config then start in the current directory, so run the command from s-hole's working directory: `cd /var/lib/s-hole` first for the systemd install. On Windows, s-hole uses the folder of `config.yaml`. If the query database or the query log file is not there, the command says `not found at` with the path it tried, and names the directory that relative paths start in. If no downloaded blocklist is there, it says `none found in` with the directory; the lists hold no personal data, so this gives no note.
 
 A purge deletes the query database rows, the query log file, the downloaded blocklists (the next reload downloads them again), the Top Domains and Top Clients lists, the per-minute graph, and the DNS response cache. It keeps the allowlist, which is configuration, and the since-start counters, which are counts only. It cannot delete what went to standard output: those lines are in the system journal or the container log.
 
@@ -521,7 +521,7 @@ scp deploy/install-linux.sh deploy/uninstall-linux.sh pi@raspberrypi.local:~/
 sudo bash install-linux.sh ./s-hole-linux-arm64 ./config.yaml
 ```
 
-The installer creates a `s-hole` system user, places the binary at `/usr/local/bin/s-hole`, installs config to `/etc/s-hole/config.yaml`, creates `/var/lib/s-hole` readable by the `s-hole` user only, and enables the service to start on boot. Before it starts the service it validates the arguments (so a swapped binary/config pair fails loudly, not silently), dry-runs the config through the binary (any config problem stops the install), and warns if `systemd-resolved` is holding port 53. After the start it health-checks the unit: if the service does not come up it prints the last log lines and exits non-zero, so a dead service never looks installed. It ends by printing the installed build's version and commit, and a reminder to [keep the s-hole host off s-hole](#keep-the-s-hole-host-off-s-hole), with a warning if the host already uses itself as its DNS server. Confirm the build matches the binary you meant to ship, because a stale `scp` is otherwise silent.
+The installer creates a `s-hole` system user, places the binary at `/usr/local/bin/s-hole`, installs config to `/etc/s-hole/config.yaml`, creates `/var/lib/s-hole` readable by the `s-hole` user only (and gives back to that user any data that an uninstall kept), and enables the service to start on boot. Before it installs anything, it validates the arguments (so a swapped binary/config pair fails loudly, not silently) and dry-runs the config through the new binary: the installed `/etc/s-hole/config.yaml` if one exists, else the one you pass. On any config problem it stops and changes nothing, so on an upgrade the old build keeps running. To upgrade, run the installer again with the new binary. Before it starts the service, it warns if `systemd-resolved` is holding port 53. After the start it health-checks the unit: if the service does not come up it prints the last log lines and exits non-zero, so a dead service never looks installed. It ends by printing the installed build's version and commit, and a reminder to [keep the s-hole host off s-hole](#keep-the-s-hole-host-off-s-hole), with a warning if the host already uses itself as its DNS server. Confirm the build matches the binary you meant to ship, because a stale `scp` is otherwise silent.
 
 Run `sudo bash install-linux.sh -h` for the full options, including `--free-port-53` (disable the `systemd-resolved` stub for you when it holds port 53, instead of only warning). After it frees the port, the installer tells you if `/etc/resolv.conf` still points at the disabled stub. In that case the host has no DNS for programs that read that file (including s-hole's blocklist download) until you run `sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf`.
 
@@ -576,7 +576,7 @@ such as a DNS-over-TLS certificate and key. The prompt lists them before it
 deletes them, so back up a key you have no other copy of. Your query history and blocklist caches in
 `/var/lib/s-hole` are kept unless you pass `--purge`; a kept directory goes to
 root with mode `700`, because a later system user could get the deleted user's
-ID. `--purge` first runs `s-hole -purge`, so a query database or log file
+ID. A later install gives it back to the `s-hole` user. `--purge` first runs `s-hole -purge`, so a query database or log file
 outside `/var/lib/s-hole` goes too. In both modes the uninstaller prints how to
 clear the system journal, which it does not do itself: that would delete the
 logs of every service. `--restore-resolved`
@@ -955,7 +955,7 @@ s-hole v2.0.0
   os/arch: linux/amd64
 ```
 
-`s-hole -check-config -config <path>` loads a config the same way startup does, then exits: `0` and a `config OK` line when it is valid, `1` when it has any config problem (startup would work around it with a default). It also prints the privacy and security warnings, which do not fail the check. Use it to check an edit before restarting the service; the installer runs it automatically before the first start.
+`s-hole -check-config -config <path>` loads a config the same way startup does, then exits: `0` and a `config OK` line when it is valid, `1` when it has any config problem (startup would work around it with a default). It also prints the privacy and security warnings, which do not fail the check. Use it to check an edit before restarting the service; the installer runs it before it installs anything, and stops on a failure.
 
 `s-hole -purge -config <path>` deletes everything s-hole stored (see [Delete the query history](#delete-the-query-history)). `s-hole -healthcheck -config <path>` exits `0` when the running s-hole answers `/readyz`; the Docker image uses it.
 

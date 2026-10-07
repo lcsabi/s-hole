@@ -21,10 +21,12 @@ layout, so a 1.x config needs an edit. (CL 93)
 1. **Move the config to the 2.0 layout.** Keys now sit in four sections. A 1.x
    key is ignored, with a `config problem` warning that names its new key, and
    that setting uses its 2.0 default, which is never less private than the old
-   value. `s-hole -check-config` fails while any 1.x key is left, and so does
-   `install-linux.sh`. The installer checks the config before it changes
-   anything, so a 1.x install keeps running its old binary until the config
-   passes; then run the installer again.
+   value. `s-hole -check-config` fails while any 1.x key is left.
+   `install-linux.sh` runs the same check with the new binary before it
+   changes anything. If the check fails, the 1.x install keeps running as it
+   was. Edit `/etc/s-hole/config.yaml`, then run the installer again right
+   away: until it does, a restart of the 1.x build would read the 2.0 file
+   with its 1.x defaults.
 
    | 1.x key | 2.0 key | Value changes |
    |---|---|---|
@@ -296,7 +298,7 @@ layout, so a 1.x config needs an edit. (CL 93)
   reports `not found at` with the path, and on Windows it uses the folder of
   `config.yaml` (b/091). (CL 93)
 - **A reinstall after a default uninstall could not use the kept data**: the
-  installer now takes the files back, and a blocklist cache file that cannot
+  installer now gives the kept files back to the `s-hole` user, and a blocklist cache file that cannot
   be read is downloaded again instead of dropping the list (b/092). (CL 93)
 - **A failed upgrade left the new binary installed**: `install-linux.sh` now
   checks the config before it changes anything (b/093). (CL 93)

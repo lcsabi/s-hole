@@ -2818,8 +2818,8 @@ and nothing blocked. Found in the pre-merge test on the Debian VM.
 ### Fix
 
 The installer checks the config with the new binary before it installs
-anything, and on a failure says that nothing was installed or changed. A
-1.x config also gets a pointer to "Upgrade to 2.0" in CHANGELOG.md.
+anything, and on a failure says that it changed nothing. A 1.x config also
+gets a pointer to "Upgrade to 2.0" in the release notes (docs/CHANGELOG.md).
 
 ## b/094: main: an offline purge failed on Windows
 

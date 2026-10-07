@@ -194,8 +194,8 @@ downloaded list but cannot keep a copy, so the next start downloads it again.
 instead of using its copy. Read `hint`. Usually the directory, or its files,
 belong to another user:
 
-- After the Linux installer, run `sudo chown -R s-hole:s-hole /var/lib/s-hole`.
-  The installer does this itself when you run it again.
+- If `install-linux.sh` installed s-hole, run
+  `sudo chown -R s-hole:s-hole /var/lib/s-hole`, or run the installer again.
 - In Docker, the image runs as user 65532 since s-hole 2.0: on the host, run
   `sudo chown -R 65532:65532` on the directory that is mounted at `/app`.
 
@@ -305,7 +305,7 @@ shows `stored history off` while it is off.
 
 | You see | What it means | What to do |
 |---|---|---|
-| `msg="query log database open failed"` | s-hole cannot open `query_log.database`. The dashboard history and the recent queries stay empty. | Read `err` and `hint`. Under systemd, keep the file in `/var/lib/s-hole`. Under a Windows service, a relative path is next to `config.yaml`. With `permission denied` in Docker, run `sudo chown -R 65532:65532` on the host directory mounted at `/app`. |
+| `msg="query log database open failed"` | s-hole cannot open `query_log.database`. The dashboard history and the recent queries stay empty. | Read `err` and `hint`. Under systemd, keep the file in `/var/lib/s-hole`. Under a Windows service, a relative path is next to `config.yaml`. With `permission denied`, the file or its directory belongs to another user. If `install-linux.sh` installed s-hole, run `sudo chown -R s-hole:s-hole /var/lib/s-hole`, or run the installer again. In Docker, run `sudo chown -R 65532:65532` on the host directory mounted at `/app`. |
 | `msg="query log commit failed, dropping batch"` | s-hole cannot write some queries to the database. | Read `err`. Check the free disk space. |
 | `msg="query log file open failed; query lines are not written"` | s-hole cannot open `query_log.file`. It does not write the lines to standard output instead. | Read `err`. Check that the directory exists and s-hole can write to it. |
 

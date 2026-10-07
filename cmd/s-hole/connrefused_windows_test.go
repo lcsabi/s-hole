@@ -10,8 +10,9 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// This test runs only on Windows. CI runs Linux, so it is only compiled
-// there (GOOS=windows go vet ./cmd/s-hole/).
+// This test runs only on Windows. CI does not compile it (its Windows job
+// builds only the binary). To compile it on Linux, run
+// GOOS=windows go vet ./cmd/s-hole/.
 
 func TestConnRefused_WindowsErrno(t *testing.T) {
 	// b/094: Windows reports a refused connection as WSAECONNREFUSED

@@ -142,7 +142,8 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 				return domains, sourceMeta{from: fromCache, snapshot: info.ModTime()}, nil
 			}
 			// A cache file that cannot be read must not drop the list: most
-			// often it belongs to another user after a reinstall (b/092).
+			// often it belongs to another user, such as root after a default
+			// uninstall (b/092) or from a Docker image before s-hole 2.0.
 			// Download the list instead, as when there is no cache.
 			hint := "s-hole downloads the list instead"
 			if errors.Is(loadErr, fs.ErrPermission) {
@@ -262,10 +263,10 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 }
 
 // ownerHint is the advice for a cache file or directory that belongs to
-// another user: root after a default uninstall and reinstall (b/092), or root
-// from an image before s-hole 2.0 in Docker.
+// another user: root after a default uninstall, until the installer runs
+// again (b/092), or root from a Docker image before s-hole 2.0.
 const ownerHint = "The directory or its files belong to another user. " +
-	"After the Linux installer, run sudo chown -R s-hole:s-hole /var/lib/s-hole. " +
+	"If install-linux.sh installed s-hole, run sudo chown -R s-hole:s-hole /var/lib/s-hole, or run the installer again. " +
 	"In Docker the image runs as user 65532 since s-hole 2.0: on the host, run sudo chown -R 65532:65532 on the directory that is mounted at /app"
 
 // warnCacheWrite reports a blocklist cache file that could not be written.

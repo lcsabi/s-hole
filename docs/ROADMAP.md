@@ -62,6 +62,7 @@ rails.
 | 40 | Privacy hardening: private defaults, loud warnings, erasure, purge, LAN-only, admin browser defenses | High | done (CL 93) |
 | 41 | Minimal upstream query: no client EDNS options, a fresh ID, local-only names to LAN upstreams only, EDNS padding | High | not started (planned as CL 94) |
 | 42 | Admin authentication by device pairing | Medium | not started (reopened in CL 93) |
+| 43 | Adblock-format blocklists (`\|\|example.com^`), with `@@` exceptions | Low | not started |
 
 Items 19-26 came out of a 2026-08-24 feature-ideas session. Items 21-24 are a
 dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
@@ -2060,6 +2061,23 @@ scanning it on a phone gives that browser a signed device pass, and the
 dashboard admits only paired devices. Points to settle: where the pass lives
 (cookie), how to revoke a device, how a script authenticates, and how the
 Host and cross-origin checks fit. It needs its own CL.
+
+## 43. Adblock-format blocklists, with exceptions
+
+Some lists come only in the Adblock format that browser blockers use, such as
+AdGuard's DNS filter. The DNS-level rule is `||example.com^`: the domain and
+its subdomains, the same as a `*.example.com` line (read since CL 95). s-hole
+now warns about such a list (`blocklist lines skipped`) and blocks nothing
+from it.
+
+Reading only the `||domain^` lines is not enough. A list can block a domain
+and unblock one of its subdomains with an `@@||sub.example.com^` exception;
+s-hole would then block more than the list's author meant, and something on
+the network could break with no clear reason. The plan: read `||domain^` and
+`@@||domain^` lines with no `$` options, keep each list's exceptions with that
+list (an exception does not reach the global allowlist), and skip every other
+rule, as now. Most popular lists (oisd, Hagezi, StevenBlack) also come in a
+hosts or domains version, so this is Low.
 
 ## Pending decisions
 

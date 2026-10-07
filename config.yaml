@@ -77,9 +77,11 @@ dns:
   local_ptr: true
 
 blocking:
-  # Blocklist URLs: hosts-file format or one domain per line. Use https://
-  # URLs; s-hole warns about an http:// URL, because anyone on the network
-  # path can change the list.
+  # Blocklist URLs: hosts-file format, one domain per line, or *.example.com
+  # lines (the domain and its subdomains). s-hole warns about a list whose
+  # lines it cannot read, such as an Adblock list. Use https:// URLs;
+  # s-hole warns about an http:// URL, because anyone on the network path
+  # can change the list.
   lists:
     - "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
     - "https://adaway.org/hosts.txt"

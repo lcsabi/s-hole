@@ -138,7 +138,17 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 	if info, err := os.Stat(cachePath); err == nil && mode == CacheFirst {
 		if time.Since(info.ModTime()) < cacheMaxAge {
 			domains, loadErr := loadFromFile(cachePath)
-			return domains, sourceMeta{from: fromCache, snapshot: info.ModTime()}, loadErr
+			if loadErr == nil {
+				return domains, sourceMeta{from: fromCache, snapshot: info.ModTime()}, nil
+			}
+			// A cache file that cannot be read must not drop the list: most
+			// often it belongs to another user after a reinstall (b/092).
+			// Download the list instead, as when there is no cache.
+			hint := "s-hole downloads the list instead"
+			if errors.Is(loadErr, fs.ErrPermission) {
+				hint += ". " + ownerHint
+			}
+			logger.Warn("blocklist cache could not be read", "url", redact.URL(url), "err", loadErr, "hint", hint)
 		}
 	}
 
@@ -251,13 +261,19 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 	return domains, sourceMeta{from: fromDownload, snapshot: time.Now()}, nil
 }
 
+// ownerHint is the advice for a cache file or directory that belongs to
+// another user: root after a default uninstall and reinstall (b/092), or root
+// from an image before s-hole 2.0 in Docker.
+const ownerHint = "The directory or its files belong to another user. " +
+	"After the Linux installer, run sudo chown -R s-hole:s-hole /var/lib/s-hole. " +
+	"In Docker the image runs as user 65532 since s-hole 2.0: on the host, run sudo chown -R 65532:65532 on the directory that is mounted at /app"
+
 // warnCacheWrite reports a blocklist cache file that could not be written.
 // The list is still used; only the next start has to download it again.
 func warnCacheWrite(cacheDir string, err error) {
 	hint := "the list is used, but the next start downloads it again. Check that s-hole can write to blocking.cache_dir"
 	if errors.Is(err, fs.ErrPermission) {
-		hint = "the list is used, but the next start downloads it again. The directory or its files belong to another user. " +
-			"In Docker the image runs as user 65532 since s-hole 2.0: on the host, run sudo chown -R 65532:65532 on the directory that is mounted at /app"
+		hint = "the list is used, but the next start downloads it again. " + ownerHint
 	}
 	logger.Warn("blocklist cache could not be written", "dir", cacheDir, "err", err, "hint", hint)
 }

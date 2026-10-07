@@ -114,6 +114,35 @@ if ! "$BINARY" -version 2>/dev/null | grep -q '^s-hole '; then
   exit 1
 fi
 
+echo "==> validating config"
+# Dry-run the config through the new binary before anything is installed, so a
+# bad config surfaces here on screen instead of as a failed start (which the
+# health check below would then have to diagnose from the journal). Same
+# load-and-validate sequence the service runs at startup (ROADMAP #27). The
+# config in effect is the installed one when it exists (an upgrade keeps it),
+# else the one being installed.
+# The output is kept: its "config OK" line names admin.listen for the banner.
+# -check-config fails on any config problem, including a key renamed in
+# s-hole 2.0. On an upgrade with an old config this stops before the binary is
+# replaced: the running s-hole and the installed binary stay as they were, so
+# a later restart cannot start the new binary with the old config (b/093).
+if [[ -f "$CONFIG_DIR/config.yaml" ]]; then
+  check_cfg="$CONFIG_DIR/config.yaml"
+else
+  check_cfg="$CONFIG_SRC"
+fi
+if ! check_out=$("$BINARY" -check-config -config "$check_cfg" 2>&1); then
+  printf '%s\n' "$check_out" >&2
+  echo "error: this s-hole build does not accept $check_cfg" >&2
+  echo "       Nothing was installed or changed." >&2
+  if grep -q 'was renamed to' <<<"$check_out"; then
+    echo "       The config uses s-hole 1.x keys. See \"Upgrade to 2.0\" in CHANGELOG.md." >&2
+  fi
+  echo "       Fix $check_cfg, then run the installer again." >&2
+  exit 1
+fi
+printf '%s\n' "$check_out"
+
 echo "==> creating s-hole system user"
 id -u s-hole &>/dev/null || useradd --system --no-create-home --shell /usr/sbin/nologin s-hole
 
@@ -136,7 +165,10 @@ echo "==> creating data directory $DATA_DIR"
 # Owner-only: the directory holds the query history when query_log.database
 # is on. chmod also tightens a directory from an older install (b/076).
 mkdir -p "$DATA_DIR"
-chown s-hole:s-hole "$DATA_DIR"
+# -R: a default uninstall leaves the kept data owned by root, and a
+# reinstall must take it back, or s-hole cannot open its database or read its
+# blocklist cache (b/092).
+chown -R s-hole:s-hole "$DATA_DIR"
 chmod 0700 "$DATA_DIR"
 
 echo "==> installing systemd unit"
@@ -177,23 +209,6 @@ UMask=0077
 WantedBy=multi-user.target
 EOF
 chmod 644 /etc/systemd/system/s-hole.service
-
-echo "==> validating config"
-# Dry-run the config through the binary before the service starts, so a bad
-# config surfaces here on screen instead of as a failed start (which the health
-# check below would then have to diagnose from the journal). Same load-and-
-# validate sequence the service runs at startup (ROADMAP #27).
-# The output is kept: its "config OK" line names admin.listen for the banner.
-# -check-config fails on any config problem, including a key renamed in
-# s-hole 2.0, so an upgrade with an old config stops here instead of starting
-# with defaults.
-if ! check_out=$("$INSTALL_BIN" -check-config -config "$CONFIG_DIR/config.yaml" 2>&1); then
-  printf '%s\n' "$check_out" >&2
-  echo "error: config validation failed, service not started" >&2
-  echo "       fix $CONFIG_DIR/config.yaml and re-run the installer" >&2
-  exit 1
-fi
-printf '%s\n' "$check_out"
 
 # Port-53 preflight: the most common Linux DNS-server install failure is the
 # systemd-resolved stub listener already holding :53, which makes the s-hole

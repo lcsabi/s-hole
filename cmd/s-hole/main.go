@@ -274,6 +274,7 @@ func main() {
 			hint := "the dashboard history and recent queries stay empty. Check query_log.database"
 			if errors.Is(err, fs.ErrPermission) {
 				hint = "the dashboard history and recent queries stay empty. The file or its directory belongs to another user. " +
+					"After the Linux installer, run sudo chown -R s-hole:s-hole /var/lib/s-hole. " +
 					"In Docker the image runs as user 65532 since s-hole 2.0: on the host, run sudo chown -R 65532:65532 on the directory that is mounted at /app"
 			}
 			mainLog.Warn("query log database open failed", "err", err, "hint", hint)

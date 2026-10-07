@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"syscall"
 	"time"
 
 	"github.com/lcsabi/s-hole/internal/api"
@@ -125,7 +124,8 @@ func runPurge(log *slog.Logger, path string) int {
 		fmt.Println("s-hole is not running. Deleted the files it stores:")
 		defer func() {
 			if notFound {
-				fmt.Println("A file was not found. Relative paths in the config start in the current directory.")
+				dir, _ := os.Getwd()
+				fmt.Printf("A file was not found. Relative paths in the config start in the current directory (%s).\n", dir)
 				fmt.Println("If s-hole keeps its files in another directory, run the purge again from there")
 				fmt.Println("(/var/lib/s-hole after the Linux installer).")
 			}
@@ -158,7 +158,7 @@ func purgeViaAPI(adminListen string) (api.PurgeReport, error) {
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Post(url, "application/json", bytes.NewReader([]byte(`{"confirm": true}`)))
 	if err != nil {
-		if errors.Is(err, syscall.ECONNREFUSED) {
+		if connRefused(err) {
 			return api.PurgeReport{}, errNotRunning
 		}
 		return api.PurgeReport{}, err
@@ -174,10 +174,12 @@ func purgeViaAPI(adminListen string) (api.PurgeReport, error) {
 
 // purgeOffline deletes the stored files of an s-hole that is not running:
 // the query database with its -wal and -shm files, the query log file, and
-// the downloaded blocklists. A configured file that does not exist is
-// reported as "not found" with its absolute path, and notFound is true: a
-// relative path resolves against the current directory, so a purge run from
-// the wrong directory must not claim that it deleted the history (b/091).
+// the downloaded blocklists. A configured database or query log file that
+// does not exist is reported as "not found" with its absolute path, and
+// notFound is true: a relative path resolves against the current directory,
+// so a purge run from the wrong directory must not claim that it deleted the
+// history (b/091). A missing blocklist cache is reported with its directory
+// but does not set notFound, because the lists hold no personal data.
 func purgeOffline(cfg *config.Config) (rep api.PurgeReport, notFound bool) {
 	add := func(what, result string, failed bool) {
 		rep.Steps = append(rep.Steps, api.PurgeStep{What: what, Result: result, Failed: failed})
@@ -234,7 +236,14 @@ func purgeOffline(cfg *config.Config) (rep api.PurgeReport, notFound bool) {
 	case err != nil:
 		add("downloaded blocklists", fmt.Sprintf("%d files deleted, then: %v", n, err), true)
 	case n == 0 && len(cfg.Blocking.Lists) > 0:
-		missing("downloaded blocklists", cfg.Blocking.CacheDir)
+		// The blocklists are public lists, not personal data, so a missing
+		// cache (already purged, or never downloaded) does not raise the
+		// note; the step still names the directory it searched.
+		dir := cfg.Blocking.CacheDir
+		if abs, err := filepath.Abs(dir); err == nil {
+			dir = abs
+		}
+		add("downloaded blocklists", "none found in "+dir, false)
 	default:
 		add("downloaded blocklists", strconv.Itoa(n)+" files deleted", false)
 	}

@@ -22,7 +22,9 @@ layout, so a 1.x config needs an edit. (CL 93)
    key is ignored, with a `config problem` warning that names its new key, and
    that setting uses its 2.0 default, which is never less private than the old
    value. `s-hole -check-config` fails while any 1.x key is left, and so does
-   `install-linux.sh`.
+   `install-linux.sh`. The installer checks the config before it changes
+   anything, so a 1.x install keeps running its old binary until the config
+   passes; then run the installer again.
 
    | 1.x key | 2.0 key | Value changes |
    |---|---|---|
@@ -293,6 +295,15 @@ layout, so a 1.x config needs an edit. (CL 93)
   history** when it ran from another directory than s-hole's own; it now
   reports `not found at` with the path, and on Windows it uses the folder of
   `config.yaml` (b/091). (CL 93)
+- **A reinstall after a default uninstall could not use the kept data**: the
+  installer now takes the files back, and a blocklist cache file that cannot
+  be read is downloaded again instead of dropping the list (b/092). (CL 93)
+- **A failed upgrade left the new binary installed**: `install-linux.sh` now
+  checks the config before it changes anything (b/093). (CL 93)
+- **An offline purge failed on Windows**: s-hole did not recognize a refused
+  connection there, so `s-hole -purge` with the service stopped deleted
+  nothing (b/094). (CL 93)
+- **The graph's last time label was cut off** at the right edge. (CL 93)
 - **A `blocking.cache_dir` that did not exist was never created**, so every
   start downloaded every list again; s-hole now creates it, mode `700`
   (b/089). (CL 93)

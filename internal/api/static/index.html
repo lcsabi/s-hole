@@ -1225,10 +1225,11 @@
       if (drawTotal) drawSeries('upstream_error', orange, hexA(orange, 0.16));
       drawSeries('blocked', red, hexA(red, 0.16));
 
-      // A few thinned x-axis time labels.
+      // A few thinned x-axis time labels. The first and last labels align to
+      // their tick from the inside, so the canvas edge does not cut them off;
+      // the others center on their tick.
       ctx.fillStyle = muted;
       ctx.textBaseline = 'top';
-      ctx.textAlign = 'center';
       const labels = Math.min(6, n);
       for (let k = 0; k < labels; k++) {
         const i = labels === 1 ? 0 : Math.round(k * (n - 1) / (labels - 1));
@@ -1236,6 +1237,8 @@
         const lbl = historyWindow === '24h'
           ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
           : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+        ctx.textAlign = labels === 1 ? 'center'
+          : k === 0 ? 'left' : k === labels - 1 ? 'right' : 'center';
         ctx.fillText(lbl, x(i), padT + plotH + 6);
       }
     }

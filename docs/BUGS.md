@@ -2774,3 +2774,71 @@ A configured file that does not exist is reported as `not found at` with
 its absolute path, and the command then says that relative paths start in
 the current directory and where to run it. On Windows, `-purge` changes to
 the folder of `config.yaml` first, as the service does.
+
+## b/092: deploy: a reinstall after a default uninstall could not use the kept data
+
+**Priority:** P2
+**Component:** deploy, blocklist
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-07
+
+### Description
+
+Since CL 93, a default uninstall hands the kept data in `/var/lib/s-hole` to
+root (`0600`). A later install chowned the directory back to `s-hole`, but
+not the files in it. s-hole then could not open its query database
+(`permission denied`), and a fresh blocklist cache file that it could not
+read made the whole list fail to load, although a download would have
+worked. The permission hints named only the Docker fix. Found in the
+pre-merge test on the Debian VM.
+
+### Fix
+
+The installer chowns the data directory recursively. A cache file that
+cannot be read logs `blocklist cache could not be read` and s-hole downloads
+the list instead. The permission hints also name the Linux fix,
+`sudo chown -R s-hole:s-hole /var/lib/s-hole`.
+
+## b/093: deploy: a failed upgrade left the new binary installed
+
+**Priority:** P2
+**Component:** deploy
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-07
+
+### Description
+
+`install-linux.sh` replaced `/usr/local/bin/s-hole` before it ran
+`-check-config`. An upgrade from 1.x with the old config failed the check
+and printed "service not started", but the old process kept running from
+the replaced file. The next restart or reboot started the 2.0 binary with
+the 1.x config, so every setting fell back to its default: no blocklists,
+and nothing blocked. Found in the pre-merge test on the Debian VM.
+
+### Fix
+
+The installer checks the config with the new binary before it installs
+anything, and on a failure says that nothing was installed or changed. A
+1.x config also gets a pointer to "Upgrade to 2.0" in CHANGELOG.md.
+
+## b/094: main: an offline purge failed on Windows
+
+**Priority:** P2
+**Component:** main
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-07
+
+### Description
+
+`s-hole -purge` decides that no s-hole runs when the connection to the admin
+address is refused, and then deletes the files itself. It checked for
+`syscall.ECONNREFUSED`, but Windows reports a refused connection as
+`WSAECONNREFUSED` (10061). With the service stopped, the purge on Windows
+failed with "purge failed ... actively refused it" and deleted nothing.
+Found in the pre-merge test on Windows 10.
+
+### Fix
+
+A platform helper, `connRefused`, also matches `WSAECONNREFUSED` on Windows.
+Checked live: an offline purge from `C:\Windows\System32` deletes the files
+next to `config.yaml`.

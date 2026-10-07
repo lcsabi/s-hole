@@ -190,9 +190,14 @@ shows `msg="refreshing blocklists"` and one `msg=loaded` line for each list.
 
 `msg="blocklist cache could not be written"` means that s-hole used the
 downloaded list but cannot keep a copy, so the next start downloads it again.
-Read `hint`. The directory, or its files, belong to another user. In Docker,
-the image runs as user 65532 since s-hole 2.0: on the host, run
-`sudo chown -R 65532:65532` on the directory that is mounted at `/app`.
+`msg="blocklist cache could not be read"` means that s-hole downloads the list
+instead of using its copy. Read `hint`. Usually the directory, or its files,
+belong to another user:
+
+- After the Linux installer, run `sudo chown -R s-hole:s-hole /var/lib/s-hole`.
+  The installer does this itself when you run it again.
+- In Docker, the image runs as user 65532 since s-hole 2.0: on the host, run
+  `sudo chown -R 65532:65532` on the directory that is mounted at `/app`.
 
 ## Some names do not resolve
 

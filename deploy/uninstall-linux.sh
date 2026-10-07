@@ -75,7 +75,7 @@ else
   echo "  - delete $CONFIG_DIR (config)"
 fi
 if $PURGE; then
-  echo "  - delete $DATA_DIR (blocklist caches + query log)   [--purge]"
+  echo "  - delete $DATA_DIR (blocklist caches + query database)   [--purge]"
 else
   echo "  - keep   $DATA_DIR (blocklist caches and query database, owned by root. Pass --purge to remove)"
 fi
@@ -151,7 +151,7 @@ if [[ -d "$DATA_DIR" ]]; then
     removed+=("$DATA_DIR")
   else
     echo "==> keeping data directory $DATA_DIR (pass --purge to remove)"
-    kept+=("$DATA_DIR (blocklist caches + query log)")
+    kept+=("$DATA_DIR (blocklist caches + query database)")
   fi
 fi
 

@@ -2028,7 +2028,7 @@ a loud, repeating warning for every less private setting; owner-only files and
 `secure_delete` erasure; a purge; a LAN-only DNS server; the Host and
 cross-origin checks and security headers; log hygiene; a non-root Docker image
 and a least-privilege Windows service. See `docs/cls/CL-93.md`, `PRIVACY.md`, and
-b/072 to b/091.
+b/072 to b/094.
 
 ## 41. Minimal upstream query (planned as CL 94)
 

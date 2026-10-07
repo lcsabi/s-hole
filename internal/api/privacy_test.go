@@ -341,3 +341,70 @@ func TestMetrics_NewCounters(t *testing.T) {
 		}
 	}
 }
+
+// requestFrom sends one request to h from remote and returns the status.
+func requestFrom(h http.Handler, method, target, remote, contentType, body string) int {
+	req := httptest.NewRequest(method, target, strings.NewReader(body))
+	req.Host = "127.0.0.1:8080"
+	req.RemoteAddr = remote
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec.Code
+}
+
+// linesWith returns the recorded log lines that contain sub.
+func (h *recordingHandler) linesWith(sub string) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []string
+	for _, m := range h.msgs {
+		if strings.Contains(m, sub) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func TestReload_LogLineHasNoClientAddress(t *testing.T) {
+	// The "reload requested via API" line carries no client address: no
+	// "client" attribute, and the requester's IP is nowhere in the line. The
+	// allowlist add and remove audit lines keep their "client" attribute.
+	rec := captureLogs(t)
+	s, _ := newTestServer(t, nil)
+	h := s.handler()
+	for _, remote := range []string{"192.168.1.77:5555", "[2001:db8::77]:5555"} {
+		ip := strings.Trim(remote[:strings.LastIndex(remote, ":")], "[]")
+		if code := requestFrom(h, http.MethodPost, "/api/reload", remote, "", ""); code != http.StatusOK {
+			t.Fatalf("POST /api/reload from %s = %d", remote, code)
+		}
+		lines := rec.linesWith("reload requested via API")
+		if len(lines) == 0 {
+			t.Fatalf("no reload line for %s", remote)
+		}
+		last := lines[len(lines)-1]
+		if strings.Contains(last, "client") || strings.Contains(last, ip) {
+			t.Errorf("reload line %q holds the client address %s", last, ip)
+		}
+		for _, l := range rec.linesWith(ip) {
+			if !strings.HasPrefix(l, "allowlist entry") {
+				t.Errorf("log line %q holds the client address %s", l, ip)
+			}
+		}
+
+		if code := requestFrom(h, http.MethodPost, "/api/allowlist", remote, "application/json", `{"domain":"audit.example.com"}`); code != http.StatusOK {
+			t.Fatalf("POST /api/allowlist from %s = %d", remote, code)
+		}
+		if code := requestFrom(h, http.MethodDelete, "/api/allowlist?domain=audit.example.com", remote, "", ""); code != http.StatusOK {
+			t.Fatalf("DELETE /api/allowlist from %s = %d", remote, code)
+		}
+		for _, msg := range []string{"allowlist entry added", "allowlist entry removed"} {
+			got := rec.linesWith(msg)
+			if len(got) == 0 || !strings.Contains(got[len(got)-1], "client="+ip) {
+				t.Errorf("%q line = %q, want client=%s", msg, got, ip)
+			}
+		}
+	}
+}

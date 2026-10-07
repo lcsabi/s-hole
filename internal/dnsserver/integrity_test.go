@@ -596,7 +596,7 @@ func TestUpstreamQuery_CopiesEachClientBit(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			addr, rec := startRecordingUpstream(t, answerWith(net.IPv4(4, 4, 4, 4)), false)
 			h := testHandler([]string{addr}, nil)
-			req := noisyQuery("WwW.ExAmPlE.CoM.", true)
+			req := noisyQuery("WwW.ExAmPlE.CoM.")
 			req.CheckingDisabled = tc.cd
 			req.AuthenticatedData = tc.ad
 			if tc.clientOPT {
@@ -632,7 +632,7 @@ func TestUpstreamQuery_DoHHasIDZeroAndOnlyPadding(t *testing.T) {
 		names = append(names, strings.Repeat("abcdefghij", i)+".example.net.")
 	}
 	for i, name := range names {
-		req := noisyQuery(name, true)
+		req := noisyQuery(name)
 		cd, ad := i%2 == 0, i%3 == 0
 		req.CheckingDisabled, req.AuthenticatedData = cd, ad
 		do := false

@@ -230,13 +230,13 @@ func checkUpstreamQuery(t *testing.T, got *dns.Msg, want dns.Question, rd, cd, a
 
 // noisyQuery is a client query that sets every header bit and fills every
 // record section, so a test can see what reaches the upstream.
-func noisyQuery(name string, bits bool) *dns.Msg {
+func noisyQuery(name string) *dns.Msg {
 	req := new(dns.Msg)
 	req.Id = 0x1234
 	req.Question = []dns.Question{{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET}}
-	req.RecursionDesired = bits
-	req.CheckingDisabled = bits
-	req.AuthenticatedData = bits
+	req.RecursionDesired = true
+	req.CheckingDisabled = true
+	req.AuthenticatedData = true
 	req.Authoritative = true
 	req.Truncated = true
 	req.RecursionAvailable = true
@@ -255,18 +255,17 @@ func TestUpstreamQuery_IsBuiltBySHole(t *testing.T) {
 	// and its EDNS options do not reach the upstream.
 	cases := []struct {
 		name      string
-		bits      bool
 		clientOPT bool
 		do        bool
 	}{
-		{"bits set, OPT with DO and options", true, true, true},
-		{"bits set, no OPT", true, false, false},
+		{"OPT with DO and options", true, true},
+		{"no OPT", false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			addr, rec := startRecordingUpstream(t, answerWith(net.IPv4(4, 4, 4, 4)), false)
 			h := testHandler([]string{addr}, nil)
-			req := noisyQuery("WwW.ExAmPlE.CoM.", tc.bits)
+			req := noisyQuery("WwW.ExAmPlE.CoM.")
 			if tc.clientOPT {
 				withOPT(req, 4096, tc.do, clientOptions()...)
 			}
@@ -278,7 +277,7 @@ func TestUpstreamQuery_IsBuiltBySHole(t *testing.T) {
 			}
 			got, _, _ := rec.get(0)
 			want := dns.Question{Name: "WwW.ExAmPlE.CoM.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-			checkUpstreamQuery(t, got, want, tc.bits, tc.bits, tc.bits, tc.do)
+			checkUpstreamQuery(t, got, want, true, true, true, tc.do)
 			if o := got.IsEdns0(); o != nil && len(o.Option) != 0 {
 				t.Errorf("upstream OPT options = %v, want none over plain UDP", o.Option)
 			}
@@ -353,7 +352,7 @@ func TestUpstreamQuery_TCPRetryIsAlsoMinimal(t *testing.T) {
 	// same minimal query: no client data, a new ID, and no Padding option.
 	addr, rec := startRecordingUpstream(t, answerWith(net.IPv4(4, 4, 4, 4)), true)
 	h := testHandler([]string{addr}, nil)
-	req := noisyQuery("Big.Example.Com.", true)
+	req := noisyQuery("Big.Example.Com.")
 	withOPT(req, 4096, true, clientOptions()...)
 	w := fakeClient()
 	h.ServeDNS(w, req)

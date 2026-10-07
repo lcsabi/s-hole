@@ -3,7 +3,7 @@
 // The file has four sections and one top-level key:
 //
 //	dns:        how s-hole listens and forwards (listen, dot_listen, dot_cert,
-//	            dot_key, upstreams, cache_entries, local_ptr)
+//	            dot_key, upstreams, cache_entries, local_ptr, local_domains)
 //	blocking:   what s-hole blocks (lists, allowlist, reply, reply_ttl_seconds,
 //	            refresh_interval, cache_dir)
 //	query_log:  what s-hole records about queries (mode, clients, database,
@@ -18,7 +18,7 @@
 // Precedence (highest wins): S_HOLE_* environment variables > YAML file >
 // defaults. A scalar setting has an environment variable named after its key
 // path, for example dns.listen is S_HOLE_DNS_LISTEN. Lists and maps
-// (upstreams, lists, allowlist, client_names) have none.
+// (upstreams, local_domains, lists, allowlist, client_names) have none.
 //
 // A mistake in the config never takes DNS down and never makes s-hole less
 // private. Load reports each unknown key, each key renamed since s-hole 1.x,
@@ -74,6 +74,11 @@ type DNS struct {
 	// LocalPTR answers reverse lookups for private address ranges locally
 	// (RFC 6303) instead of forwarding them, so LAN addresses stay on the LAN.
 	LocalPTR bool
+	// LocalDomains are extra local-only suffixes, such as a router's own
+	// domain ("fritz.box"), in lowercase with no leading or trailing dot.
+	// s-hole sends a name under one of them only to an upstream on the LAN,
+	// like the built-in local names (.lan, home.arpa, single-label names).
+	LocalDomains []string
 }
 
 // Blocking holds the blocking: section.
@@ -257,6 +262,7 @@ func (c *Config) settings() []setting {
 		{key: "dns.upstreams", node: setList(&c.DNS.Upstreams), current: func() string { return strings.Join(c.DNS.Upstreams, ", ") }},
 		{key: "dns.cache_entries", scalar: setInt(&c.DNS.CacheEntries, 0, defaultCacheEntries), current: itoa(&c.DNS.CacheEntries)},
 		{key: "dns.local_ptr", scalar: setBool(&c.DNS.LocalPTR, true), current: btoa(&c.DNS.LocalPTR)},
+		{key: "dns.local_domains", node: setListKeepEmpty(&c.DNS.LocalDomains), current: func() string { return fmt.Sprintf("%d domains", len(c.DNS.LocalDomains)) }},
 
 		{key: "blocking.lists", node: setList(&c.Blocking.Lists), current: func() string { return fmt.Sprintf("%d lists", len(c.Blocking.Lists)) }},
 		{key: "blocking.allowlist", node: setList(&c.Blocking.Allowlist), current: func() string { return fmt.Sprintf("%d domains", len(c.Blocking.Allowlist)) }},
@@ -475,6 +481,12 @@ func (c *Config) check() ([]Problem, error) {
 		}
 	}
 
+	var badLocal []string
+	c.DNS.LocalDomains, badLocal = filterLocalDomains(c.DNS.LocalDomains)
+	for _, d := range badLocal {
+		probs = append(probs, Problem{Key: "dns.local_domains", Detail: fmt.Sprintf("%q is not a valid domain and is ignored (use a name such as fritz.box or lan)", d)})
+	}
+
 	var badDomains []string
 	c.Blocking.Allowlist, badDomains = filterAllowlist(c.Blocking.Allowlist)
 	for _, d := range badDomains {
@@ -658,6 +670,20 @@ func setDuration(dst *time.Duration, def time.Duration) func(string) error {
 }
 
 func setList(dst *[]string) func(*yaml.Node) ([]Problem, error) {
+	return listSetter(dst, false)
+}
+
+// setListKeepEmpty is setList for dns.local_domains: it keeps an empty or
+// null entry, so filterLocalDomains reports it. An entry left empty there is
+// most likely a domain the operator meant to add, and without it that
+// domain's names go to every upstream.
+func setListKeepEmpty(dst *[]string) func(*yaml.Node) ([]Problem, error) {
+	return listSetter(dst, true)
+}
+
+// listSetter parses a YAML list of scalars. It skips an empty or null entry,
+// or keeps it as "" when keepEmpty is set.
+func listSetter(dst *[]string, keepEmpty bool) func(*yaml.Node) ([]Problem, error) {
 	return func(n *yaml.Node) ([]Problem, error) {
 		if n.Kind == yaml.ScalarNode && n.Tag == "!!null" {
 			*dst = nil
@@ -671,10 +697,14 @@ func setList(dst *[]string) func(*yaml.Node) ([]Problem, error) {
 			if item.Kind != yaml.ScalarNode {
 				return nil, errors.New("every list entry must be a single value")
 			}
-			if item.Tag == "!!null" || item.Value == "" {
+			v := item.Value
+			if item.Tag == "!!null" {
+				v = ""
+			}
+			if v == "" && !keepEmpty {
 				continue
 			}
-			out = append(out, item.Value)
+			out = append(out, v)
 		}
 		*dst = out
 		return nil, nil
@@ -779,6 +809,57 @@ func filterAllowlist(entries []string) (valid, dropped []string) {
 	return valid, dropped
 }
 
+// filterLocalDomains normalizes the dns.local_domains entries and splits them
+// into valid and invalid, preserving order and dropping duplicates. An entry
+// may be written as "fritz.box", ".fritz.box", "*.fritz.box", or
+// "fritz.box."; each is stored as "fritz.box" in lowercase. Unlike an
+// allowlist entry, a single label ("fritz", "lan") is valid: many routers use
+// one as their local domain. An entry that is still not a DNS name (an empty
+// label, a space, a label that starts or ends with a hyphen) is dropped.
+//
+// A dropped entry means its names go to every upstream, as they did before
+// the entry was added. That is less private than the operator meant, so
+// -check-config fails on it and startup warns, like any other problem.
+func filterLocalDomains(entries []string) (valid, dropped []string) {
+	seen := map[string]bool{}
+	for _, raw := range entries {
+		d := strings.ToLower(strings.TrimSpace(raw))
+		d = strings.TrimPrefix(d, "*.")
+		d = strings.TrimPrefix(d, ".")
+		d = strings.TrimSuffix(d, ".")
+		if !validLocalDomain(d) {
+			dropped = append(dropped, raw)
+			continue
+		}
+		if !seen[d] {
+			seen[d] = true
+			valid = append(valid, d)
+		}
+	}
+	return valid, dropped
+}
+
+// validLocalDomain reports whether d is a DNS name with one or more labels:
+// letters, digits, hyphens, and underscores, no empty label, and no label that
+// starts or ends with a hyphen. d has no leading or trailing dot.
+func validLocalDomain(d string) bool {
+	if d == "" || len(d) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(d, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' && c != '_' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // filterUpstreams splits upstreams into valid and invalid, preserving order. It
 // accepts two shapes: a plain "host:port" resolver (checked with
 // net.SplitHostPort and a non-empty host and port, so a bare "1.1.1.1" (no
@@ -847,9 +928,10 @@ func normalizeDoHURL(u string) (string, bool) {
 
 // UpstreamNotes returns informational notes about the upstream list for the
 // startup log: a single upstream has no fallback, a DoH-only list stops
-// resolving when TLS fails (for example on a wrong system clock), and a plain
-// entry is used only after every DoH entry has failed. None of them is a
-// mistake, so they are not problems.
+// resolving when TLS fails (for example on a wrong system clock), and, for a
+// public name, a plain entry is used only after every DoH entry has failed. A
+// local name goes only to the LAN upstreams, which may be plain. None of them
+// is a mistake, so they are not problems.
 func (c *Config) UpstreamNotes() []string {
 	var notes []string
 	var doh, plain int
@@ -867,7 +949,7 @@ func (c *Config) UpstreamNotes() []string {
 	case doh > 0 && plain == 0:
 		notes = append(notes, "every upstream is DoH; if TLS fails (for example, the system clock is wrong), s-hole cannot resolve names until it works again")
 	case doh > 0 && plain > 0:
-		notes = append(notes, "plain upstreams are a fallback; s-hole uses one only when every DoH upstream has failed, and warns once a minute while it does")
+		notes = append(notes, "plain upstreams are a fallback; for a public name, s-hole uses one only when every DoH upstream has failed, and warns once a minute while it does")
 	}
 	return notes
 }

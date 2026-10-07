@@ -110,8 +110,8 @@ func UpstreamTransportFailures() map[string]uint64 {
 // first sweep; if all are skipped, every upstream is tried as a fallback.
 // ctx is honored both as an overall deadline and as a cancellation
 // signal; if it is canceled mid-attempt, no further upstreams are tried.
-// On total failure the caller surfaces SERVFAIL via dns.HandleFailed, and
-// the error is a *ForwardError with each upstream's cause.
+// On total failure the caller answers SERVFAIL (writeRcode), and the error
+// is a *ForwardError with each upstream's cause.
 func forward(ctx context.Context, req *dns.Msg, upstreams []string) (*dns.Msg, error) {
 	return forwardWith(ctx, req, upstreams, forwardTracker)
 }
@@ -308,16 +308,16 @@ func exchange(ctx context.Context, req *dns.Msg, upstream string) (*dns.Msg, err
 }
 
 // exchangeDoH POSTs the wire-format query to a DoH endpoint and unpacks the
-// wire-format reply (RFC 8484). It needs no TC/TCP retry: an HTTP body is never
-// DNS-truncated. A non-200 status, a transport error, or an unparsable body all
-// return an error, so forwardWith records a transport failure and fails over to
-// the next upstream, exactly as a UDP failure does. The reply gets the query's
-// ID, as a cache hit does. TLS already authenticates the server, so the ID is
-// not a spoofing check here, and a DoH server or HTTP proxy that does not echo
-// the ID (RFC 8484 recommends ID 0 in a DoH request, so a server or HTTP cache
-// can return ID 0) must not reach the client with an ID it rejects.
+// wire-format reply (RFC 8484). The query is sent with ID 0 and EDNS padding
+// (see packDoH). It needs no TC/TCP retry: an HTTP body is never
+// DNS-truncated. A non-200 status, a transport error, or an unparsable body
+// all return an error, so forwardWith records a transport failure and fails
+// over to the next upstream, exactly as a UDP failure does. The reply gets the
+// query's ID back, as from a plain upstream; send then sets the client's ID.
+// TLS already authenticates the server, so the ID is not a spoofing check
+// here.
 func exchangeDoH(ctx context.Context, req *dns.Msg, upstream string) (*dns.Msg, error) {
-	packed, err := req.Pack()
+	packed, err := packDoH(req)
 	if err != nil {
 		return nil, fmt.Errorf("packing DoH query: %w", err)
 	}

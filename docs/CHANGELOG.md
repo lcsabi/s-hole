@@ -91,9 +91,34 @@ layout, so a 1.x config needs an edit. (CL 93)
 6. **The host that runs s-hole** should not use s-hole as its own DNS server.
    s-hole now warns when it does; the README shows how to set the host's
    resolver.
+7. **Local names** such as `printer` or `nas.lan` now go only to an upstream
+   on the LAN (CL 94). If they resolved before because one of your upstreams
+   was the router, nothing changes. Otherwise s-hole answers them with "no
+   such name" and logs `no upstream on the LAN` at startup. To resolve them,
+   add the router to `dns.upstreams` after the DoH entries. If the router
+   uses its own domain, such as `fritz.box`, add it to `dns.local_domains`.
 
 
 ### Added
+- **A minimal upstream query.** s-hole sends the upstream a new query with
+  only the question, a few flags, a random query ID (ID 0 over DoH), and its
+  own EDNS record. The device's EDNS options (a cookie that identifies the
+  device, a Client Subnet) and its query ID no longer leave the LAN, and
+  s-hole sends no cookie of its own. The cache no longer passes one device's
+  reply options to another. (CL 94)
+- **Local names stay on the LAN.** Single-label names (`printer`) and names
+  under `.local`, `home.arpa`, `.internal`, `.test`, `.intranet`,
+  `.private`, `.corp`, `.home`, `.lan`, and `.localdomain` go only to an
+  upstream on the LAN; with none, s-hole answers "no such name". The new
+  setting `dns.local_domains` adds router domains such as `fritz.box`.
+  `localhost` names get the loopback address, and `.onion`, `.invalid`, and
+  `.alt` names get "no such name", with no query upstream. A new counter
+  counts these local answers: `local_name_count` in `/api/stats`,
+  `shole_local_names_total` in `/metrics`, and `local_names` in the stats
+  line. (CL 94)
+- **EDNS padding (RFC 8467).** DoH queries are padded to a multiple of 128
+  bytes, so their size does not show the name. A DoT reply is padded to a
+  multiple of 468 bytes when the device padded its query. (CL 94)
 - **Wildcard blocklists.** A `*.example.com` line, as in oisd's "domains
   (wildcards)" lists, blocks the domain and its subdomains; before, such a
   list loaded 0 domains. (CL 95)
@@ -171,6 +196,9 @@ layout, so a 1.x config needs an edit. (CL 93)
   warning that shows `redacted` in place of them. (CL 85, CL 91)
 
 ### Changed
+- **A query with an opcode other than QUERY** (such as NOTIFY or UPDATE) now
+  gets NOTIMP, and a query with more than one question gets SERVFAIL. s-hole
+  forwarded both before. (CL 94)
 - **Stricter domain validation.** s-hole now rejects a name with an empty
   label (`a..com`) or a label that starts or ends with a hyphen
   (`-ads.example.com`). DNS names cannot have either. The rule applies to
@@ -285,6 +313,9 @@ layout, so a 1.x config needs an edit. (CL 93)
   (CL 89)
 
 ### Fixed
+- **A hosts list blocked `localhost.localdomain`.** The parser skipped only
+  `localhost`. It now skips every localhost name: `localhost`, the names under
+  it, and `localhost.localdomain`. (CL 94)
 - **A cached reply lost its DNSSEC OK flag** after a few seconds, because the
   cache aged the EDNS0 OPT record like an answer (b/072). (CL 93)
 - **A UDP reply could exceed what the client accepts** after a TCP retry or

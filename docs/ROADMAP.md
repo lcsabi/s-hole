@@ -60,7 +60,7 @@ rails.
 | 38 | Per-transport query counter (plain, DoT) in `/metrics` | Medium | not started |
 | 39 | Serve DoH to LAN clients (client-facing `/dns-query` endpoint) | Low | not started |
 | 40 | Privacy hardening: private defaults, loud warnings, erasure, purge, LAN-only, admin browser defenses | High | done (CL 93) |
-| 41 | Minimal upstream query: no client EDNS options, a fresh ID, local-only names to LAN upstreams only, EDNS padding, localhost names never blocked | High | not started (planned as CL 94) |
+| 41 | Minimal upstream query: no client EDNS options, a fresh ID, local-only names to LAN upstreams only, EDNS padding, localhost names never blocked | High | done (CL 94) |
 | 42 | Admin authentication by device pairing | Medium | not started (reopened in CL 93) |
 | 43 | Adblock-format blocklists (`\|\|example.com^`), with `@@` exceptions | Low | not started |
 
@@ -530,7 +530,10 @@ blocking of CL 30.
 s-hole answers LAN queries but cannot name anything on the LAN itself. An
 operator who wants `nas.home` or `printer.home` to resolve has to run a second
 resolver or edit every client's hosts file. Pi-hole and dnsmasq both answer
-local A/AAAA records; s-hole forwards them upstream, where they NXDOMAIN.
+local A/AAAA records. Since CL 94, s-hole sends a LAN name only to a LAN
+upstream (the router), or answers NXDOMAIN when there is none; it cannot
+answer one itself. A local record would be checked before the local-name step
+(`classify`), so a configured name wins over the NXDOMAIN answer.
 
 Add a `dns.local_records` map to config (name to one or more A/AAAA addresses).
 Answer a matching query authoritatively before the forward step, the same
@@ -560,7 +563,8 @@ Design decisions to settle in the CL:
 strict Private DNS mode; the default Automatic mode connects to the network's
 DNS server by IP and needs no name. Strict mode takes a hostname, and the phone
 resolves it through the network's plain DNS, usually s-hole. Today s-hole
-forwards a LAN name upstream, where it fails, so the README tells Android users to publish a public A record that points their domain at the
+cannot answer a LAN name itself (since CL 94 it sends one to a LAN upstream
+only), so the README tells Android users to publish a public A record that points their domain at the
 LAN IP. A local record (`dns.home: 192.168.1.10`, or the owned name) lets s-hole
 answer that lookup itself. This is split-horizon DNS: the name resolves only
 inside the LAN. It removes the public A record, so the LAN address is no longer
@@ -585,10 +589,11 @@ changes no filtering behavior.
 
 ## 16. Conditional / split-horizon forwarding
 
-s-hole sends every non-blocked, non-local query to the same upstream pool. An
-operator who runs an internal domain (a corporate zone, or a `.lan` served by
-the router) has no way to route just that suffix to an internal resolver while
-everything else goes to the public upstreams. dnsmasq calls this a
+s-hole sends every non-blocked, non-local query to the same upstream pool.
+Since CL 94, local-only names (`.lan`, `home.arpa`, `dns.local_domains`) go to
+the LAN upstreams as one pool, but s-hole cannot send one suffix to one chosen
+resolver (for example a company zone to a VPN resolver) while everything else
+goes to the public upstreams. dnsmasq calls this a
 server-for-domain rule.
 
 Add a per-suffix upstream override to config (suffix to upstream address).
@@ -1561,7 +1566,8 @@ dependency graph and a small, auditable hot path.
 
 A cache hit is already fast, but profiling shows its cost is almost all one thing:
 copying the cached `dns.Msg`. `cache.Get` returns `e.msg.Copy()` so the caller can
-set the reply `Id` and decrement the TTLs without mutating the shared cached entry.
+finish the reply (`send` sets the `Id` and adds the client's OPT record) and the
+TTLs can be decremented without mutating the shared cached entry.
 That deep copy (a new `Msg`, a copy of every `RR`) is the dominant per-hit cost.
 (Raised and measured in a 2026-09-13 session.)
 
@@ -1606,10 +1612,11 @@ decisions (the Cloudflare per-entry-footprint note).
   TTL field in the packed message. Name compression makes a blind offset walk unsafe,
   so record each answer's TTL offset at `Set` time (the message is packed once there)
   and patch by stored offset on `Get`. No re-parse on the hot path.
-- **The write path.** The handler calls `w.WriteMsg(cached)` today, which packs the
-  `Msg`. Writing raw bytes needs the correct framing (UDP writes the message; TCP
-  needs the two-byte length prefix) and must keep the EDNS0 mirroring the current
-  path does. A wire-protocol mistake here is a real bug class, so it needs its own
+- **The write path.** The handler passes the cached `Msg` to `send` today, which
+  sets the client's ID, adds the client's OPT record (since CL 94 the cache holds
+  none), truncates for UDP (`fitUDP`), and pads for DoT before it packs the `Msg`.
+  Writing raw bytes needs the correct framing (UDP writes the message; TCP needs
+  the two-byte length prefix) and must do all of this in wire form. A wire-protocol mistake here is a real bug class, so it needs its own
   tests.
 - **Correctness invariants to keep.** Cached bytes are immutable and shared; each hit
   copies the slice and patches its own copy, so concurrency stays safe. Only
@@ -1656,7 +1663,8 @@ default bind stays localhost.
 
 ## 35. DNSSEC validation of upstream answers
 
-s-hole forwards every upstream answer verbatim and trusts it. It sets no
+s-hole relays every upstream answer (since CL 94 without its OPT record, so
+Extended DNS Errors are dropped) and trusts it. It sets no
 validation policy and reads no authentication state, so a forged or tampered
 answer on the path to the upstream reaches the LAN as genuine. A validating
 resolver checks the DNSSEC chain (DS to DNSKEY to RRSIG over the answer RRset) and
@@ -1671,7 +1679,8 @@ universal win. It is the change that lets s-hole stop trusting the upstream.
 There are two levels, smallest first:
 
 - **AD-bit visibility, with an optional `require_ad` policy.** The cheap cut. Set
-  the DO bit on the outgoing query (EDNS0), read the AD (Authenticated Data) bit
+  the DO bit on the outgoing query (EDNS0; since CL 94 the fresh query copies
+  the client's DO and AD bits, but sets neither on its own), read the AD (Authenticated Data) bit
   the validating upstream sets, and surface it (query log, `/api/check`, a
   metric). With a `require_ad` config flag, synthesize SERVFAIL for an answer that
   arrives without AD when it should be signed. This still trusts the upstream's
@@ -2030,35 +2039,30 @@ cross-origin checks and security headers; log hygiene; a non-root Docker image
 and a least-privilege Windows service. See `docs/cls/CL-93.md`, `PRIVACY.md`, and
 b/072 to b/095.
 
-## 41. Minimal upstream query (planned as CL 94)
+## 41. Minimal upstream query (done, CL 94)
 
-s-hole still forwards the client's own DNS message. The upstream sees the
-client's query ID and its EDNS options, such as a COOKIE (a per-device token
-that lets the upstream tell household devices apart behind one address) or a
-Client Subnet. The cache then serves one client's reply options to other
-clients (CL 93 fixed only the TTL corruption, b/072). Names that are local by
-definition still go upstream.
+s-hole forwarded the client's own DNS message. The upstream saw the client's
+query ID and its EDNS options, such as a COOKIE (a per-device token that lets
+the upstream tell household devices apart behind one address) or a Client
+Subnet, and the cache served one client's reply options to other clients.
+Names that are local by definition went upstream too. **Shipped in CL 94:**
 
-The planned change:
-
-- **Build a fresh upstream query:** the question, the RD/CD/DO bits, a random
-  ID, and s-hole's own OPT record (UDP size 1232). Restore the client's ID on
-  the reply, strip the reply's options before caching, and rebuild the OPT
-  record for each client the way the sinkhole reply mirrors it.
-- **Local-only names go to LAN upstreams only.** Single-label names, `.local`,
-  `home.arpa`, `.internal`, `.lan`, `.home`, `.corp`, `.localdomain`, `.onion`,
-  `.invalid`, and similar names are sent only to an upstream that is a LAN
-  address (the router), never to a public resolver. With no LAN upstream,
-  s-hole answers NXDOMAIN itself (and loopback for `localhost`, RFC 6761). No
-  setting is needed: a router upstream keeps resolving `nas.lan`.
-- **EDNS padding (RFC 8467)** on DoH queries and on DoT replies, so the message
-  size does not reveal the name.
-- **Localhost names are never blocked.** Hosts lists start with lines such as
-  `127.0.0.1 localhost.localdomain`, and the parser skips only `localhost`, so
-  today `localhost.localdomain` lands in the block set. The parser should skip
-  every RFC 6761 localhost name (found by the CL 95 tests).
-
-Rated High: it closes the last two places where LAN data leaves the network.
+- **A fresh upstream query:** the question, the RD, CD, and AD bits, the DO
+  bit, a random ID (ID 0 over DoH), and s-hole's own OPT record (UDP size
+  1232). The reply's OPT record is removed before caching, and each client
+  gets its own. No DNS cookies: the client's is dropped and s-hole sends none
+  (the reasons are in DESIGN, "Minimal upstream query and local names").
+- **Local-only names go to LAN upstreams only:** single-label names (except
+  zone-level types such as `com. DS`), `.local`, `home.arpa`, `.internal`,
+  `.test`, `.intranet`, `.private`, `.corp`, `.home`, `.lan`, `.localdomain`,
+  and the new `dns.local_domains` setting for router suffixes such as
+  `fritz.box`. With no LAN upstream, s-hole answers NXDOMAIN. `localhost`
+  names get the loopback address, and `.onion`, `.invalid`, and `.alt` get
+  NXDOMAIN without a query anywhere.
+- **EDNS padding (RFC 8467):** DoH queries to 128-byte blocks; DoT replies to
+  468-byte blocks when the client padded its query.
+- **Localhost names are never blocked:** the blocklist parser skips
+  `localhost`, names under it, and `localhost.localdomain`.
 
 ## 42. Admin authentication by device pairing
 
@@ -2110,7 +2114,7 @@ blocklist formats/backends" still holds.
     angle at our scale. On a hit `Cache.Get` clones the parsed `*dns.Msg` and the
     handler re-packs it to send. Holding the packed bytes and patching TTLs in
     place would skip both. It is also the riskiest: TTL patching in a raw buffer
-    has to track byte offsets under EDNS0 (which we mirror), name compression, and
+    has to track byte offsets under EDNS0 (rebuilt per client by `send`), name compression, and
     the dns-0x20 case we keep in `key()` (b/037). That is high complexity against
     the "auditable in an afternoon" identity, for a `msg.Copy()` cost that is not
     a measured bottleneck at home scale.

@@ -1,12 +1,19 @@
 // Package dnsserver implements the DNS sinkhole's listening servers and
 // per-query handler. For each query the handler:
-//  0. Refuses a query from outside the LAN (see lan.go).
+//  0. Refuses a query from outside the LAN (see lan.go). Answers SERVFAIL to a
+//     query without exactly one question and NOTIMP to an opcode other than
+//     QUERY, without counting or logging it.
 //  1. Intercepts PTR queries for RFC 6303 private-range zones and returns
 //     authoritative NXDOMAIN locally, without consulting the blocklist,
 //     cache, or upstream (see privateReverseZones, isPrivatePTR).
-//  2. Consults the blocklist and writes a sinkhole reply for blocked domains.
-//  3. Checks the in-memory response cache and returns cached replies.
-//  4. Forwards cache misses to upstream resolvers.
+//  2. Answers localhost names and never-resolved names (.onion, .invalid,
+//     .alt) locally, and LAN-only names (such as "printer" or "nas.lan")
+//     locally while no upstream is on the LAN (see localnames.go).
+//  3. Consults the blocklist and writes a sinkhole reply for blocked domains.
+//  4. Checks the in-memory response cache and returns cached replies.
+//  5. Forwards cache misses upstream in a fresh query that carries nothing
+//     from the client but the question and a few flags (see edns.go). A
+//     LAN-only name goes only to upstreams on the LAN.
 //
 // UDP and TCP listeners (and the optional DNS-over-TLS listener, see dot.go)
 // run in parallel and share this handler; clients fall back to TCP
@@ -15,8 +22,11 @@
 // against the same upstream before being returned. An "https://" upstream is
 // forwarded over DNS-over-HTTPS (RFC 8484) instead. See exchange in upstream.go.
 //
-// The handler mirrors the client's EDNS0 OPT pseudo-record on sinkhole
-// replies so clients that advertise EDNS0 do not fall back to legacy DNS.
+// Every reply except REFUSED (see refuse in lan.go) goes to the client through
+// send (edns.go), which mirrors the client's EDNS0 OPT record without
+// options, so clients that advertise EDNS0 do not fall back to legacy DNS. A
+// query with a question count other than one gets SERVFAIL, and one with an
+// opcode other than QUERY gets NOTIMP; neither is counted or logged.
 //
 // Upstream forwarding is context-aware (per-query 10 s deadline,
 // per-upstream 3 s timeout) and health-tracked: an upstream that failed
@@ -31,6 +41,7 @@ package dnsserver
 import (
 	"context"
 	"net"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -106,8 +117,9 @@ func isPrivatePTR(qtype uint16, name string) bool {
 	return false
 }
 
-// Handler is the per-query routing logic: RFC 6303 local PTR check →
-// blocklist check → cache check → upstream forward. It is safe for
+// Handler is the per-query routing logic: LAN check → RFC 6303 local PTR
+// check → local-name check → blocklist check → cache check → upstream
+// forward. It is safe for
 // concurrent use; miekg/dns invokes ServeDNS from a separate goroutine
 // per request.
 type Handler struct {
@@ -126,6 +138,12 @@ type Handler struct {
 	logMode  string
 	failures *failureLog
 	lan      *lanACL
+	// upstreamIPs holds the address of each entry of upstreams, at the same
+	// index, to find the LAN upstreams for a LAN-only name.
+	upstreamIPs []netip.Addr
+	// localDomains are the dns.local_domains suffixes, lowercase with the
+	// trailing root dot.
+	localDomains []string
 }
 
 // NewHandler wires together all dependencies needed to answer a query.
@@ -145,6 +163,10 @@ func NewHandler(
 	localPTR bool,
 	queryPrivacy string,
 ) *Handler {
+	ips := make([]netip.Addr, len(upstreams))
+	for i, u := range upstreams {
+		ips[i], _ = upstreamIP(u)
+	}
 	return &Handler{
 		store:        store,
 		counter:      counter,
@@ -157,7 +179,15 @@ func NewHandler(
 		queryPrivacy: queryPrivacy,
 		failures:     newFailureLog(),
 		lan:          newLANACL(),
+		upstreamIPs:  ips,
 	}
+}
+
+// SetLocalDomains sets the dns.local_domains suffixes: names under them go
+// only to upstreams on the LAN, like the built-in local names. Call it before
+// the server starts.
+func (h *Handler) SetLocalDomains(domains []string) {
+	h.localDomains = localSuffixes(domains)
 }
 
 // SetQueryLogMode sets query_log.mode ("none", "blocked", or "all"). Call it
@@ -205,8 +235,9 @@ func (h *Handler) warnAttrs(err error, domain string) []any {
 }
 
 // ServeDNS satisfies miekg/dns.Handler. It intercepts private-range PTR
-// queries (when localPTR is enabled), returns a sinkhole reply for blocked
-// domains, and otherwise serves from cache or forwards upstream.
+// queries (when localPTR is enabled) and local-only names, returns a sinkhole
+// reply for blocked domains, and otherwise serves from cache or forwards
+// upstream.
 func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// Answer the LAN only (see lan.go). This runs first, so a query from
 	// outside leaves no trace in the stats, the cache, or the query log.
@@ -214,8 +245,14 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		refuse(w, req)
 		return
 	}
-	if len(req.Question) == 0 {
-		dns.HandleFailed(w, req)
+	if len(req.Question) != 1 {
+		h.writeRcode(w, req, dns.RcodeServerFailure, "")
+		return
+	}
+	if req.Opcode != dns.OpcodeQuery {
+		// s-hole forwards a fresh QUERY (see upstreamQuery), so it cannot
+		// pass on another opcode, such as NOTIFY or UPDATE.
+		h.writeRcode(w, req, dns.RcodeNotImplemented, "")
 		return
 	}
 
@@ -243,7 +280,30 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		h.counter.RecordQuery(ptrClient, ptrDomain, false)
 		h.counter.RecordLocalPTR()
 		h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Rcode: dns.RcodeNameError, Synthesized: true})
-		h.writeLocalNXDOMAIN(w, req)
+		h.writeLocalNXDOMAIN(w, req, "write local PTR reply failed")
+		return
+	}
+
+	// Local-only names (see localnames.go). Checked before the blocklist, so
+	// a localhost name is never blocked and these local answers are never
+	// counted as blocked. A LAN-only name with a LAN upstream goes on like a
+	// public name, but only to the LAN upstreams.
+	class := classify(q.Qtype, domain, h.localDomains)
+	upstreams := h.upstreams
+	if class == lanOnlyName {
+		upstreams = h.lanUpstreams()
+	}
+	if class == localhostName || class == neverResolved || (class == lanOnlyName && len(upstreams) == 0) {
+		localClient, localDomain := h.tally(clientIP, domain, false)
+		h.counter.RecordQuery(localClient, localDomain, false)
+		h.counter.RecordLocalName()
+		if class == localhostName {
+			h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Rcode: dns.RcodeSuccess, Synthesized: true})
+			h.writeLocalhost(w, req, q)
+			return
+		}
+		h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Rcode: dns.RcodeNameError, Synthesized: true})
+		h.writeLocalNXDOMAIN(w, req, "write local name reply failed")
 		return
 	}
 
@@ -253,10 +313,11 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 
 	// Log at the point each outcome is decided, so the query-log row records
 	// the cache-hit flag (cache_hit) and the outcome (rcode + synthesized). A
-	// blocked query short-circuits before the cache and a local-PTR answer
-	// never reaches it, so both log CacheHit=false; total = blocked + localPTR +
-	// cached + forwarded. The block reply is synthesized locally: NXDOMAIN in "nxdomain"
-	// mode, NOERROR otherwise (matching writeSinkhole), neither a failure rcode.
+	// blocked query short-circuits before the cache, and a local-PTR or
+	// local-name answer never reaches it, so each logs CacheHit=false; total =
+	// blocked + localPTR + localName + cached + forwarded. The block reply is
+	// synthesized locally: NXDOMAIN in "nxdomain" mode, NOERROR otherwise
+	// (matching writeSinkhole), neither a failure rcode.
 	if blocked {
 		blockRcode := dns.RcodeSuccess
 		if h.blockMode == "nxdomain" {
@@ -270,15 +331,11 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// Serve from cache if available; avoids upstream round-trip entirely.
 	if h.cache != nil {
 		if cached, ok := h.cache.Get(q); ok {
-			cached.Id = req.Id
 			h.counter.RecordCacheHit()
 			// Relayed from cache, not synthesized. The cache stores only
 			// NOERROR-with-answers replies, so cached.Rcode is NOERROR.
 			h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, CacheHit: true, Rcode: cached.Rcode})
-			fitUDP(w, req, cached)
-			if err := w.WriteMsg(cached); err != nil {
-				logger.Warn("write cached response failed", h.warnAttrs(err, domain)...)
-			}
+			h.send(w, req, cached, "write cached response failed", domain)
 			return
 		}
 	}
@@ -290,10 +347,10 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// branches, so the move does not lose the row a failed upstream used to log.
 	ctx, cancel := context.WithTimeout(context.Background(), queryDeadline)
 	defer cancel()
-	resp, err := forward(ctx, req, h.upstreams)
+	resp, err := forward(ctx, upstreamQuery(req), upstreams)
 	if err != nil {
 		// Unresolved: every upstream failed at the transport level or the
-		// deadline hit, so s-hole synthesizes the SERVFAIL (dns.HandleFailed).
+		// deadline hit, so s-hole synthesizes the SERVFAIL.
 		// The failure goes into the once-a-minute summary (RunFailureReport),
 		// not a per-query WARN, so an outage does not write every failed name
 		// to the system log.
@@ -304,7 +361,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		h.failures.record(err, failedDomain)
 		h.counter.RecordForwardFailure()
 		h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Rcode: dns.RcodeServerFailure, Synthesized: true})
-		dns.HandleFailed(w, req)
+		h.writeRcode(w, req, dns.RcodeServerFailure, domain)
 		return
 	}
 
@@ -316,50 +373,23 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 	h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Rcode: resp.Rcode})
 
+	// The upstream's OPT record goes before the cache stores the reply, so a
+	// cached reply holds no options; send gives each client its own.
+	stripOPT(resp)
 	if h.cache != nil {
 		h.cache.Set(q, resp)
 	}
-
-	fitUDP(w, req, resp)
-	if err := w.WriteMsg(resp); err != nil {
-		logger.Warn("write response failed", h.warnAttrs(err, domain)...)
-	}
-}
-
-// fitUDP truncates a relayed reply to the size the client can take over
-// UDP: 512 bytes without EDNS0, or the buffer size the client advertised.
-// An upstream reply can be larger: after a TC retry over TCP, or from a DoH
-// upstream, which has no UDP size limit. A larger UDP reply is dropped or
-// cut by the network or the client's stub (b/081). Truncate sets the TC bit,
-// so the client asks again over TCP and gets the full reply. TCP and DoT
-// replies are not changed.
-func fitUDP(w dns.ResponseWriter, req, resp *dns.Msg) {
-	if _, udp := w.RemoteAddr().(*net.UDPAddr); !udp {
-		return
-	}
-	size := dns.MinMsgSize
-	if opt := req.IsEdns0(); opt != nil && int(opt.UDPSize()) > size {
-		size = int(opt.UDPSize())
-	}
-	resp.Truncate(size)
+	h.send(w, req, resp, "write response failed", domain)
 }
 
 func (h *Handler) writeSinkhole(w dns.ResponseWriter, req *dns.Msg, q dns.Question) {
 	resp := new(dns.Msg)
 	resp.SetReply(req)
 	resp.Authoritative = true
-	// Pass EDNS0 / OPT through so clients that advertised it do not retry
-	// with a smaller buffer or fall back to legacy DNS. Mirrors what an
-	// upstream resolver would do.
-	if opt := req.IsEdns0(); opt != nil {
-		resp.SetEdns0(opt.UDPSize(), opt.Do())
-	}
 
 	if h.blockMode == "nxdomain" {
 		resp.SetRcode(req, dns.RcodeNameError)
-		if err := w.WriteMsg(resp); err != nil {
-			logger.Warn("write sinkhole reply failed", h.warnAttrs(err, q.Name)...)
-		}
+		h.send(w, req, resp, "write sinkhole reply failed", q.Name)
 		return
 	}
 
@@ -377,26 +407,28 @@ func (h *Handler) writeSinkhole(w dns.ResponseWriter, req *dns.Msg, q dns.Questi
 		})
 	}
 	// For MX, TXT, etc. return NOERROR with no answer; clients won't retry.
-	if err := w.WriteMsg(resp); err != nil {
-		logger.Warn("write sinkhole reply failed", h.warnAttrs(err, q.Name)...)
-	}
+	h.send(w, req, resp, "write sinkhole reply failed", q.Name)
 }
 
-// writeLocalNXDOMAIN sends an authoritative NXDOMAIN reply for a privately
-// answered PTR query (RFC 6303). The EDNS0 OPT record is mirrored from the
-// request for the same reason as in writeSinkhole: clients that advertised
-// it must see it echoed or they fall back to legacy DNS.
-func (h *Handler) writeLocalNXDOMAIN(w dns.ResponseWriter, req *dns.Msg) {
+// writeRcode sends an empty reply with rcode: SERVFAIL for an unresolved or
+// malformed query, NOTIMP for an opcode s-hole does not forward. It goes
+// through send like every other reply, so the client keeps its OPT record and
+// a DoT client its padding.
+func (h *Handler) writeRcode(w dns.ResponseWriter, req *dns.Msg, rcode int, domain string) {
+	resp := new(dns.Msg)
+	resp.SetRcode(req, rcode)
+	h.send(w, req, resp, "write error reply failed", domain)
+}
+
+// writeLocalNXDOMAIN sends an authoritative NXDOMAIN reply for a name that
+// s-hole answers locally: a private-range PTR query (RFC 6303) or a local-only
+// name (see localnames.go). warnMsg is logged if the write fails.
+func (h *Handler) writeLocalNXDOMAIN(w dns.ResponseWriter, req *dns.Msg, warnMsg string) {
 	resp := new(dns.Msg)
 	resp.SetReply(req)
 	resp.Authoritative = true
 	resp.SetRcode(req, dns.RcodeNameError)
-	if opt := req.IsEdns0(); opt != nil {
-		resp.SetEdns0(opt.UDPSize(), opt.Do())
-	}
-	if err := w.WriteMsg(resp); err != nil {
-		logger.Warn("write local PTR reply failed", h.warnAttrs(err, req.Question[0].Name)...)
-	}
+	h.send(w, req, resp, warnMsg, req.Question[0].Name)
 }
 
 // clientAddr returns the query source IP (no port) for the stats top-clients

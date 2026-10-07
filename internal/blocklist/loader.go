@@ -321,10 +321,11 @@ func loadFromFile(path string) ([]string, int, error) {
 // every subdomain, which is what the store's suffix walk already does for a
 // plain entry, so "*." is dropped and the rest stored as a plain domain.
 // Tokens that fail ValidDomain are silently dropped (each counts as a skipped
-// line) to keep one malformed list line from polluting the store; see R14. A "*.com" line fails it too
-// (no interior dot), so a wildcard line cannot block a whole TLD. skipped
-// counts the non-blank, non-comment lines that gave no domain, so Update can
-// warn about a list in a format s-hole does not read.
+// line) to keep one malformed list line from polluting the store; see R14. A
+// "*.com" line fails it too (no interior dot), so a wildcard line cannot block
+// a whole TLD. A localhost name is skipped too (see isLocalhostName), in every
+// format. skipped counts the non-blank, non-comment lines that gave no domain,
+// so Update can warn about a list in a format s-hole does not read.
 func parseHostsFormat(r io.Reader) (domains []string, skipped int, err error) {
 	scanner := bufio.NewScanner(r)
 	// bufio.Scanner's default 64 KiB token cap would abort the whole list
@@ -343,7 +344,7 @@ func parseHostsFormat(r io.Reader) (domains []string, skipped int, err error) {
 		switch len(fields) {
 		case 1:
 			d := strings.TrimPrefix(fields[0], "*.")
-			if ValidDomain(d) {
+			if ValidDomain(d) && !isLocalhostName(d) {
 				domains = append(domains, d)
 			}
 		default:
@@ -351,7 +352,7 @@ func parseHostsFormat(r io.Reader) (domains []string, skipped int, err error) {
 			ip := fields[0]
 			if ip == "0.0.0.0" || ip == "127.0.0.1" || ip == "::" {
 				domain := fields[1]
-				if domain != "localhost" && domain != "0.0.0.0" && ValidDomain(domain) {
+				if domain != "0.0.0.0" && ValidDomain(domain) && !isLocalhostName(domain) {
 					domains = append(domains, domain)
 				}
 			}
@@ -361,6 +362,17 @@ func parseHostsFormat(r io.Reader) (domains []string, skipped int, err error) {
 		}
 	}
 	return domains, skipped, scanner.Err()
+}
+
+// isLocalhostName reports whether d names this machine: "localhost", a name
+// under ".localhost" (RFC 6761), or "localhost.localdomain". A hosts list
+// starts with lines such as "127.0.0.1 localhost.localdomain" that map these
+// names to the loopback address; they are not entries to block, and a
+// blocked "localhost.localdomain" can break local software. The check ignores
+// case and a trailing root dot.
+func isLocalhostName(d string) bool {
+	d = strings.ToLower(strings.TrimSuffix(d, "."))
+	return d == "localhost" || strings.HasSuffix(d, ".localhost") || d == "localhost.localdomain"
 }
 
 // ValidDomain rejects obvious garbage: empty strings, anything over

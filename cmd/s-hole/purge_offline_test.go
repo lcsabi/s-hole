@@ -156,36 +156,86 @@ func TestPurgeOffline_ExistingStoresAreDeleted(t *testing.T) {
 }
 
 func TestPurgeOffline_Blocklists(t *testing.T) {
-	// b/091: the downloaded blocklists are "not found" only when
-	// blocking.lists is not empty and no blocklist_*.txt is in cache_dir.
+	// b/091: with blocking.lists set and no blocklist_*.txt file in
+	// cache_dir (the directory is missing, or holds only other files), the
+	// step says "none found in <absolute cache_dir>". It is not a failure and
+	// does not set notFound: the lists are public data, not personal data.
+	// With no lists, the step says "0 files deleted" as before.
 	cases := []struct {
-		name     string
-		lists    string
-		setup    func(wd string)
-		notFound bool
-		result   string
+		name   string
+		lists  string
+		setup  func(t *testing.T, wd string)
+		result func(wd string) string
 	}{
-		{"no lists, only other files", "[]", func(wd string) {
+		{"no lists, only other files", "[]", func(t *testing.T, wd string) {
 			touch(t, filepath.Join(wd, "cache", "keep.txt"))
-		}, false, "0 files deleted"},
-		{"no lists, cache_dir missing", "[]", func(string) {}, false, "0 files deleted"},
-		{"lists, one file", "[\"https://a.example/l\"]", func(wd string) {
+		}, func(string) string { return "0 files deleted" }},
+		{"no lists, cache_dir missing", "[]", func(*testing.T, string) {},
+			func(string) string { return "0 files deleted" }},
+		{"lists, one file", "[\"https://a.example/l\"]", func(t *testing.T, wd string) {
 			touch(t, filepath.Join(wd, "cache", "blocklist_x.txt"))
-		}, false, "1 files deleted"},
+		}, func(string) string { return "1 files deleted" }},
+		{"lists, cache_dir missing", "[\"https://a.example/l\"]", func(*testing.T, string) {},
+			func(wd string) string { return "none found in " + filepath.Join(wd, "cache") }},
+		{"lists, only other files", "[\"https://a.example/l\"]", func(t *testing.T, wd string) {
+			touch(t, filepath.Join(wd, "cache", "keep.txt"), filepath.Join(wd, "cache", "blocklist_x.txt.bak"))
+		}, func(wd string) string { return "none found in " + filepath.Join(wd, "cache") }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			wd := offlineWorkDir(t)
-			tc.setup(wd)
+			tc.setup(t, wd)
 			cfg, _ := loadOffline(t, "blocking:\n  lists: "+tc.lists+"\n  cache_dir: \"cache\"\n")
 			rep, notFound := purgeOffline(cfg)
 			s := stepByWhat(rep)["downloaded blocklists"]
-			want := tc.result
-			if tc.notFound {
-				want = "not found at " + filepath.Join(wd, "cache")
+			if want := tc.result(wd); notFound || s.Result != want || s.Failed {
+				t.Errorf("step = %+v, notFound %v; want %q, not failed, notFound false", s, notFound, want)
 			}
-			if notFound != tc.notFound || s.Result != want || s.Failed {
-				t.Errorf("step = %+v, notFound %v; want %q, notFound %v", s, notFound, want, tc.notFound)
+		})
+	}
+	// The other files in cache_dir stay.
+	wd := offlineWorkDir(t)
+	keep := []string{filepath.Join(wd, "cache", "keep.txt"), filepath.Join(wd, "cache", "blocklist_x.txt.bak")}
+	touch(t, keep...)
+	cfg, _ := loadOffline(t, listsYAML)
+	purgeOffline(cfg)
+	for _, p := range keep {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s was deleted: %v", filepath.Base(p), err)
+		}
+	}
+}
+
+func TestPurgeOffline_AbsoluteCacheDirShownAsConfigured(t *testing.T) {
+	// b/091: a missing absolute cache_dir is named as it is configured.
+	offlineWorkDir(t)
+	dir := filepath.Join(t.TempDir(), "elsewhere", "cache")
+	cfg, _ := loadOffline(t, "blocking:\n  lists: [\"https://a.example/l\"]\n  cache_dir: \""+dir+"\"\n")
+	rep, notFound := purgeOffline(cfg)
+	if s := stepByWhat(rep)["downloaded blocklists"]; notFound || s.Result != "none found in "+dir || s.Failed {
+		t.Errorf("step = %+v, notFound %v; want \"none found in %s\"", s, notFound, dir)
+	}
+}
+
+func TestPurgeOffline_EachMissingPersonalStoreSetsNotFound(t *testing.T) {
+	// b/091: a missing query database alone, or a missing query log file
+	// alone, is "not found at <absolute path>", not a failure, and sets
+	// notFound. The other store is off.
+	cases := []struct{ name, yaml, what, rel string }{
+		{"query database", "query_log:\n  database: \"data/q.db\"\n", "query database", filepath.Join("data", "q.db")},
+		{"query log file", "query_log:\n  file: \"logs/q.log\"\n", "query log file", filepath.Join("logs", "q.log")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wd := offlineWorkDir(t)
+			cfg, _ := loadOffline(t, tc.yaml)
+			rep, notFound := purgeOffline(cfg)
+			want := "not found at " + filepath.Join(wd, tc.rel)
+			if s := stepByWhat(rep)[tc.what]; !notFound || s.Result != want || s.Failed {
+				t.Errorf("step = %+v, notFound %v; want %q, not failed, notFound true", s, notFound, want)
+			}
+			if rep.Failed() {
+				t.Errorf("report failed: %+v", rep)
 			}
 		})
 	}
@@ -315,5 +365,102 @@ func TestRunPurge_APIPathHasNoNote(t *testing.T) {
 		if strings.Contains(out, s) {
 			t.Errorf("API purge output holds %q:\n%s", s, out)
 		}
+	}
+}
+
+// noteLines returns the lines of runPurge output after the last step line
+// (a step line starts with two spaces).
+func noteLines(out string) []string {
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	last := -1
+	for i, l := range lines {
+		if strings.HasPrefix(l, "  ") {
+			last = i
+		}
+	}
+	return lines[last+1:]
+}
+
+func TestRunPurge_NoteNamesTheCurrentDirectory(t *testing.T) {
+	// b/091: the first line of the note names the directory that relative
+	// paths start in, in parentheses, as the absolute path from os.Getwd.
+	wd := offlineWorkDir(t)
+	_, cfgPath := loadOffline(t, "query_log:\n  file: \"q.log\"\n")
+	code, out := purgeOutput(t, cfgPath)
+	if code != 0 {
+		t.Errorf("exit = %d, want 0\n%s", code, out)
+	}
+	note := noteLines(out)
+	if len(note) == 0 {
+		t.Fatalf("no note after the steps:\n%s", out)
+	}
+	if !filepath.IsAbs(wd) || !strings.Contains(note[0], "("+wd+")") {
+		t.Errorf("first note line = %q, want it to name (%s)", note[0], wd)
+	}
+	if !strings.Contains(out, "not found at "+filepath.Join(wd, "q.log")) {
+		t.Errorf("output has no \"not found\" step for the log file:\n%s", out)
+	}
+}
+
+func TestRunPurge_MissingBlocklistCacheAloneGivesNoNote(t *testing.T) {
+	// b/091: when the only missing store is the blocklist cache, runPurge
+	// shows "none found in <dir>" and prints no note: the database and the
+	// log file are off, or they were found and deleted.
+	cases := []struct {
+		name  string
+		yaml  string
+		setup func(t *testing.T, wd string)
+	}{
+		{"database and log file off", "query_log:\n  database: \"off\"\n  file: \"off\"\n", func(*testing.T, string) {}},
+		{"database and log file found", "query_log:\n  database: \"q.db\"\n  file: \"q.log\"\n", func(t *testing.T, wd string) {
+			touch(t, filepath.Join(wd, "q.db"), filepath.Join(wd, "q.log"))
+		}},
+		{"only other files in cache_dir", "query_log:\n  database: \"off\"\n  file: \"off\"\n", func(t *testing.T, wd string) {
+			touch(t, filepath.Join(wd, "cache", "keep.txt"))
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wd := offlineWorkDir(t)
+			tc.setup(t, wd)
+			_, cfgPath := loadOffline(t, tc.yaml+listsYAML)
+			code, out := purgeOutput(t, cfgPath)
+			if code != 0 {
+				t.Errorf("exit = %d, want 0\n%s", code, out)
+			}
+			if !strings.Contains(out, "none found in "+filepath.Join(wd, "cache")) {
+				t.Errorf("output has no \"none found\" step for the blocklists:\n%s", out)
+			}
+			if note := noteLines(out); len(note) != 0 {
+				t.Errorf("got a note after the steps, want none: %q", note)
+			}
+			for _, s := range []string{"not found", "Relative paths", "/var/lib/s-hole", "FAILED"} {
+				if strings.Contains(out, s) {
+					t.Errorf("output holds %q:\n%s", s, out)
+				}
+			}
+		})
+	}
+}
+
+func TestRunPurge_MissingDatabaseWithMissingCacheGivesNote(t *testing.T) {
+	// b/091: a missing query database still raises the note when the
+	// blocklist cache is missing too; the blocklist step stays "none found".
+	wd := offlineWorkDir(t)
+	_, cfgPath := loadOffline(t, "query_log:\n  database: \"q.db\"\n"+listsYAML)
+	code, out := purgeOutput(t, cfgPath)
+	if code != 0 {
+		t.Errorf("exit = %d, want 0\n%s", code, out)
+	}
+	for _, want := range []string{
+		"not found at " + filepath.Join(wd, "q.db"),
+		"none found in " + filepath.Join(wd, "cache"),
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if note := noteLines(out); len(note) == 0 || !strings.Contains(note[0], "("+wd+")") {
+		t.Errorf("note = %q, want a note that names (%s)", note, wd)
 	}
 }

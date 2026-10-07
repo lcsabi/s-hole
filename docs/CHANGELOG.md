@@ -8,8 +8,10 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 
 ## [Unreleased]
 
-The next release is **2.0.0**: CL 93 changes the config format and every
-default. Read the upgrade notes first.
+## [2.0.0] - 2026-10-07
+
+This release changes the config format and every default (CL 93). Read the
+upgrade notes first.
 
 ### Upgrade to 2.0 (read first)
 

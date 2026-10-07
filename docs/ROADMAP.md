@@ -614,8 +614,8 @@ Design decisions to settle in the CL:
   string, one cooldown) or become per-pool. Global is simpler and stays correct,
   since an upstream is identified by its string.
 - **Cache interaction.** An answer from a conditional upstream caches like any
-  other upstream answer, keyed by name and type, so no special handling is
-  needed.
+  other upstream answer, keyed by the question and the CD and DO bits, so no
+  special handling is needed.
 - **Scope note.** This is domain-scoped routing, distinct from the per-client
   policies non-goal. Record that so a later review does not conflate the two.
 
@@ -1707,9 +1707,10 @@ Design decisions to settle in the CL:
   counts in stats (a new outcome next to the #31 unresolved and upstream-error
   split) and whether it gets its own metric (`shole_dnssec_failures_total`).
 - **Cache interaction.** A validated positive answer caches as it does today. A
-  validation failure must not cache as a normal answer. Decide whether the cache
-  stores the validated state with the entry, so a later cache hit does not imply a
-  check it never ran.
+  validation failure must not cache as a normal answer. Since CL 97 the cache
+  key holds the query's CD and DO bits (b/096), so a CD=1 answer never reaches
+  a CD=0 client. Decide whether the cache stores the validated state with
+  the entry, so a later cache hit does not imply a check it never ran.
 - **Dependency stance.** If local validation needs a DNSSEC or crypto dependency
   beyond miekg/dns and the standard library, weigh it against the
   dependency-minimalism identity in the CL, and prefer the `crypto/*` path.

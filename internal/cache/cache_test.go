@@ -34,9 +34,9 @@ func TestCache_SetGetRoundTrip(t *testing.T) {
 	defer c.Close()
 
 	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-	c.Set(q, buildResponse(q, 300))
+	c.Set(asQuery(q), buildResponse(q, 300))
 
-	got, ok := c.Get(q)
+	got, ok := c.Get(asQuery(q))
 	if !ok {
 		t.Fatal("Get returned miss after Set")
 	}
@@ -50,7 +50,7 @@ func TestCache_TTLDecrement(t *testing.T) {
 	defer c.Close()
 
 	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-	c.Set(q, buildResponse(q, 100))
+	c.Set(asQuery(q), buildResponse(q, 100))
 
 	// Force the cached time to be 30 seconds in the past so Get observes
 	// elapsed=30 and decrements TTL accordingly.
@@ -60,7 +60,7 @@ func TestCache_TTLDecrement(t *testing.T) {
 	}
 	c.mu.Unlock()
 
-	got, ok := c.Get(q)
+	got, ok := c.Get(asQuery(q))
 	if !ok {
 		t.Fatal("Get returned miss")
 	}
@@ -75,7 +75,7 @@ func TestCache_ExpiredMisses(t *testing.T) {
 	defer c.Close()
 
 	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-	c.Set(q, buildResponse(q, 5))
+	c.Set(asQuery(q), buildResponse(q, 5))
 
 	// Backdate the entry past its TTL.
 	c.mu.Lock()
@@ -84,7 +84,7 @@ func TestCache_ExpiredMisses(t *testing.T) {
 	}
 	c.mu.Unlock()
 
-	if _, ok := c.Get(q); ok {
+	if _, ok := c.Get(asQuery(q)); ok {
 		t.Error("expected miss on TTL-expired entry")
 	}
 }
@@ -98,9 +98,9 @@ func TestCache_KeyIncludesQclass(t *testing.T) {
 	qInet := dns.Question{Name: "version.bind.", Qtype: dns.TypeTXT, Qclass: dns.ClassINET}
 	qChaos := dns.Question{Name: "version.bind.", Qtype: dns.TypeTXT, Qclass: dns.ClassCHAOS}
 
-	c.Set(qInet, buildResponse(qInet, 300))
+	c.Set(asQuery(qInet), buildResponse(qInet, 300))
 
-	if _, ok := c.Get(qChaos); ok {
+	if _, ok := c.Get(asQuery(qChaos)); ok {
 		t.Error("ClassCHAOS query was served a ClassINET cache entry")
 	}
 }
@@ -111,8 +111,8 @@ func TestCache_KeyDistinguishesUnknownTypes(t *testing.T) {
 	// lookup rendered both as "" and let them serve each other's answers.
 	q1 := dns.Question{Name: "example.com.", Qtype: 64001, Qclass: dns.ClassINET}
 	q2 := dns.Question{Name: "example.com.", Qtype: 64002, Qclass: dns.ClassINET}
-	if key(q1) == key(q2) {
-		t.Errorf("key collision for unknown qtypes: both map to %q", key(q1))
+	if key(q1, false, false) == key(q2, false, false) {
+		t.Errorf("key collision for unknown qtypes: both map to %q", key(q1, false, false))
 	}
 }
 
@@ -125,9 +125,9 @@ func TestCache_RejectsTruncated(t *testing.T) {
 	q := dns.Question{Name: "big.example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
 	msg := buildResponse(q, 300)
 	msg.Truncated = true
-	c.Set(q, msg)
+	c.Set(asQuery(q), msg)
 
-	if _, ok := c.Get(q); ok {
+	if _, ok := c.Get(asQuery(q)); ok {
 		t.Error("truncated response should not be cached")
 	}
 }
@@ -139,17 +139,17 @@ func TestCache_DropOnFull(t *testing.T) {
 	q1 := dns.Question{Name: "a.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
 	q2 := dns.Question{Name: "b.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
 	q3 := dns.Question{Name: "c.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-	c.Set(q1, buildResponse(q1, 300))
-	c.Set(q2, buildResponse(q2, 300))
-	c.Set(q3, buildResponse(q3, 300)) // overflow; must be dropped
+	c.Set(asQuery(q1), buildResponse(q1, 300))
+	c.Set(asQuery(q2), buildResponse(q2, 300))
+	c.Set(asQuery(q3), buildResponse(q3, 300)) // overflow; must be dropped
 
 	if _, _, size := c.Stats(); size != 2 {
 		t.Errorf("Stats size = %d, want 2", size)
 	}
-	if _, ok := c.Get(q3); ok {
+	if _, ok := c.Get(asQuery(q3)); ok {
 		t.Error("c.com should have been dropped (cache full)")
 	}
-	if _, ok := c.Get(q1); !ok {
+	if _, ok := c.Get(asQuery(q1)); !ok {
 		t.Error("a.com should still be cached")
 	}
 }
@@ -163,13 +163,13 @@ func TestCache_DropOnFull_CountsDropped(t *testing.T) {
 
 	live := dns.Question{Name: "live.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
 	overflow := dns.Question{Name: "overflow.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-	c.Set(live, buildResponse(live, 300))
-	c.Set(overflow, buildResponse(overflow, 300)) // full of a live entry: must drop and count
+	c.Set(asQuery(live), buildResponse(live, 300))
+	c.Set(asQuery(overflow), buildResponse(overflow, 300)) // full of a live entry: must drop and count
 
 	if got := c.Dropped(); got != 1 {
 		t.Errorf("Dropped() = %d after one drop, want 1", got)
 	}
-	if _, ok := c.Get(overflow); ok {
+	if _, ok := c.Get(asQuery(overflow)); ok {
 		t.Error("overflow.com should have been dropped")
 	}
 }
@@ -184,16 +184,16 @@ func TestCache_ReclaimsExpiredOnFull(t *testing.T) {
 
 	stale := dns.Question{Name: "stale.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
 	fresh := dns.Question{Name: "fresh.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-	c.Set(stale, buildResponse(stale, 5))
+	c.Set(asQuery(stale), buildResponse(stale, 5))
 
 	// Backdate the only entry past its TTL so the cache is full of a corpse.
 	c.mu.Lock()
-	c.entries[key(stale)].cached = c.entries[key(stale)].cached.Add(-10 * time.Second)
+	c.entries[key(stale, false, false)].cached = c.entries[key(stale, false, false)].cached.Add(-10 * time.Second)
 	c.mu.Unlock()
 
-	c.Set(fresh, buildResponse(fresh, 300))
+	c.Set(asQuery(fresh), buildResponse(fresh, 300))
 
-	if _, ok := c.Get(fresh); !ok {
+	if _, ok := c.Get(asQuery(fresh)); !ok {
 		t.Error("fresh.com should have been admitted by reclaiming the expired slot")
 	}
 	if got := c.Dropped(); got != 0 {
@@ -210,9 +210,9 @@ func TestCache_RejectsZeroTTL(t *testing.T) {
 	defer c.Close()
 
 	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-	c.Set(q, buildResponse(q, 0))
+	c.Set(asQuery(q), buildResponse(q, 0))
 
-	if _, ok := c.Get(q); ok {
+	if _, ok := c.Get(asQuery(q)); ok {
 		t.Error("zero-TTL response should not be cached")
 	}
 }
@@ -224,9 +224,9 @@ func TestCache_RejectsNonSuccess(t *testing.T) {
 	q := dns.Question{Name: "nope.example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
 	msg := buildResponse(q, 300)
 	msg.Rcode = dns.RcodeNameError // NXDOMAIN
-	c.Set(q, msg)
+	c.Set(asQuery(q), msg)
 
-	if _, ok := c.Get(q); ok {
+	if _, ok := c.Get(asQuery(q)); ok {
 		t.Error("NXDOMAIN responses should not be cached")
 	}
 }
@@ -236,11 +236,11 @@ func TestCache_StatsHitsAndMisses(t *testing.T) {
 	defer c.Close()
 
 	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-	c.Set(q, buildResponse(q, 300))
+	c.Set(asQuery(q), buildResponse(q, 300))
 
-	c.Get(q)                                                                         // hit
-	c.Get(q)                                                                         // hit
-	c.Get(dns.Question{Name: "other.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}) // miss
+	c.Get(asQuery(q))                                                                         // hit
+	c.Get(asQuery(q))                                                                         // hit
+	c.Get(asQuery(dns.Question{Name: "other.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET})) // miss
 
 	hits, misses, _ := c.Stats()
 	if hits != 2 {
@@ -259,12 +259,12 @@ func TestCache_CleanupExpiredRemovesStale(t *testing.T) {
 
 	live := dns.Question{Name: "live.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
 	expired := dns.Question{Name: "expired.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-	c.Set(live, buildResponse(live, 600))
-	c.Set(expired, buildResponse(expired, 5))
+	c.Set(asQuery(live), buildResponse(live, 600))
+	c.Set(asQuery(expired), buildResponse(expired, 5))
 
 	// Backdate the expired entry past its TTL.
 	c.mu.Lock()
-	e := c.entries[key(expired)]
+	e := c.entries[key(expired, false, false)]
 	e.cached = e.cached.Add(-10 * time.Second)
 	c.mu.Unlock()
 
@@ -272,10 +272,10 @@ func TestCache_CleanupExpiredRemovesStale(t *testing.T) {
 	if removed != 1 {
 		t.Errorf("cleanupExpired removed %d, want 1", removed)
 	}
-	if _, ok := c.entries[key(live)]; !ok {
+	if _, ok := c.entries[key(live, false, false)]; !ok {
 		t.Error("live entry was incorrectly purged")
 	}
-	if _, ok := c.entries[key(expired)]; ok {
+	if _, ok := c.entries[key(expired, false, false)]; ok {
 		t.Error("expired entry survived cleanup")
 	}
 }
@@ -308,12 +308,12 @@ func TestCache_KeyIsCaseSensitive(t *testing.T) {
 
 	upper := dns.Question{Name: "Example.COM.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
 	lower := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-	c.Set(upper, buildResponse(upper, 300))
+	c.Set(asQuery(upper), buildResponse(upper, 300))
 
-	if _, ok := c.Get(lower); ok {
+	if _, ok := c.Get(asQuery(lower)); ok {
 		t.Error("Get(lowercase) hit an entry Set under mixed case; key is not case-sensitive (b/037)")
 	}
-	if _, ok := c.Get(upper); !ok {
+	if _, ok := c.Get(asQuery(upper)); !ok {
 		t.Error("Get(same case) missed; Set/Get round-trip broken")
 	}
 }
@@ -329,12 +329,13 @@ func BenchmarkCache_Get(b *testing.B) {
 	defer c.Close()
 
 	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-	c.Set(q, buildResponse(q, 300))
+	req := asQuery(q)
+	c.Set(req, buildResponse(q, 300))
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, ok := c.Get(q); !ok {
+		if _, ok := c.Get(req); !ok {
 			b.Fatal("expected cache hit")
 		}
 	}
@@ -349,18 +350,19 @@ func BenchmarkCache_Set(b *testing.B) {
 	c := New(distinct * 2)
 	defer c.Close()
 
-	qs := make([]dns.Question, distinct)
+	reqs := make([]*dns.Msg, distinct)
 	msgs := make([]*dns.Msg, distinct)
-	for i := range qs {
-		qs[i] = dns.Question{Name: "d" + strconv.Itoa(i) + ".example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-		msgs[i] = buildResponse(qs[i], 300)
+	for i := range reqs {
+		q := dns.Question{Name: "d" + strconv.Itoa(i) + ".example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+		reqs[i] = asQuery(q)
+		msgs[i] = buildResponse(q, 300)
 	}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		j := i % distinct
-		c.Set(qs[j], msgs[j])
+		c.Set(reqs[j], msgs[j])
 	}
 }
 
@@ -376,7 +378,7 @@ func BenchmarkCache_Set_DropOnFull(b *testing.B) {
 
 	// Fill the single slot so every benchmarked Set hits the drop branch.
 	seed := dns.Question{Name: "seed.example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-	c.Set(seed, buildResponse(seed, 300))
+	c.Set(asQuery(seed), buildResponse(seed, 300))
 
 	q := dns.Question{Name: "other.example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
 	msg := buildResponse(q, 300)
@@ -384,7 +386,7 @@ func BenchmarkCache_Set_DropOnFull(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		c.Set(q, msg)
+		c.Set(asQuery(q), msg)
 	}
 }
 
@@ -399,17 +401,18 @@ func BenchmarkCache_Get_Parallel(b *testing.B) {
 	c := New(distinct * 2)
 	defer c.Close()
 
-	qs := make([]dns.Question, distinct)
-	for i := range qs {
-		qs[i] = dns.Question{Name: "d" + strconv.Itoa(i) + ".example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-		c.Set(qs[i], buildResponse(qs[i], 300))
+	reqs := make([]*dns.Msg, distinct)
+	for i := range reqs {
+		q := dns.Question{Name: "d" + strconv.Itoa(i) + ".example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+		reqs[i] = asQuery(q)
+		c.Set(reqs[i], buildResponse(q, 300))
 	}
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
-			if _, ok := c.Get(qs[i%distinct]); !ok {
+			if _, ok := c.Get(reqs[i%distinct]); !ok {
 				b.Fatal("expected cache hit")
 			}
 			i++
@@ -429,7 +432,7 @@ func BenchmarkCache_CleanupExpired(b *testing.B) {
 
 	for i := 0; i < N; i++ {
 		q := dns.Question{Name: "d" + strconv.Itoa(i) + ".example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-		c.Set(q, buildResponse(q, 3600))
+		c.Set(asQuery(q), buildResponse(q, 3600))
 	}
 	// A fixed "now" at seed time so no entry has expired.
 	now := time.Now()
@@ -441,4 +444,9 @@ func BenchmarkCache_CleanupExpired(b *testing.B) {
 			b.Fatalf("removed %d entries; expected none expired", removed)
 		}
 	}
+}
+
+// asQuery returns a client query for q with the CD and DO bits clear.
+func asQuery(q dns.Question) *dns.Msg {
+	return &dns.Msg{MsgHdr: dns.MsgHdr{RecursionDesired: true}, Question: []dns.Question{q}}
 }

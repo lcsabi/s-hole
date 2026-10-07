@@ -62,6 +62,11 @@ Out of scope:
 - **LAN only.** The DNS server answers loopback, private, link-local, and
   unique-local sources and the subnets of the host's interfaces, and refuses
   every other source before it touches the stats, the cache, or the query log.
+- **DNS answers.** The cache keeps a separate answer for each combination of
+  the CD and DO bits, so one client's DNSSEC choice does not reach another
+  client. An upstream reply must match the query's name, type, and class, or
+  s-hole tries the next upstream. A cached answer lives one day at most. A
+  query with RD=0 (a query that reads only the cache) gets REFUSED.
 - **Admin HTTP** binds to `127.0.0.1:8080` by default (LAN access is
   opt-in, with a repeating WARN). The server applies `ReadHeaderTimeout=5s`,
   `ReadTimeout=15s`, `WriteTimeout=30s`, `IdleTimeout=60s`, and a 64 KiB body

@@ -41,10 +41,10 @@ func TestCache_AgingKeepsOPTRecord(t *testing.T) {
 
 	c := New(10)
 	defer c.Close()
-	c.Set(q, msg)
+	c.Set(asQuery(q), msg)
 	for _, elapsed := range []time.Duration{0, 30 * time.Second, 90 * time.Second} {
 		ageEntries(c, elapsed)
-		got, ok := c.Get(q)
+		got, ok := c.Get(asQuery(q))
 		if !ok {
 			t.Fatalf("Get after %s missed", elapsed)
 		}
@@ -58,7 +58,7 @@ func TestCache_AgingKeepsOPTRecord(t *testing.T) {
 		}
 	}
 	// The other records did age: 120 s have passed in total.
-	got, _ := c.Get(q)
+	got, _ := c.Get(asQuery(q))
 	if ttl := got.Ns[0].Header().Ttl; ttl > 80 || ttl < 70 {
 		t.Errorf("NS TTL = %d, want about 80 (200 - 120)", ttl)
 	}
@@ -80,10 +80,10 @@ func TestCache_FlushEmptiesAndKeepsCounters(t *testing.T) {
 		{Name: "c.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET},
 	}
 	for _, q := range qs {
-		c.Set(q, buildResponse(q, 300)) // the third is dropped: the cache is full
+		c.Set(asQuery(q), buildResponse(q, 300)) // the third is dropped: the cache is full
 	}
-	c.Get(qs[0])                                                                     // hit
-	c.Get(dns.Question{Name: "x.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET}) // miss
+	c.Get(asQuery(qs[0]))                                                                     // hit
+	c.Get(asQuery(dns.Question{Name: "x.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET})) // miss
 	hits, misses, size := c.Stats()
 	dropped := c.Dropped()
 	if hits != 1 || misses != 1 || size != 2 || dropped != 1 {
@@ -100,13 +100,13 @@ func TestCache_FlushEmptiesAndKeepsCounters(t *testing.T) {
 		t.Errorf("counters after Flush = hits %d, misses %d, dropped %d; want %d, %d, %d", h2, m2, c.Dropped(), hits, misses, dropped)
 	}
 	for _, q := range qs[:2] {
-		if _, ok := c.Get(q); ok {
+		if _, ok := c.Get(asQuery(q)); ok {
 			t.Errorf("Get(%s) hit after Flush", q.Name)
 		}
 	}
 	// The cache still works and has its full capacity again.
-	c.Set(qs[2], buildResponse(qs[2], 300))
-	if _, ok := c.Get(qs[2]); !ok {
+	c.Set(asQuery(qs[2]), buildResponse(qs[2], 300))
+	if _, ok := c.Get(asQuery(qs[2])); !ok {
 		t.Error("Set after Flush did not store the answer")
 	}
 	if c.Dropped() != dropped {

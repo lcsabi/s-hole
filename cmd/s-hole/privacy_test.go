@@ -259,7 +259,7 @@ func newPurgeFixture(t *testing.T, mode string) *purgeFixture {
 	resp := new(dns.Msg)
 	resp.Question = []dns.Question{f.q}
 	resp.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: f.q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300}, A: net.IPv4(1, 2, 3, 4)}}
-	c.Set(f.q, resp)
+	c.Set(cacheQuery(f.q), resp)
 
 	cfg := &config.Config{}
 	cfg.Blocking.CacheDir = f.cacheDir
@@ -314,7 +314,7 @@ func TestPurgeTargets_PurgesEveryStore(t *testing.T) {
 	if f.graph.Load() != 1 {
 		t.Errorf("graph reset %d times, want 1", f.graph.Load())
 	}
-	if _, ok := f.targets.dnsCache.Get(f.q); ok {
+	if _, ok := f.targets.dnsCache.Get(cacheQuery(f.q)); ok {
 		t.Error("the DNS cache still answers after the purge")
 	}
 }
@@ -345,7 +345,7 @@ func TestPurgeTargets_FailedStepDoesNotStopTheRest(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(f.cacheDir, "blocklist_a.txt")); !os.IsNotExist(err) {
 		t.Error("the blocklist files were not deleted after the failed step")
 	}
-	if _, ok := f.targets.dnsCache.Get(f.q); ok {
+	if _, ok := f.targets.dnsCache.Get(cacheQuery(f.q)); ok {
 		t.Error("the DNS cache was not emptied after the failed step")
 	}
 }
@@ -846,4 +846,9 @@ func TestPrivacyReport_CheckStale(t *testing.T) {
 	if none.buf.Len() != 0 || len(p.current()) != 0 {
 		t.Errorf("no stale rows under clients full, but: log %s, current %q", none.buf.String(), p.current())
 	}
+}
+
+// cacheQuery returns a client query for q, the form the DNS cache keys by.
+func cacheQuery(q dns.Question) *dns.Msg {
+	return &dns.Msg{MsgHdr: dns.MsgHdr{RecursionDesired: true}, Question: []dns.Question{q}}
 }

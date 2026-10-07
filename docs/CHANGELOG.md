@@ -8,6 +8,36 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 
 ## [Unreleased]
 
+### Changed
+
+- **A query with RD=0 gets REFUSED.** A query with the RD (recursion desired)
+  bit clear, such as `dig +norec`, reads only the cache. A LAN device
+  was able to read the cache with it and not add to the cache. The remaining
+  TTL of a cached answer showed when another device queried the name. s-hole
+  now refuses such a query, as Unbound does by default, and does not count or
+  record it. Stub resolvers always set RD, so devices see no change. (CL 97)
+
+### Fixed
+
+- **The cache served one client's DNSSEC choice to every client.** s-hole
+  sends the client's CD and DO bits upstream, but cached the reply without
+  them. After one CD=1 query (checking disabled), every device got the
+  unvalidated answer, including a name that fails DNSSEC validation. After a
+  DO=0 query, a client that asked for DNSSEC records got none. The cache key
+  now holds both bits. (CL 97, b/096)
+
+### Security
+
+- **An upstream reply must match the query.** s-hole accepts a reply only when
+  it is a response to a standard query with the same name, type, and class.
+  Any other reply counts as a failed attempt, and s-hole tries the next
+  upstream. The failure summary shows it as `reply does not match the query`,
+  and `shole_upstream_transport_failures_total` counts it. On a plain-DNS upstream, a spoofed reply for another name then
+  cannot get into the cache. (CL 97)
+- **The cache keeps an answer for one day at most.** An answer leaves the cache
+  after 86,400 seconds (Unbound's default `cache-max-ttl`), whatever TTL the
+  upstream gave. A cached answer never has a TTL longer than that. (CL 97)
+
 ## [2.0.0] - 2026-10-07
 
 This release changes the config format and every default (CL 93). Read the

@@ -20,7 +20,8 @@ import (
 // s-hole sends no DNS cookie of its own either. A cookie is an identifier
 // that can link queries across a change of the household's public address.
 // The plain-DNS fallback still has the random query ID and the random source
-// port of each exchange against off-path spoofing.
+// port of each exchange against off-path spoofing, and checkReply
+// (upstream.go) drops a reply for another question.
 
 // upstreamUDPSize is the UDP payload size s-hole advertises upstream. 1232
 // bytes fits in one IPv6 packet on any path (the DNS Flag Day 2020 value), so
@@ -73,9 +74,10 @@ func stripOPT(resp *dns.Msg) {
 	resp.Extra = extra
 }
 
-// send finishes a reply for the client and writes it. Every reply except
-// REFUSED (refuse, lan.go) goes through it: a sinkhole or local answer, a
-// cached or forwarded reply, and the SERVFAIL and NOTIMP replies (writeRcode).
+// send finishes a reply for the client and writes it. Every reply except the
+// REFUSED to a source outside the LAN (refuse, lan.go) goes through it: a
+// sinkhole or local answer, a cached or forwarded reply, and the SERVFAIL,
+// NOTIMP, and RD=0 REFUSED replies (writeRcode).
 // It sets the client's query ID, gives the reply an OPT record when the query
 // had one (the client's UDP size and DO bit mirrored, with no options; RFC
 // 6891 forbids an OPT record in a reply to a query without one), truncates a

@@ -100,7 +100,7 @@ func TestServeDNS_QueryLogModeGovernsTallies(t *testing.T) {
 			c := cache.New(10)
 			defer c.Close()
 			q := dns.Question{Name: "cached.example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-			c.Set(q, buildResp(q, net.IPv4(1, 2, 3, 4), 300))
+			c.Set(asQuery(q), buildResp(q, net.IPv4(1, 2, 3, 4), 300))
 			counter := stats.New()
 			h := NewHandler(store, counter, nil, nullLogger{}, "zero", 60, c, true, "full")
 			if tc.set {
@@ -183,7 +183,7 @@ func TestServeDNS_WriteFailureWarnings(t *testing.T) {
 				c := cache.New(10)
 				defer c.Close()
 				q := dns.Question{Name: cachedName, Qtype: dns.TypeA, Qclass: dns.ClassINET}
-				c.Set(q, buildResp(q, net.IPv4(1, 2, 3, 4), 300))
+				c.Set(asQuery(q), buildResp(q, net.IPv4(1, 2, 3, 4), 300))
 				qlog := &captureLogger{}
 				h := NewHandler(store, stats.New(), []string{upstream}, qlog, p.blockMode, 60, c, true, "full")
 				h.SetQueryLogMode(mode)
@@ -348,7 +348,7 @@ func TestServeDNS_UDPReplyFitsTheClient(t *testing.T) {
 		t.Errorf("upstream got %d queries, want 1 (the rest from the cache)", got)
 	}
 	q := dns.Question{Name: "big.example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-	if m, ok := c.Get(q); !ok || m.Truncated || len(m.Answer) != records {
+	if m, ok := c.Get(asQuery(q)); !ok || m.Truncated || len(m.Answer) != records {
 		t.Errorf("cached reply: ok=%v, %d answers; want the full reply", ok, len(m.Answer))
 	}
 }

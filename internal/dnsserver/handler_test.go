@@ -220,7 +220,7 @@ func TestServeDNS_AllowlistOverridesBlock(t *testing.T) {
 	// Pre-populate the cache so we don't hit the network.
 	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
 	preCached := buildResp(q, net.IPv4(8, 8, 8, 8), 300)
-	c.Set(q, preCached)
+	c.Set(asQuery(q), preCached)
 
 	counter := stats.New()
 	h := NewHandler(store, counter, nil, nullLogger{}, "zero", 60, c, false, "full")
@@ -249,7 +249,7 @@ func TestServeDNS_CacheHitAvoidsUpstream(t *testing.T) {
 	defer c.Close()
 
 	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-	c.Set(q, buildResp(q, net.IPv4(1, 2, 3, 4), 300))
+	c.Set(asQuery(q), buildResp(q, net.IPv4(1, 2, 3, 4), 300))
 
 	counter := stats.New()
 	// Upstream is unreachable on purpose: if the cache path works, we
@@ -286,7 +286,7 @@ func TestServeDNS_LogsCacheHit(t *testing.T) {
 		store := blocklist.NewStore() // empty: query is allowed
 		c := cache.New(10)
 		defer c.Close()
-		c.Set(q, buildResp(q, net.IPv4(1, 2, 3, 4), 300))
+		c.Set(asQuery(q), buildResp(q, net.IPv4(1, 2, 3, 4), 300))
 		log := &captureLogger{}
 		h := NewHandler(store, stats.New(), nil, log, "zero", 60, c, false, "full")
 
@@ -377,7 +377,7 @@ func TestServeDNS_CacheMissForwardsToUpstream(t *testing.T) {
 		t.Fatal("no answer written to client")
 	}
 	// And the result should now be cached.
-	if _, ok := c.Get(dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}); !ok {
+	if _, ok := c.Get(asQuery(dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET})); !ok {
 		t.Error("response was not stored in the cache after forward")
 	}
 }
@@ -681,7 +681,7 @@ func BenchmarkHandler_ServeDNS(b *testing.B) {
 	b.Run("Cached", func(b *testing.B) {
 		c := cache.New(1024)
 		defer c.Close()
-		c.Set(q, buildResp(q, net.IPv4(1, 2, 3, 4), 300))
+		c.Set(asQuery(q), buildResp(q, net.IPv4(1, 2, 3, 4), 300))
 
 		store := blocklist.NewStore() // empty: query is allowed, served from cache
 		h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, c, false, "full")
@@ -725,7 +725,7 @@ func BenchmarkHandler_ServeDNS_Parallel(b *testing.B) {
 	b.Run("Cached", func(b *testing.B) {
 		c := cache.New(1024)
 		defer c.Close()
-		c.Set(q, buildResp(q, net.IPv4(1, 2, 3, 4), 300))
+		c.Set(asQuery(q), buildResp(q, net.IPv4(1, 2, 3, 4), 300))
 
 		store := blocklist.NewStore() // empty: query is allowed, served from cache
 		h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, c, false, "full")
@@ -739,4 +739,9 @@ func BenchmarkHandler_ServeDNS_Parallel(b *testing.B) {
 			}
 		})
 	})
+}
+
+// asQuery returns a client query for q as the cache keys it: CD and DO clear.
+func asQuery(q dns.Question) *dns.Msg {
+	return &dns.Msg{MsgHdr: dns.MsgHdr{RecursionDesired: true}, Question: []dns.Question{q}}
 }

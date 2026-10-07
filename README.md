@@ -18,7 +18,7 @@ s-hole is intentionally small: a single binary, a single YAML config file, no ru
 - [Scope & limitations](#scope--limitations)
 - [Privacy](#privacy): what s-hole records, and how to delete it
 - [Quick Start](#quick-start) (incl. [Keep the s-hole host off s-hole](#keep-the-s-hole-host-off-s-hole))
-- [Configuration](#configuration) (incl. [env-var overrides](#environment-variable-overrides) and [DNS over TLS](#dns-over-tls-android-private-dns))
+- [Configuration](#configuration) (incl. [env-var overrides](#environment-variable-overrides), [local names](#local-names-printer-naslan), and [DNS over TLS](#dns-over-tls-android-private-dns))
 - [REST API](#rest-api)
 - [Deployment](#deployment): [Linux/Pi](#raspberry-pi--linux-systemd), [Docker](#docker), [Windows](#windows-system-service)
 - [Troubleshooting](docs/TROUBLESHOOTING.md): which log lines to look for when something does not work
@@ -42,10 +42,12 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
 - **Subdomain (suffix) blocking.** A blocked domain blocks its whole subtree, so `ads.example.com` also covers `x.ads.example.com`. Trackers cannot dodge a list entry by rotating subdomains.
 - **Community blocklists.** Downloads and auto-refreshes hosts-file, plain-domain, or wildcard (`*.example.com`) lists from any URL.
 - **DNS response cache.** Serves repeat queries from memory. Typical cache hit rates of 40–70% reduce upstream load and latency.
-- **Encrypted, resilient upstream forwarding.** Forwards over DNS-over-HTTPS (DoH) to Quad9, then Cloudflare, by default. Plain DNS is a fallback that s-hole uses only when every DoH upstream fails, and it warns when it does. Skips recently-failed resolvers until they recover.
+- **Encrypted, resilient upstream forwarding.** Forwards over DNS-over-HTTPS (DoH) to Quad9, then Cloudflare, by default. For a public name, plain DNS is a fallback that s-hole uses only when every DoH upstream fails, and it warns when it does. Skips recently-failed resolvers until they recover.
 - **LAN only.** Answers clients on the local network only and refuses every other source, so s-hole cannot become an open resolver.
 - **DNS over TLS for LAN clients.** An optional encrypted listener (usually port 853). Android phones in the default Automatic Private DNS mode use it on their own, so their DNS queries cross the Wi-Fi encrypted. Off by default. You supply the certificate, and a reload picks up a renewed one without a restart.
 - **Local reverse DNS.** Answers PTR queries for the RFC 6303 private ranges (`10/8`, `172.16/12`, `192.168/16`, and IPv6 ULA and link-local) locally, so internal LAN addressing never leaks to the upstream resolver. On by default.
+- **Local names stay local.** Names that only mean something on your network, such as `printer`, `nas.lan`, or `router.home.arpa`, go only to an upstream on the LAN (your router), never to a public resolver. `localhost` gets the loopback address, and `.onion`, `.invalid`, and `.alt` names get "no such name", without a query upstream.
+- **Minimal upstream query.** s-hole sends the upstream a new query with only the question and a few flags. The device's own query ID and EDNS options, such as a cookie that identifies the device, or a Client Subnet (part of its address), stay on the LAN. DoH queries are padded, so their size does not show the name.
 - **Optional query history.** When you turn it on, a SQLite database keeps the queries for 7 days by default (retention erases the rows from the file, not only from the table), and an optional text log suits `grep` and `tail`. One command, or a dashboard button on the s-hole host, deletes everything s-hole stored.
 - **Admin web UI.** Live stats, a queries-over-time graph (counts only, kept in memory), what s-hole records and the warnings in effect, top blocked domains, top clients, per-source blocklist health, and, with the history on, a searchable recent query log. Also allowlist management and a "why is this blocked?" domain check.
 - **REST API.** All UI data is available as JSON, ready for scripting and future integrations.
@@ -90,6 +92,8 @@ s-hole sees every DNS query on your network, so it could hold the browsing histo
 - **No device addresses by default.** `query_log.clients` is `"drop"`: when you turn the history on, s-hole still does not record which device asked.
 - **Limited history.** With the history on, rows older than 7 days are deleted (`query_log.retention_days`), and the database overwrites deleted rows.
 - **Encrypted upstreams.** The default upstreams are DoH (Quad9, then Cloudflare), so your internet provider cannot read the queries s-hole forwards.
+- **Minimal upstream queries.** The upstream gets only the name, the type, and a few protocol flags. s-hole removes the device's EDNS options (a cookie, a Client Subnet) and query ID, and sends no cookie of its own.
+- **Local names stay on the LAN.** s-hole sends local names (`printer`, `nas.lan`, `.local`, `home.arpa`, and the domains in `dns.local_domains`) only to an upstream on the LAN. If no upstream is on the LAN, it answers "no such name".
 - **Loud warnings.** Each setting that records more than the default (and a few other less private or less secure settings) gives a WARN at `-check-config`, at startup, and again with every stats line, and appears on the dashboard. You cannot turn these warnings off; change the setting to remove one.
 - **LAN only.** s-hole answers devices on the local network only.
 
@@ -270,6 +274,7 @@ All configuration lives in `config.yaml`, in four sections (`dns`, `blocking`, `
 | `dns.upstreams` | Quad9 DoH, Cloudflare DoH, Quad9 plain, Cloudflare plain | `IP:port`, or `https://IP/path` | Resolvers, tried in order. A DoH entry needs an IP host and a path, and no user name or password. A malformed entry is dropped; if all are malformed, s-hole does not start | when no entry is DoH |
 | `dns.cache_entries` | `2000` | whole number ≥ 0 | Size of the DNS response cache; `0` turns it off | |
 | `dns.local_ptr` | `true` | `true`, `false` | Answer reverse lookups for private ranges locally instead of upstream | when `false` |
+| `dns.local_domains` | none | domains, such as `fritz.box` | More local domains, added to the built-in ones (`.lan`, `.local`, `home.arpa`, single-label names, and others). s-hole sends a name under one of them only to an upstream on the LAN. An invalid entry is dropped | |
 | `blocking.lists` | none (the sample has two) | URLs | Blocklists: hosts-file, one domain per line, or `*.example.com` lines. A list in another format (such as Adblock) gives a WARN | for an `http://` URL |
 | `blocking.allowlist` | none | domains | Domains never blocked, with their subdomains. An invalid entry is dropped | |
 | `blocking.reply` | `"zero_ip"` | `"zero_ip"`, `"nxdomain"` | Answer for a blocked query: `0.0.0.0`/`::`, or "no such name" | |
@@ -302,7 +307,7 @@ query_log:
 
 ### Environment variable overrides
 
-An `S_HOLE_*` environment variable overrides one scalar setting. Its name is `S_HOLE_` plus the key path in upper case, with dots as underscores: `S_HOLE_DNS_LISTEN`, `S_HOLE_QUERY_LOG_MODE`, `S_HOLE_ADMIN_LISTEN`, `S_HOLE_STATS_INTERVAL`. Lists and maps (`dns.upstreams`, `blocking.lists`, `blocking.allowlist`, `query_log.client_names`) have none. An invalid value gives a `config problem` WARN, and the setting keeps its YAML value or default. A variable name from s-hole 1.x (such as `S_HOLE_API_LISTEN`) also gives a WARN that names the new one, and is ignored.
+An `S_HOLE_*` environment variable overrides one scalar setting. Its name is `S_HOLE_` plus the key path in upper case, with dots as underscores: `S_HOLE_DNS_LISTEN`, `S_HOLE_QUERY_LOG_MODE`, `S_HOLE_ADMIN_LISTEN`, `S_HOLE_STATS_INTERVAL`. Lists and maps (`dns.upstreams`, `dns.local_domains`, `blocking.lists`, `blocking.allowlist`, `query_log.client_names`) have none. An invalid value gives a `config problem` WARN, and the setting keeps its YAML value or default. A variable name from s-hole 1.x (such as `S_HOLE_API_LISTEN`) also gives a WARN that names the new one, and is ignored.
 
 Two more variables are not settings:
 
@@ -325,6 +330,28 @@ query_log:
 ```
 
 On a Raspberry Pi 4 or older (no battery-backed clock), keep the plain fallback upstreams, or make sure the Pi does not use s-hole as its own resolver (see [Keep the s-hole host off s-hole](#keep-the-s-hole-host-off-s-hole)).
+
+### Local names (printer, nas.lan)
+
+Some names only mean something on your network: a single-label name such as `printer`, and names under `.lan`, `.home`, `.local`, `.internal`, `home.arpa`, `.localdomain`, and a few others. Usually your router answers them from its list of devices. s-hole sends these names only to an upstream with a LAN address, never to a public resolver. A LAN address is a private, loopback, or link-local address, or one in a subnet of the s-hole host. If no upstream is on the LAN, s-hole answers "no such name" and logs `no upstream on the LAN` at startup.
+
+To resolve local names, add your router to the upstreams, after the DoH entries. s-hole then sends public names to DoH as before, and local names to the router only:
+
+```yaml
+dns:
+  upstreams:
+    - "https://9.9.9.9/dns-query"
+    - "https://1.1.1.1/dns-query"
+    - "9.9.9.9:53"
+    - "1.1.1.1:53"
+    - "192.168.1.1:53"          # the router: local names, and public names only if every entry above fails
+  local_domains:
+    - "fritz.box"               # the router's own domain, if it is not built in
+```
+
+If your router uses another domain for its devices (such as `fritz.box`), add it to `dns.local_domains`. If the router sends its own DNS queries to s-hole, do not add it as an upstream: each local name would then go round in a loop until it times out. An upstream on the LAN decides itself what it does with a name it does not know. Many routers forward it to the internet provider, and a resolver on the s-hole host (such as Unbound on `127.0.0.1`) asks the public DNS.
+
+s-hole answers some names itself and never sends them anywhere: `localhost` and names under it get the loopback address, and names under `.onion`, `.invalid`, and `.alt` get "no such name".
 
 ### DNS over TLS (Android Private DNS)
 
@@ -801,6 +828,7 @@ $env:GOOS=""; $env:GOARCH=""
 - **Suffix-match subdomain blocking** that walks a name's parent labels in `O(labels)` with zero per-query allocation, closing the subdomain-rotation hole that exact-match blockers leave open. ([`blocklist.Store.IsBlocked`](internal/blocklist/store.go))
 - **Resilient upstream forwarding.** UDP with automatic TCP fallback on truncation, plus a health tracker that skips recently-failed resolvers and retries them only if every other upstream also failed.
 - **RFC 6303 local PTR answering.** Private-range reverse queries are answered locally instead of leaking internal LAN addressing to the upstream resolver.
+- **A minimal upstream query.** s-hole never relays the client's message: it builds a new query from the question, so no client EDNS option (cookie, Client Subnet) or query ID leaves the LAN, and local-only names go to LAN upstreams only. ([`internal/dnsserver/edns.go`](internal/dnsserver/edns.go), [`localnames.go`](internal/dnsserver/localnames.go))
 - **Private by default, and loud when it is not.** Every default records the least, every config mistake falls back to the most private value, and each setting that records more gives a warning that repeats until it is changed. Query data stays out of the application log, and the retention prune erases rows from the file, not only from the table.
 - **Deliberate non-decisions.** Case-insensitive caching was rejected because it would break dns-0x20 downstream resolvers. Knowing what *not* to build is recorded in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 - **A tiny dependency graph and pure-Go SQLite.** No CGO, so cross-compiling for every release target stays a one-liner and the binary is fully static.
@@ -829,9 +857,10 @@ $env:GOOS=""; $env:GOARCH=""
      │   │  DNS Handler  (per query)                    │   │
      │   │    0. source not on the LAN → REFUSED        │   │
      │   │    1. private PTR → local NXDOMAIN (RFC6303) │   │
-     │   │    2. blocklist  → sinkhole reply            │   │
-     │   │    3. cache hit  → cached reply              │   │
-     │   │    4. cache miss → upstream forward + cache  │   │
+     │   │    2. local name → local answer, or LAN only │   │
+     │   │    3. blocklist  → sinkhole reply            │   │
+     │   │    4. cache hit  → cached reply              │   │
+     │   │    5. cache miss → fresh upstream query      │   │
      │   └──────────────────────────────────────────────┘   │
      │                                                      │
      │   ┌───────────┐   ┌──────────┐   ┌───────────┐       │

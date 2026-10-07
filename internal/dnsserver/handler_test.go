@@ -383,8 +383,8 @@ func TestServeDNS_CacheMissForwardsToUpstream(t *testing.T) {
 }
 
 func TestServeDNS_UpstreamFailureProducesServfail(t *testing.T) {
-	// All upstreams are unreachable. Handler must surface SERVFAIL via
-	// dns.HandleFailed rather than write a malformed reply.
+	// All upstreams are unreachable. Handler must answer SERVFAIL
+	// (writeRcode) rather than write a malformed reply.
 	store := blocklist.NewStore()
 	h := NewHandler(store, stats.New(), []string{"127.0.0.1:1"}, nullLogger{}, "zero", 60, nil, false, "full")
 	w := fakeClient()

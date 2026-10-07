@@ -922,6 +922,7 @@ func TestSettings_CurrentDescribesTheValueInEffect(t *testing.T) {
 		"dns.upstreams":              "https://9.9.9.9/dns-query, https://1.1.1.1/dns-query, 9.9.9.9:53, 1.1.1.1:53",
 		"dns.cache_entries":          "2000",
 		"dns.local_ptr":              "true",
+		"dns.local_domains":          "0 domains",
 		"blocking.lists":             "1 lists",
 		"blocking.allowlist":         "2 domains",
 		"blocking.reply":             `"zero_ip"`,

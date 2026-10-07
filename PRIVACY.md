@@ -18,7 +18,7 @@ dashboard. You cannot turn these warnings off.
 | Query lines: the same fields as text | `query_log.file`: a file, or standard output | off | a file: until you delete it. Standard output: the system journal or the container log keeps it under its own rules | a file: the s-hole user only (mode `600`). The journal: root and the `adm` and `systemd-journal` groups (on Raspberry Pi OS the first user is in `adm`) | a file: `s-hole -purge`. The journal: `journalctl --rotate && journalctl --vacuum-time=1s` (deletes every service's logs) |
 | Top Domains and Top Clients | memory | follow `query_log.mode`; empty under `"none"` | until a restart or a purge | anyone who can reach the dashboard | restart, or purge |
 | Per-minute graph: counts of queries, blocked, cached, and failed, with no domain or client | memory | on | 24 hours, and until a restart or a purge | anyone who can reach the dashboard | restart, or purge |
-| Since-start counters (total, blocked, cache hits, failures) | memory | on | until a restart | anyone who can reach the dashboard or `/metrics` | restart |
+| Since-start counters (total, blocked, local answers, cache hits, failures) | memory | on | until a restart | anyone who can reach the dashboard or `/metrics` | restart |
 | DNS response cache: recent answers, by name | memory | on (`dns.cache_entries`) | each answer's TTL | nobody directly; a LAN device can tell from the response time whether a name was looked up recently | restart, or purge |
 | Application log: startup, reloads, errors | the system journal, standard output, or the Windows Event Log | on | the log's own rules | root and the log groups; on Windows, every interactive user | outside s-hole |
 | Downloaded blocklists (public lists) | `blocking.cache_dir` | on | replaced on each download | the s-hole user only | `s-hole -purge` |
@@ -34,17 +34,24 @@ domain and the address of the device that made the change, as an audit line.
 
 | To | What | When |
 |---|---|---|
-| The upstream resolvers (default: Quad9, then Cloudflare) | the name and type of each allowed query that is not in the cache | every cache miss. Encrypted (DoH) by default. A plain upstream is used only when every DoH upstream has failed, and s-hole logs a warning with the count, at most once a minute |
+| The upstream resolvers (default: Quad9, then Cloudflare) | the name, type, and class of each allowed query that is not in the cache, in a new query that s-hole builds: the RD, CD, AD, and DO flags, a random query ID (ID 0 over DoH), and s-hole's own EDNS record with no options except padding. Nothing else from the device's query: no EDNS option (cookie, Client Subnet) and not its query ID. s-hole sends no cookie of its own | every cache miss. Encrypted (DoH) by default, padded to a multiple of 128 bytes. For a public name, a plain upstream is used only when every DoH upstream has failed, and s-hole logs a warning with the count, at most once a minute. A local name (below) goes only to an upstream on the LAN, which may use plain DNS |
 | The blocklist hosts | an HTTPS request for each list, with `User-Agent: s-hole` | at startup and every `blocking.refresh_interval` |
 
 s-hole sends nothing else: no telemetry, no update check, no crash report. The
 dashboard loads nothing from another site.
 
 Reverse lookups for private addresses stay on the LAN (`dns.local_ptr`, on by
-default). Two gaps are still open and are the next change (CL 94, see
-`docs/ROADMAP.md`): s-hole forwards a query with the EDNS options the client
-put in it (such as a client cookie or a client subnet), and it forwards names
-that only mean something on the LAN, such as `printer` or `nas.local`.
+default).
+
+Names that only mean something on the LAN stay on the LAN too. s-hole sends a
+single-label name (`printer`, `wpad`) and a name under `.local`, `home.arpa`,
+`.internal`, `.test`, `.intranet`, `.private`, `.corp`, `.home`, `.lan`,
+`.localdomain`, or a domain in `dns.local_domains` only to an upstream with a
+LAN address, such as the router. With no such upstream, s-hole answers "no
+such name" itself. A LAN upstream decides itself what it does with a name it
+cannot answer; many routers forward it to the internet provider. s-hole
+answers `localhost` names and names under `.onion`, `.invalid`, and `.alt`
+itself and sends them nowhere. There is no setting to turn this off.
 
 ## Who can query s-hole
 

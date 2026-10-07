@@ -83,7 +83,7 @@ Every 5 minutes (`stats_interval`), s-hole writes one `msg=stats` line with
 its counters:
 
 ```
-level=INFO msg=stats pkg=stats uptime=2h5m0s queries=5120 blocked=812 blocked_pct=15.9 local_ptr=40 cache_hits=2310 cache_hit_pct=54.0 forward_failures=3 upstream_errors=0
+level=INFO msg=stats pkg=stats uptime=2h5m0s queries=5120 blocked=812 blocked_pct=15.9 local_ptr=40 local_names=12 cache_hits=2310 cache_hit_pct=54.0 forward_failures=3 upstream_errors=0
 ```
 
 If `forward_failures` or `upstream_errors` increases, read
@@ -251,6 +251,30 @@ At startup, s-hole writes a note about the upstream list: `single upstream
 configured; no forwarding fallback if it fails`, that every upstream is DoH
 (no fallback if TLS fails), or, with the default list, `plain upstreams are a
 fallback; ...`. These are notes, not errors.
+
+## A local name does not resolve
+
+A local name is a name such as `printer`, `nas.lan`, `router.home.arpa`, or
+`tv.local`. s-hole sends a local name only to an upstream on the LAN, such as
+your router. If no upstream is on the LAN, s-hole answers "no such name"
+(NXDOMAIN), and at startup it writes this line:
+
+```
+level=INFO msg="no upstream on the LAN" pkg=main hint="s-hole sends local names, ..."
+```
+
+To resolve local names, add your router to `dns.upstreams`, after the DoH
+entries, for example `"192.168.1.1:53"`. Then restart s-hole. See
+[Local names](../README.md#local-names-printer-naslan) in the README.
+
+If the router uses its own domain for its devices, such as `fritz.box`, add
+the domain to `dns.local_domains`. Names under it then go to the router only.
+
+s-hole answers these names itself and never sends them upstream:
+`localhost` and the names under it get the loopback address, and names under
+`.onion`, `.invalid`, and `.alt` get NXDOMAIN. The counter `local_names` in
+the stats line counts these answers, and the NXDOMAIN answers while no
+upstream is on the LAN.
 
 ## A device's queries do not reach s-hole
 

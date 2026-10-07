@@ -63,6 +63,10 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintln(w, "# TYPE shole_local_ptr_total counter")
 	fmt.Fprintf(w, "shole_local_ptr_total %d\n", snap.LocalPTRCount)
 
+	fmt.Fprintln(w, "# HELP shole_local_names_total Total queries for local-only names answered here and never forwarded (localhost, .onion, .invalid, .alt, or a LAN name with no LAN upstream).")
+	fmt.Fprintln(w, "# TYPE shole_local_names_total counter")
+	fmt.Fprintf(w, "shole_local_names_total %d\n", snap.LocalNameCount)
+
 	fmt.Fprintln(w, "# HELP shole_cache_hits_total Total DNS responses served from the in-memory cache.")
 	fmt.Fprintln(w, "# TYPE shole_cache_hits_total counter")
 	fmt.Fprintf(w, "shole_cache_hits_total %d\n", snap.CacheHits)

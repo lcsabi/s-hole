@@ -23,7 +23,7 @@
 # An environment variable overrides a single value. Its name is S_HOLE_ plus
 # the key path in upper case, with dots as underscores. For example,
 # S_HOLE_QUERY_LOG_MODE overrides query_log.mode. Lists and maps (upstreams,
-# lists, allowlist, client_names) have no environment variable.
+# local_domains, lists, allowlist, client_names) have no environment variable.
 
 dns:
   # Address and port for DNS queries (UDP and TCP).
@@ -48,10 +48,12 @@ dns:
   # DoH encrypts the queries s-hole sends upstream, so your internet provider
   # cannot read or change them. The defaults are two DoH resolvers, Quad9 and
   # then Cloudflare. The same two resolvers over plain DNS follow as a
-  # fallback. s-hole uses a plain entry only when every DoH entry has failed,
-  # and it logs a WARN with the count, at most once a minute, while it does. For DoH only, delete the two
-  # plain entries. Then, if TLS fails (for example, the system clock is wrong),
-  # s-hole cannot resolve names until it works again.
+  # fallback. For a public name, s-hole uses a plain entry only when every DoH
+  # entry has failed, and it logs a WARN with the count, at most once a minute,
+  # while it does. (A local name goes only to an upstream on the LAN; see
+  # local_domains below.) For DoH only, delete the two plain entries. Then, if
+  # TLS fails (for example, the system clock is wrong), s-hole cannot resolve
+  # names until it works again.
   #
   # A DoH entry must use an IP address, not a hostname, and needs a path such
   # as /dns-query. It must not contain a user name or password. A plain entry
@@ -75,6 +77,16 @@ dns:
   # Set to false only if you run a private reverse DNS zone on your LAN.
   # s-hole warns while this is false.
   local_ptr: true
+
+  # Local names stay on the LAN. s-hole sends a single-label name (such as
+  # "printer") and a name under .lan, .home, .local, .internal, home.arpa,
+  # .localdomain, and a few others only to an upstream with a LAN address,
+  # such as your router. If no upstream is on the LAN, s-hole answers "no
+  # such name". To resolve local names, add the router after the DoH entries
+  # in upstreams, for example "192.168.1.1:53".
+  # If your router uses another domain for its devices, add it here.
+  local_domains:
+    # - "fritz.box"
 
 blocking:
   # Blocklist URLs: hosts-file format, one domain per line, or *.example.com

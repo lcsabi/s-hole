@@ -21,7 +21,7 @@ Rules (review enforces them, and tests pin them):
 - **Keep query data where s-hole controls it.** Retention and purge must reach every place s-hole stores query data. If s-hole cannot delete data in a place (journald, Docker logs, Prometheus, backups), it does not write query data there by default, and the docs say that s-hole cannot delete it when the operator opts in.
 - **Stored data is owner-only and deletable.** Files are created `0600` (umask `077`, `UMask=0077`), directories `0700`; on Windows the config folder gets an owner-only access list. The query database keeps `secure_delete=ON` and a TRUNCATE checkpoint after deletes, so a deleted row leaves the file. New stored data follows retention and is reached by `s-hole -purge` and `uninstall-linux.sh --purge`.
 - **Never rewrite the operator's history on your own.** A stricter setting applies to new rows; `StaleRows` reports the older ones and the operator decides (purge or wait for retention).
-- **LAN only, and LAN data stays on the LAN.** The DNS server answers LAN sources only (`lan.go`), with no setting to widen it. Do not forward names or options that only mean something on the LAN or identify a device (private PTR is answered locally; CL 94 covers EDNS options and local-only names).
+- **LAN only, and LAN data stays on the LAN.** The DNS server answers LAN sources only (`lan.go`), with no setting to widen it. Do not forward names or options that only mean something on the LAN or identify a device: private PTR is answered locally, the upstream gets a fresh query with no client EDNS option or query ID (`edns.go`), and local-only names go to LAN upstreams only (`localnames.go`, CL 94).
 - **No other outbound connections.** s-hole connects only to the configured upstreams and blocklist URLs, with `User-Agent: s-hole`. No telemetry, update check, crash report, or analytics; the dashboard loads nothing from a third party. A new outbound connection needs a ROADMAP decision first.
 - **Keep metrics aggregate.** No per-client or per-domain label on `/metrics`. A URL that s-hole shows anywhere goes through `redact.URL`.
 - **Respect the device's own privacy choices.** s-hole does not defeat a client's encrypted DNS, private relay, or address randomization.
@@ -62,15 +62,20 @@ Per-query hot path (one goroutine per query, spawned by miekg/dns):
 ```
 ServeDNS (internal/dnsserver/handler.go)
   → lanACL.allows                  not a LAN source → REFUSED; not in the stats or the query log, only shole_refused_total (lan.go)
+  → one question, opcode QUERY     else SERVFAIL / NOTIMP through send; not counted or logged
   → querylog.MaskClientIP          once, per query_log.clients (fail closed)
+  → classify (localnames.go)       localhost → loopback; .onion/.invalid/.alt → NXDOMAIN;
+                                   LAN-only name → LAN upstreams only, NXDOMAIN when none
   → blocklist.Store.IsBlocked      O(labels) suffix walk over two O(1) sets; allowlist overrides
   → stats.Counter + querylog fan-out (never blocks the query); tallies follow query_log.mode
-  → blocked? write sinkhole reply (0.0.0.0/:: or NXDOMAIN, EDNS0 mirrored)
-  → cache.Cache.Get                TTL-respecting (OPT untouched); hit ends here
-  → forward (upstream.go)          DoH or UDP (TCP retry on TC); cooldown tracker skips
+  → blocked? write sinkhole reply (0.0.0.0/:: or NXDOMAIN) through send
+  → cache.Cache.Get                TTL-respecting; holds no OPT record; hit ends here
+  → forward (upstream.go)          fresh query (upstreamQuery: question, RD/CD/AD/DO, random ID,
+                                   own OPT 1232, DoH padded); DoH or UDP (TCP retry on TC); cooldown tracker skips
                                    recently-failed upstreams, second sweep retries them;
                                    all failed → *ForwardError → once-a-minute summary
-  → cache.Set (never caches truncated/NXDOMAIN/empty) → fitUDP → reply
+  → stripOPT → cache.Set (never caches truncated/NXDOMAIN/empty)
+  → send (edns.go)                 client ID, client OPT without options, fitUDP, DoT padding → reply
 ```
 
 Wiring lives in `cmd/s-hole/main.go`, which owns three cross-cutting mechanisms that are easy to break from inside a package:
@@ -82,7 +87,7 @@ Wiring lives in `cmd/s-hole/main.go`, which owns three cross-cutting mechanisms 
 **Package loggers** (every package, not only main): a package-level logger is `var logger = logging.For("<pkg>")`, never `slog.With(...)`. `slog.With` at package init binds slog's initial handler before `setupLogger` runs; every record then went through the `log` package into the real handler, formatted twice and always at INFO (b/062). `logging.For` looks up `slog.Default()` for each record. Under systemd, `logging.NewStdoutHandler` prefixes each line with its syslog priority (so `journalctl -p warning` works) and drops `time=` from text lines. A log message says what happened (`X failed`); put advice in a `hint` field. A log line carries no query data (see Privacy first). When you add or rename a message that `docs/TROUBLESHOOTING.md` quotes, update that page.
 
 Concurrency invariants that tests pin (keep them green under `-race`):
-- `stats.Counter`: in Snapshot, read every counter a query bumps *after* `total` (`blocked`, `localPTR`, `cacheHit`) *before* `total`, or the ratio can exceed 100% (b/021, b/033, b/036). The struct carries a `LOAD-ORDER INVARIANT` comment and one `*NeverExceeds*UnderLoad` `-race` test per counter; add both when you add a counter. Resolve top-N map pointers *inside* the mutex (R31: prune reassigns them). A purge resets the tallies and the timeline, never the counters, because a counter reset under load breaks the invariant. The per-minute timeline (`timeline.go`) is lock-free (atomic fields, CAS on the minute) and outside the invariant: it shows counts, not ratios.
+- `stats.Counter`: in Snapshot, read every counter a query bumps *after* `total` (`blocked`, `localPTR`, `localName`, `cacheHit`, `forwardFailures`, `upstreamErrors`) *before* `total`, or the ratio can exceed 100% (b/021, b/033, b/036). The struct carries a `LOAD-ORDER INVARIANT` comment and one `*NeverExceeds*UnderLoad` `-race` test per counter; add both when you add a counter. Resolve top-N map pointers *inside* the mutex (R31: prune reassigns them). A purge resets the tallies and the timeline, never the counters, because a counter reset under load breaks the invariant. The per-minute timeline (`timeline.go`) is lock-free (atomic fields, CAS on the minute) and outside the invariant: it shows counts, not ratios.
 - `blocklist.Store.Replace` swaps the map pointer under lock, so readers see old or new set, never partial.
 - `querylog.DBLogger` and `querylog.FileLogger` drop on a full channel rather than blocking DNS; drops surface as `shole_query_log_dropped_total` and `shole_query_log_file_dropped_total`. A purge runs inside each writer goroutine, so no queued entry is written after it. The SQLite pool is pinned to one connection (`SetMaxOpenConns(1)`) so the async writer, the retention prune, and a purge can't collide with `SQLITE_BUSY` (b/038); don't reintroduce a multi-connection pool.
 - **Package-level test seams** (`blocklist.maxBodyBytes`, the `swapLogger` and `captureLogs` logger swaps in `blocklist`) are mutated only by tests and are safe only because each package runs its tests sequentially (no `t.Parallel`). Production never writes them. If you add `t.Parallel` to a package that mutates a package-level var, pass the value in instead of mutating the global, or the write races the production read under `-race`.

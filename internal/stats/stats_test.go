@@ -76,6 +76,7 @@ func TestCounter_Log(t *testing.T) {
 		"blocked":          float64(4),
 		"blocked_pct":      "50.0",
 		"local_ptr":        float64(1),
+		"local_names":      float64(0),
 		"cache_hits":       float64(2),
 		"cache_hit_pct":    "66.7",
 		"forward_failures": float64(1),

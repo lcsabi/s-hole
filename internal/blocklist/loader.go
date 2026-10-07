@@ -85,6 +85,7 @@ func Update(store *Store, urls []string, cacheDir string, mode Mode) error {
 			Stale:       meta.from == fromStaleCache,
 		})
 		logger.Info("loaded", "url", redact.URL(u), "domains", len(domains), "from", meta.from)
+		warnUnreadList(u, len(domains), meta.skipped)
 	}
 	// Publish per-source health even when every source failed, so the
 	// dashboard shows the outage rather than the last good snapshot.
@@ -99,6 +100,22 @@ func Update(store *Store, urls []string, cacheDir string, mode Mode) error {
 	logger.Info("blocklist updated", "total", store.Len())
 	warnIfEmpty(store)
 	return nil
+}
+
+// warnUnreadList warns about a list that loaded but gave s-hole little or
+// nothing to block: an empty list, or one where most lines were skipped. The
+// usual cause is a format s-hole does not read, such as an Adblock list
+// (EasyList gives one stray match in 80,000 lines), so a zero-only check
+// would miss it. A hosts list skips only a few lines (localhost,
+// broadcasthost), far fewer than it reads.
+func warnUnreadList(url string, read, skipped int) {
+	const hint = "s-hole reads hosts lines (0.0.0.0 example.com), one domain per line, and *.example.com lines. Use the list's hosts or domains version"
+	switch {
+	case read == 0 && skipped == 0:
+		logger.Warn("blocklist has no domains", "url", redact.URL(url), "hint", hint)
+	case skipped > read:
+		logger.Warn("blocklist lines skipped", "url", redact.URL(url), "read", read, "skipped", skipped, "hint", hint)
+	}
 }
 
 // warnIfEmpty raises a loud alarm when the block set is empty after an
@@ -130,6 +147,7 @@ const (
 type sourceMeta struct {
 	from     string
 	snapshot time.Time
+	skipped  int // non-comment lines that gave no domain (see parseHostsFormat)
 }
 
 func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
@@ -137,8 +155,8 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 
 	if info, err := os.Stat(cachePath); err == nil && mode == CacheFirst {
 		if time.Since(info.ModTime()) < cacheMaxAge {
-			domains, loadErr := loadFromFile(cachePath)
-			return domains, sourceMeta{from: fromCache, snapshot: info.ModTime()}, loadErr
+			domains, skipped, loadErr := loadFromFile(cachePath)
+			return domains, sourceMeta{from: fromCache, snapshot: info.ModTime(), skipped: skipped}, loadErr
 		}
 	}
 
@@ -157,8 +175,8 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 		// Fall back to stale cache if download fails.
 		if info, statErr := os.Stat(cachePath); statErr == nil {
 			logger.Warn("download failed, using stale cache", "url", redact.URL(url), "err", err)
-			domains, loadErr := loadFromFile(cachePath)
-			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime()}, loadErr
+			domains, skipped, loadErr := loadFromFile(cachePath)
+			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime(), skipped: skipped}, loadErr
 		}
 		return nil, sourceMeta{}, err
 	}
@@ -168,8 +186,8 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 		// Do not write the error-page body to the cache file.
 		if info, statErr := os.Stat(cachePath); statErr == nil {
 			logger.Warn("non-200 response, using stale cache", "url", redact.URL(url), "status", resp.StatusCode)
-			domains, loadErr := loadFromFile(cachePath)
-			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime()}, loadErr
+			domains, skipped, loadErr := loadFromFile(cachePath)
+			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime(), skipped: skipped}, loadErr
 		}
 		return nil, sourceMeta{}, fmt.Errorf("%q: HTTP %d", redact.URL(url), resp.StatusCode)
 	}
@@ -198,7 +216,7 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 		body = io.TeeReader(body, f)
 	}
 
-	domains, parseErr := parseHostsFormat(body)
+	domains, skipped, parseErr := parseHostsFormat(body)
 	var closeErr error
 	if f != nil {
 		closeErr = f.Close()
@@ -222,8 +240,8 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 		_ = os.Remove(tmpPath)
 		if info, statErr := os.Stat(cachePath); statErr == nil {
 			logger.Warn("download failed, using stale cache", "url", redact.URL(url), "err", readErr)
-			domains, loadErr := loadFromFile(cachePath)
-			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime()}, loadErr
+			domains, skipped, loadErr := loadFromFile(cachePath)
+			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime(), skipped: skipped}, loadErr
 		}
 		return nil, sourceMeta{}, readErr
 	}
@@ -237,8 +255,8 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 		_ = os.Remove(tmpPath)
 		if info, statErr := os.Stat(cachePath); statErr == nil {
 			logger.Warn("response truncated at cap, using stale cache", "url", redact.URL(url), "cap_bytes", maxBodyBytes)
-			domains, loadErr := loadFromFile(cachePath)
-			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime()}, loadErr
+			domains, skipped, loadErr := loadFromFile(cachePath)
+			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime(), skipped: skipped}, loadErr
 		}
 		return nil, sourceMeta{}, fmt.Errorf("%q: response exceeded %d-byte cap", redact.URL(url), maxBodyBytes)
 	}
@@ -248,7 +266,7 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 			warnCacheWrite(cacheDir, err)
 		}
 	}
-	return domains, sourceMeta{from: fromDownload, snapshot: time.Now()}, nil
+	return domains, sourceMeta{from: fromDownload, snapshot: time.Now(), skipped: skipped}, nil
 }
 
 // warnCacheWrite reports a blocklist cache file that could not be written.
@@ -262,21 +280,26 @@ func warnCacheWrite(cacheDir string, err error) {
 	logger.Warn("blocklist cache could not be written", "dir", cacheDir, "err", err, "hint", hint)
 }
 
-func loadFromFile(path string) ([]string, error) {
+func loadFromFile(path string) ([]string, int, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer f.Close()
 	return parseHostsFormat(f)
 }
 
-// parseHostsFormat handles both hosts-file format ("0.0.0.0 domain.com")
-// and plain domain-per-line format. Tokens that fail ValidDomain are
-// silently dropped to keep one malformed list line from polluting the
-// store; see R14.
-func parseHostsFormat(r io.Reader) ([]string, error) {
-	var domains []string
+// parseHostsFormat handles the hosts-file format ("0.0.0.0 domain.com"), the
+// plain domain-per-line format, and wildcard lines ("*.domain.com", as in
+// oisd's "domains (wildcards)" lists). A wildcard line means the domain and
+// every subdomain, which is what the store's suffix walk already does for a
+// plain entry, so "*." is dropped and the rest stored as a plain domain.
+// Tokens that fail ValidDomain are silently dropped to keep one malformed
+// list line from polluting the store; see R14. A "*.com" line fails it too
+// (no interior dot), so a wildcard line cannot block a whole TLD. skipped
+// counts the non-blank, non-comment lines that gave no domain, so Update can
+// warn about a list in a format s-hole does not read.
+func parseHostsFormat(r io.Reader) (domains []string, skipped int, err error) {
 	scanner := bufio.NewScanner(r)
 	// bufio.Scanner's default 64 KiB token cap would abort the whole list
 	// with ErrTooLong on one overlong line (a mis-served binary, a
@@ -290,10 +313,12 @@ func parseHostsFormat(r io.Reader) ([]string, error) {
 			continue
 		}
 		fields := strings.Fields(line)
+		n := len(domains)
 		switch len(fields) {
 		case 1:
-			if ValidDomain(fields[0]) {
-				domains = append(domains, fields[0])
+			d := strings.TrimPrefix(fields[0], "*.")
+			if ValidDomain(d) {
+				domains = append(domains, d)
 			}
 		default:
 			// hosts format: first field is IP, second is domain
@@ -305,15 +330,19 @@ func parseHostsFormat(r io.Reader) ([]string, error) {
 				}
 			}
 		}
+		if len(domains) == n {
+			skipped++
+		}
 	}
-	return domains, scanner.Err()
+	return domains, skipped, scanner.Err()
 }
 
 // ValidDomain rejects obvious garbage: empty strings, anything over
 // the 253-character DNS name limit, names without a dot (we don't block
 // bare TLDs), and names with characters that cannot legally appear in a
-// DNS label (whitespace, control chars, slashes, etc.). It is deliberately
-// lenient: IDN punycode and underscore-prefixed service labels pass.
+// DNS label (whitespace, control chars, slashes, etc.), empty labels, and
+// labels that start or end with a hyphen. It is deliberately lenient
+// otherwise: IDN punycode and underscore-prefixed service labels pass.
 //
 // Exported so the api package can validate user-supplied allowlist
 // entries with the same rules the loader applies to blocklist files.
@@ -341,7 +370,20 @@ func ValidDomain(s string) bool {
 			return false
 		}
 	}
-	return true
+	// No empty label ("a..com") and no label that starts or ends with a
+	// hyphen: DNS names cannot have either, so such a line is list junk, such
+	// as the EasyList URL rule "-728.90.". The root dot of an FQDN leaves an
+	// empty last label, which is allowed.
+	name := strings.TrimSuffix(s, ".")
+	prev := byte('.') // a label starts here
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c == '.' && (prev == '.' || prev == '-')) || (c == '-' && prev == '.') {
+			return false
+		}
+		prev = c
+	}
+	return prev != '.' && prev != '-'
 }
 
 // PurgeCache deletes the downloaded blocklists in cacheDir: every

@@ -45,7 +45,7 @@ func FuzzParseHostsFormat(f *testing.F) {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, input string) {
-		domains, err := parseHostsFormat(strings.NewReader(input))
+		domains, _, err := parseHostsFormat(strings.NewReader(input))
 		if err != nil {
 			return // EOF / scanner errors are acceptable here
 		}

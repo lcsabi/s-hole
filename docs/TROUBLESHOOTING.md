@@ -156,12 +156,13 @@ curl -s localhost:8080/readyz
 no entries. If you see `blocklist empty`, search the log:
 
 ```bash
-journalctl -u s-hole | grep -E 'block set is empty|all sources failed|blocklist load failed|blocklist lines skipped|blocklist has no domains'
+journalctl -u s-hole | grep -E 'block set is empty|all sources failed|blocklist load failed|blocklist redirect refused|blocklist lines skipped|blocklist has no domains'
 ```
 
 | You see | What it means | What to do |
 |---|---|---|
 | `msg="blocklist load failed" url=...` | s-hole cannot get this list, and it has no cached copy that it can read. | Read `err`. Check the URL, and check that the s-hole host can reach the internet. If `err` says `the cached copy could not be read either`, give the copy back to the s-hole user, as [The blocklists do not update](#the-blocklists-do-not-update) shows. |
+| `msg="blocklist redirect refused" url=... to=...` | The list host sent the HTTPS download to a URL that is not HTTPS (`to`). s-hole does not download the list over plain HTTP, because anyone on the network path can change it. The next line for this list shows whether s-hole uses its cached copy. | Use a list URL that stays on HTTPS. If the list has no HTTPS version, tell the list host. |
 | `msg="blocklist lines skipped" url=... read=... skipped=...` | s-hole got the list, but could not read most of its lines. The list is usually in a format s-hole does not read, such as an Adblock list (`\|\|example.com^`). | Use the list's hosts or domains version. s-hole reads hosts lines (`0.0.0.0 example.com`), one domain per line, and `*.example.com` lines. |
 | `msg="blocklist has no domains" url=...` | s-hole got the list, but it has only comments and blank lines. | Open the URL in a browser and check that it is the list you want. |
 | `msg="all sources failed; keeping existing block set"` | No list loaded in this reload. s-hole keeps the domains it blocked before. | Correct the network or the URLs. The next reload tries again. |
@@ -195,7 +196,7 @@ A `from=stale_cache` line comes after a warning that gives the reason:
 
 | You see | What it means |
 |---|---|
-| `msg="download failed, using stale cache"` | s-hole cannot connect to the server, or the download stopped before the end of the list. Read `err`. |
+| `msg="download failed, using stale cache"` | s-hole cannot connect to the server, or the download stopped before the end of the list. Read `err`. A `blocklist redirect refused` line before it means that the server sent the download to a plain HTTP URL. |
 | `msg="non-200 response, using stale cache"` | The server answered with an error. `status` gives the HTTP status. |
 | `msg="response truncated at cap, using stale cache"` | The list is larger than 256 MiB. s-hole does not use a partial list. |
 

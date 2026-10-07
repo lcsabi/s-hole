@@ -24,8 +24,44 @@ var logger = logging.For("blocklist")
 const cacheMaxAge = 24 * time.Hour
 
 // httpClient has a generous timeout to handle slow mirrors; 256 MiB cap prevents
-// a runaway download from filling the disk.
-var httpClient = &http.Client{Timeout: 60 * time.Second}
+// a runaway download from filling the disk. checkRedirect keeps an HTTPS
+// download on HTTPS (b/097).
+var httpClient = &http.Client{Timeout: 60 * time.Second, CheckRedirect: checkRedirect}
+
+// maxRedirects is the limit of Go's default policy, which checkRedirect
+// replaces: a download stops after 10 requests, so 9 redirects are followed.
+const maxRedirects = 10
+
+// errInsecureRedirect is the download error for a refused redirect. It holds
+// no URL: the HTTP client wraps it in a *url.Error with the redirect target,
+// which redactURLError redacts.
+var errInsecureRedirect = errors.New("redirect from HTTPS to a non-HTTPS URL refused")
+
+// checkRedirect is the redirect policy for blocklist downloads. Go's default
+// stops after 10 requests (9 redirects) and does not check the scheme, so an https:// list
+// that redirected to http:// was downloaded in plain text, and anyone on the
+// network path could change it (b/097). The config warning for a plain HTTP
+// list checks only the configured URL, so it did not fire.
+//
+// A redirect from an HTTPS request to a non-HTTPS URL is refused, at any hop
+// of the chain. The refused request is not sent. The download then fails like
+// any other, so the stale-cache fallback applies. A redirect to another HTTPS
+// host is followed, because list hosts use such redirects (a GitHub release
+// download redirects to a CDN host). A list configured as http:// already gets a config warning,
+// so its redirects are not checked.
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return fmt.Errorf("stopped after %d redirects", maxRedirects)
+	}
+	if via[0].URL.Scheme == "https" && req.URL.Scheme != "https" {
+		logger.Warn("blocklist redirect refused",
+			"url", redact.URL(via[0].URL.String()),
+			"to", redact.URL(req.URL.String()),
+			"hint", "s-hole downloads a list that starts on HTTPS only over HTTPS. It uses its cached copy of the list if it has one. Use a list URL that stays on HTTPS")
+		return errInsecureRedirect
+	}
+	return nil
+}
 
 // maxBodyBytes caps a single source download. It is a var, not a const, so a
 // test can lower it; production always uses 256 MiB and never writes it.
@@ -33,7 +69,8 @@ var httpClient = &http.Client{Timeout: 60 * time.Second}
 // Only tests mutate this, and blocklist tests run sequentially (none call
 // t.Parallel), so the fetch-path read never races a test's write. The same
 // no-parallel rule protects the logger swaps (swapLogger and captureLogs) in
-// loader_test.go. Keep it that way: if a blocklist test ever needs t.Parallel,
+// loader_test.go and the httpClient.Transport swap (trustTLS) in
+// redirect_test.go. Keep it that way: if a blocklist test ever needs t.Parallel,
 // pass the cap in explicitly rather than mutating this global, or the mutation
 // races the read under -race.
 var maxBodyBytes int64 = 256 << 20 // 256 MiB

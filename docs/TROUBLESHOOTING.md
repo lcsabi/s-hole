@@ -114,14 +114,16 @@ s-hole` then shows `activating (auto-restart)`.
 ## The installer stops at the config check
 
 `install-linux.sh` checks the config with the new binary before it installs
-anything. If the check fails, it prints the config problems and `error: this
+anything. It checks the installed `/etc/s-hole/config.yaml` when one exists,
+and the file that you give only on a first install. If the check fails, it prints the config problems and `error: this
 s-hole build does not accept <file>`, and it changes nothing: an installed
 s-hole keeps running as it was.
 
 | You see | What it means | What to do |
 |---|---|---|
-| `The config uses s-hole 1.x keys` | The config has the 1.x layout. s-hole 2.0 ignores every 1.x key. | Move the keys to the 2.0 layout, as "Upgrade to 2.0" in the release notes shows. Then put the file in place and run the installer in one step, as that section shows. |
-| `msg="config problem"` | A key is unknown or set twice, or s-hole does not accept its value. | Correct the key that `key` names. To check a file without the installer, run `s-hole -check-config -config <file>`. |
+| `The config uses s-hole 1.x keys` | The config has the 1.x layout. s-hole 2.0 ignores every 1.x key. | Do not edit the installed file while 1.x runs. Write a 2.0 config to a new file. Then check it, put it in place, and run the installer with one command, as "Upgrade to 2.0" in the release notes (`docs/CHANGELOG.md`) shows. |
+| `msg="config problem"` | A key is unknown or set twice, or s-hole does not accept its value. | Correct the setting that `key` names. `problem` tells what is wrong. To check a file without the installer, run `s-hole -check-config -config <file>`. |
+| `msg="config load failed"` | s-hole cannot use the file at all. | Read [s-hole does not start](#s-hole-does-not-start). |
 
 ## s-hole stopped while it ran
 
@@ -159,7 +161,7 @@ journalctl -u s-hole | grep -E 'block set is empty|all sources failed|blocklist 
 
 | You see | What it means | What to do |
 |---|---|---|
-| `msg="blocklist load failed" url=...` | s-hole cannot get this list, and it has no cached copy. | Read `err`. Check the URL, and check that the s-hole host can reach the internet. |
+| `msg="blocklist load failed" url=...` | s-hole cannot get this list, and it has no cached copy that it can read. | Read `err`. Check the URL, and check that the s-hole host can reach the internet. If `err` says `the cached copy could not be read either`, give the copy back to the s-hole user, as [The blocklists do not update](#the-blocklists-do-not-update) shows. |
 | `msg="blocklist lines skipped" url=... read=... skipped=...` | s-hole got the list, but could not read most of its lines. The list is usually in a format s-hole does not read, such as an Adblock list (`\|\|example.com^`). | Use the list's hosts or domains version. s-hole reads hosts lines (`0.0.0.0 example.com`), one domain per line, and `*.example.com` lines. |
 | `msg="blocklist has no domains" url=...` | s-hole got the list, but it has only comments and blank lines. | Open the URL in a browser and check that it is the list you want. |
 | `msg="all sources failed; keeping existing block set"` | No list loaded in this reload. s-hole keeps the domains it blocked before. | Correct the network or the URLs. The next reload tries again. |
@@ -328,13 +330,14 @@ lines that the file output dropped.
 ## A purge says that a file was not found
 
 When no s-hole runs, `s-hole -purge` deletes the files itself. Relative paths
-in the config then start in the current directory, and the note after the
-steps names that directory.
+in the config then start in the current directory (on Windows, in the folder
+of `config.yaml`). If a file is not found, a note after the list names that
+directory.
 
 | You see | What it means | What to do |
 |---|---|---|
-| `query database ... not found at <path>` or `query log file ... not found at <path>`, then a note | No file is at that path, so the purge deleted nothing there. Usually the command ran in another directory than s-hole's own. | Run the purge again from s-hole's directory: for the Linux installer, run `cd /var/lib/s-hole` first. On Windows, s-hole uses the folder of `config.yaml` itself. If an earlier purge deleted the file, there is nothing to do. |
-| `downloaded blocklists ... none found in <dir>` | No downloaded list is in that directory: s-hole has not downloaded one there, or a purge deleted them. The lists hold no personal data, so this gives no note. | Nothing. The next reload downloads the lists again. |
+| `query database ... not found at <path>` or `query log file ... not found at <path>`, then a note | No file is at that path, so the purge deleted nothing there. Usually, the command ran in a directory other than s-hole's working directory. | If an earlier purge deleted the file, do nothing. Otherwise, run the purge again in s-hole's working directory. For an install by `install-linux.sh`, run `sudo sh -c 'cd /var/lib/s-hole && s-hole -purge -config /etc/s-hole/config.yaml'`. On Windows, the purge already starts relative paths in the folder of `config.yaml`, so the file is not there. |
+| `downloaded blocklists ... none found in <dir>` | No downloaded list is in that directory: s-hole has not downloaded one there, or a purge deleted them. The lists hold no personal data, so this line gives no note. | No action is necessary. When s-hole starts, it downloads each list that it does not find. |
 
 ## Privacy and security warnings
 

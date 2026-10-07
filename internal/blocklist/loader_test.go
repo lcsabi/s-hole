@@ -54,7 +54,7 @@ func TestParseHostsFormat(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := parseHostsFormat(strings.NewReader(tc.input))
+			got, _, err := parseHostsFormat(strings.NewReader(tc.input))
 			if err != nil {
 				t.Fatalf("parseHostsFormat: %v", err)
 			}
@@ -73,7 +73,7 @@ func TestParseHostsFormat_LongLineDoesNotAbortList(t *testing.T) {
 	input := "ads.example.com\n" +
 		strings.Repeat("x", 100*1024) + "\n" +
 		"tracker.example.net\n"
-	got, err := parseHostsFormat(strings.NewReader(input))
+	got, _, err := parseHostsFormat(strings.NewReader(input))
 	if err != nil {
 		t.Fatalf("parseHostsFormat: %v", err)
 	}
@@ -551,7 +551,7 @@ func BenchmarkParseHostsFormat(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := parseHostsFormat(strings.NewReader(data)); err != nil {
+		if _, _, err := parseHostsFormat(strings.NewReader(data)); err != nil {
 			b.Fatal(err)
 		}
 	}

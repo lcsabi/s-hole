@@ -40,7 +40,7 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
 - **Network-wide blocking.** Blocks ads and trackers at the DNS layer, before any connection is established.
 - **Private by default.** A fresh install records no queries and no device addresses, keeps no query history, and sends its upstream queries encrypted. Every setting that records more is an opt-in, and s-hole logs a warning for it at startup and with every stats line. See [Privacy](#privacy).
 - **Subdomain (suffix) blocking.** A blocked domain blocks its whole subtree, so `ads.example.com` also covers `x.ads.example.com`. Trackers cannot dodge a list entry by rotating subdomains.
-- **Community blocklists.** Downloads and auto-refreshes hosts-file or plain-domain lists from any URL.
+- **Community blocklists.** Downloads and auto-refreshes hosts-file, plain-domain, or wildcard (`*.example.com`) lists from any URL.
 - **DNS response cache.** Serves repeat queries from memory. Typical cache hit rates of 40–70% reduce upstream load and latency.
 - **Encrypted, resilient upstream forwarding.** Forwards over DNS-over-HTTPS (DoH) to Quad9, then Cloudflare, by default. Plain DNS is a fallback that s-hole uses only when every DoH upstream fails, and it warns when it does. Skips recently-failed resolvers until they recover.
 - **LAN only.** Answers clients on the local network only and refuses every other source, so s-hole cannot become an open resolver.
@@ -270,7 +270,7 @@ All configuration lives in `config.yaml`, in four sections (`dns`, `blocking`, `
 | `dns.upstreams` | Quad9 DoH, Cloudflare DoH, Quad9 plain, Cloudflare plain | `IP:port`, or `https://IP/path` | Resolvers, tried in order. A DoH entry needs an IP host and a path, and no user name or password. A malformed entry is dropped; if all are malformed, s-hole does not start | when no entry is DoH |
 | `dns.cache_entries` | `2000` | whole number ≥ 0 | Size of the DNS response cache; `0` turns it off | |
 | `dns.local_ptr` | `true` | `true`, `false` | Answer reverse lookups for private ranges locally instead of upstream | when `false` |
-| `blocking.lists` | none (the sample has two) | URLs | Blocklists: hosts-file or one domain per line | for an `http://` URL |
+| `blocking.lists` | none (the sample has two) | URLs | Blocklists: hosts-file, one domain per line, or `*.example.com` lines. A list in another format (such as Adblock) gives a WARN | for an `http://` URL |
 | `blocking.allowlist` | none | domains | Domains never blocked, with their subdomains. An invalid entry is dropped | |
 | `blocking.reply` | `"zero_ip"` | `"zero_ip"`, `"nxdomain"` | Answer for a blocked query: `0.0.0.0`/`::`, or "no such name" | |
 | `blocking.reply_ttl_seconds` | `300` | `0` to `4294967295` | TTL of a blocked answer; `0` tells clients not to cache it | |

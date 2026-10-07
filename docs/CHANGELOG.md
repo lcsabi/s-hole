@@ -94,6 +94,14 @@ layout, so a 1.x config needs an edit. (CL 93)
 
 
 ### Added
+- **Wildcard blocklists.** A `*.example.com` line, as in oisd's "domains
+  (wildcards)" lists, blocks the domain and its subdomains; before, such a
+  list loaded 0 domains. (CL 95)
+- **A warning for a list s-hole cannot read.** When a list is empty, or s-hole
+  skips more of its lines than it reads, it logs `blocklist has no domains` or
+  `blocklist lines skipped` (with the counts), with a hint that names the
+  formats it reads. An Adblock list, such as EasyList, now gives this warning.
+  (CL 95)
 - **Private defaults, and a warning for every exception.** Each setting that
   is less private or less secure than its default gives a `privacy warning` at
   `-check-config` and at startup, and one `privacy and security warnings in
@@ -163,6 +171,12 @@ layout, so a 1.x config needs an edit. (CL 93)
   warning that shows `redacted` in place of them. (CL 85, CL 91)
 
 ### Changed
+- **Stricter domain validation.** s-hole now rejects a name with an empty
+  label (`a..com`) or a label that starts or ends with a hyphen
+  (`-ads.example.com`). DNS names cannot have either. The rule applies to
+  blocklist lines, `blocking.allowlist` entries, domains added on the
+  dashboard or through `POST /api/allowlist`, and the dashboard's domain
+  check (`/api/check` returns 400). (CL 95)
 - **Config format 2.0 and private defaults.** See "Upgrade to 2.0" above. A
   config mistake no longer stops s-hole: it warns and uses the default for that
   setting, and `-check-config` fails on any problem. Only a malformed

@@ -156,14 +156,21 @@ curl -s localhost:8080/readyz
 no entries. If you see `blocklist empty`, search the log:
 
 ```bash
-journalctl -u s-hole | grep -E 'block set is empty|all sources failed|blocklist load failed'
+journalctl -u s-hole | grep -E 'block set is empty|all sources failed|blocklist load failed|blocklist lines skipped|blocklist has no domains'
 ```
 
 | You see | What it means | What to do |
 |---|---|---|
 | `msg="blocklist load failed" url=...` | s-hole cannot get this list, and it has no cached copy that it can read. | Read `err`. Check the URL, and check that the s-hole host can reach the internet. If `err` says `the cached copy could not be read either`, give the copy back to the s-hole user, as [The blocklists do not update](#the-blocklists-do-not-update) shows. |
+| `msg="blocklist lines skipped" url=... read=... skipped=...` | s-hole got the list, but could not read most of its lines. The list is usually in a format s-hole does not read, such as an Adblock list (`\|\|example.com^`). | Use the list's hosts or domains version. s-hole reads hosts lines (`0.0.0.0 example.com`), one domain per line, and `*.example.com` lines. |
+| `msg="blocklist has no domains" url=...` | s-hole got the list, but it has only comments and blank lines. | Open the URL in a browser and check that it is the list you want. |
 | `msg="all sources failed; keeping existing block set"` | No list loaded in this reload. s-hole keeps the domains it blocked before. | Correct the network or the URLs. The next reload tries again. |
 | `msg="block set is empty"` | s-hole answers queries but blocks nothing. | Correct the cause that the other lines show. Then run `sudo systemctl reload s-hole`. |
+
+A list can load and still give no domains while the other lists work, so
+`/readyz` still says `ok`. Its `msg=loaded` line then shows `domains=0` or a
+low count, and a `blocklist lines skipped` or `blocklist has no domains` line
+follows it.
 
 If the log shows no problem, check that the device uses s-hole. Read
 [A device's queries do not reach s-hole](#a-devices-queries-do-not-reach-s-hole).

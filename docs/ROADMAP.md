@@ -60,8 +60,9 @@ rails.
 | 38 | Per-transport query counter (plain, DoT) in `/metrics` | Medium | not started |
 | 39 | Serve DoH to LAN clients (client-facing `/dns-query` endpoint) | Low | not started |
 | 40 | Privacy hardening: private defaults, loud warnings, erasure, purge, LAN-only, admin browser defenses | High | done (CL 93) |
-| 41 | Minimal upstream query: no client EDNS options, a fresh ID, local-only names to LAN upstreams only, EDNS padding | High | not started (planned as CL 94) |
+| 41 | Minimal upstream query: no client EDNS options, a fresh ID, local-only names to LAN upstreams only, EDNS padding, localhost names never blocked | High | not started (planned as CL 94) |
 | 42 | Admin authentication by device pairing | Medium | not started (reopened in CL 93) |
+| 43 | Adblock-format blocklists (`\|\|example.com^`), with `@@` exceptions | Low | not started |
 
 Items 19-26 came out of a 2026-08-24 feature-ideas session. Items 21-24 are a
 dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
@@ -197,6 +198,9 @@ Design decisions settled in the CL:
   documented *gap*, not a feature; a global switch would only preserve
   the subdomain-rotation hole. The suffix-aware whitelist is the
   per-domain escape hatch, so no `config.yaml` change was needed.
+
+CL 95 added `*.example.com` list lines (oisd's wildcard format); the parser
+drops the `*.`, and this suffix walk does the rest.
 
 ## 4. Wire up or delete `DBLogger.TopBlocked` (done, CL 33)
 
@@ -1529,9 +1533,12 @@ shrinks both the spike and the retained span pool.
 
 Design decisions to settle in the CL:
 
-- **Parse seam.** `parseHostsFormat(r io.Reader) ([]string, error)` becomes an
-  insert-into-set signature (a callback, or a passed-in set). The fuzz target
-  `FuzzParseHostsFormat` and the allocation guards in `alloc_test.go` move with it.
+- **Parse seam.** `parseHostsFormat(r io.Reader) (domains []string, skipped int,
+  err error)` becomes an insert-into-set signature (a callback, or a passed-in
+  set). It must still give the read and skipped counts for each source, because
+  `Update` uses them for the unread-list WARN (CL 95). The fuzz target
+  `FuzzParseHostsFormat` (which also checks the skipped count) and the
+  allocation guards in `alloc_test.go` move with it.
   Read `alloc_test.go` first: it may already pin the per-reload allocation count
   this change improves, so update the expected numbers there.
 - **String lifetime.** Today a stored domain is a substring of the line string, so it
@@ -2046,6 +2053,10 @@ The planned change:
   setting is needed: a router upstream keeps resolving `nas.lan`.
 - **EDNS padding (RFC 8467)** on DoH queries and on DoT replies, so the message
   size does not reveal the name.
+- **Localhost names are never blocked.** Hosts lists start with lines such as
+  `127.0.0.1 localhost.localdomain`, and the parser skips only `localhost`, so
+  today `localhost.localdomain` lands in the block set. The parser should skip
+  every RFC 6761 localhost name (found by the CL 95 tests).
 
 Rated High: it closes the last two places where LAN data leaves the network.
 
@@ -2060,6 +2071,25 @@ scanning it on a phone gives that browser a signed device pass, and the
 dashboard admits only paired devices. Points to settle: where the pass lives
 (cookie), how to revoke a device, how a script authenticates, and how the
 Host and cross-origin checks fit. It needs its own CL.
+
+## 43. Adblock-format blocklists, with exceptions
+
+Some lists come only in the Adblock format that browser blockers use, such as
+AdGuard's DNS filter. The DNS-level rule is `||example.com^`: the domain and
+its subdomains, the same as a `*.example.com` line (read since CL 95). s-hole
+now warns about such a list (`blocklist lines skipped`) and blocks nothing
+from it.
+
+Reading only the `||domain^` lines is not enough. A list can block a domain
+and unblock one of its subdomains with an `@@||sub.example.com^` exception.
+Without the exceptions, s-hole blocks more than the list's author meant, and
+something on the network can break with no clear reason. The plan: read `||domain^` and
+`@@||domain^` lines with no `$` options, keep each list's exceptions with that
+list (an exception does not reach the global allowlist), and skip every other
+rule, as now. Most popular lists (oisd, HaGeZi, StevenBlack) also come in a
+hosts or domains version, so this is Low. This adds one built-in line format
+to `parseHostsFormat`. It is not a plug-in system, so the non-goal "Pluggable
+blocklist formats/backends" still holds.
 
 ## Pending decisions
 

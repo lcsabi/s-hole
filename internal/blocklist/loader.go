@@ -167,9 +167,7 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 	if err != nil {
 		// Fall back to stale cache if download fails.
 		if info, statErr := os.Stat(cachePath); statErr == nil {
-			logger.Warn("download failed, using stale cache", "url", redact.URL(url), "err", err)
-			domains, loadErr := loadFromFile(cachePath)
-			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime()}, loadErr
+			return staleFallback(cachePath, info, err, "download failed, using stale cache", "url", redact.URL(url), "err", err)
 		}
 		return nil, sourceMeta{}, err
 	}
@@ -177,12 +175,11 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		// Do not write the error-page body to the cache file.
+		statusErr := fmt.Errorf("%q: HTTP %d", redact.URL(url), resp.StatusCode)
 		if info, statErr := os.Stat(cachePath); statErr == nil {
-			logger.Warn("non-200 response, using stale cache", "url", redact.URL(url), "status", resp.StatusCode)
-			domains, loadErr := loadFromFile(cachePath)
-			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime()}, loadErr
+			return staleFallback(cachePath, info, statusErr, "non-200 response, using stale cache", "url", redact.URL(url), "status", resp.StatusCode)
 		}
-		return nil, sourceMeta{}, fmt.Errorf("%q: HTTP %d", redact.URL(url), resp.StatusCode)
+		return nil, sourceMeta{}, statusErr
 	}
 
 	// Atomic write: stream to a sibling .tmp file, then os.Rename on success.
@@ -232,9 +229,7 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 	if readErr != nil {
 		_ = os.Remove(tmpPath)
 		if info, statErr := os.Stat(cachePath); statErr == nil {
-			logger.Warn("download failed, using stale cache", "url", redact.URL(url), "err", readErr)
-			domains, loadErr := loadFromFile(cachePath)
-			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime()}, loadErr
+			return staleFallback(cachePath, info, readErr, "download failed, using stale cache", "url", redact.URL(url), "err", readErr)
 		}
 		return nil, sourceMeta{}, readErr
 	}
@@ -246,12 +241,11 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 	var probe [1]byte
 	if n, _ := io.ReadFull(resp.Body, probe[:]); n > 0 {
 		_ = os.Remove(tmpPath)
+		capErr := fmt.Errorf("%q: response exceeded %d-byte cap", redact.URL(url), maxBodyBytes)
 		if info, statErr := os.Stat(cachePath); statErr == nil {
-			logger.Warn("response truncated at cap, using stale cache", "url", redact.URL(url), "cap_bytes", maxBodyBytes)
-			domains, loadErr := loadFromFile(cachePath)
-			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime()}, loadErr
+			return staleFallback(cachePath, info, capErr, "response truncated at cap, using stale cache", "url", redact.URL(url), "cap_bytes", maxBodyBytes)
 		}
-		return nil, sourceMeta{}, fmt.Errorf("%q: response exceeded %d-byte cap", redact.URL(url), maxBodyBytes)
+		return nil, sourceMeta{}, capErr
 	}
 	if f != nil {
 		if err := os.Rename(tmpPath, cachePath); err != nil {
@@ -260,6 +254,20 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 		}
 	}
 	return domains, sourceMeta{from: fromDownload, snapshot: time.Now()}, nil
+}
+
+// staleFallback serves the cached copy of a list after its download failed.
+// It reads the copy first and logs msg (a "using stale cache" WARN with
+// attrs) only when the read works. A copy that cannot be read cannot stand
+// in for the download: the list then fails with dlErr and the read error,
+// instead of a WARN that claims s-hole uses the cache (b/095).
+func staleFallback(cachePath string, info fs.FileInfo, dlErr error, msg string, attrs ...any) ([]string, sourceMeta, error) {
+	domains, loadErr := loadFromFile(cachePath)
+	if loadErr != nil {
+		return nil, sourceMeta{}, fmt.Errorf("%w; the cached copy could not be read either: %w", dlErr, loadErr)
+	}
+	logger.Warn(msg, attrs...)
+	return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime()}, nil
 }
 
 // ownerHint is the advice for a cache file or directory that belongs to

@@ -111,6 +111,18 @@ journalctl -u s-hole -b -p err
 If the start fails, systemd tries again every 5 seconds. `systemctl status
 s-hole` then shows `activating (auto-restart)`.
 
+## The installer stops at the config check
+
+`install-linux.sh` checks the config with the new binary before it installs
+anything. If the check fails, it prints the config problems and `error: this
+s-hole build does not accept <file>`, and it changes nothing: an installed
+s-hole keeps running as it was.
+
+| You see | What it means | What to do |
+|---|---|---|
+| `The config uses s-hole 1.x keys` | The config has the 1.x layout. s-hole 2.0 ignores every 1.x key. | Move the keys to the 2.0 layout, as "Upgrade to 2.0" in the release notes shows. Then put the file in place and run the installer in one step, as that section shows. |
+| `msg="config problem"` | A key is unknown or set twice, or s-hole does not accept its value. | Correct the key that `key` names. To check a file without the installer, run `s-hole -check-config -config <file>`. |
+
 ## s-hole stopped while it ran
 
 ```bash
@@ -305,6 +317,17 @@ shows `stored history off` while it is off.
 The metric `shole_query_log_dropped_total` counts queries that the database
 dropped because it was busy; `shole_query_log_file_dropped_total` counts query
 lines that the file output dropped.
+
+## A purge says that a file was not found
+
+When no s-hole runs, `s-hole -purge` deletes the files itself. Relative paths
+in the config then start in the current directory, and the note after the
+steps names that directory.
+
+| You see | What it means | What to do |
+|---|---|---|
+| `query database ... not found at <path>` or `query log file ... not found at <path>`, then a note | No file is at that path, so the purge deleted nothing there. Usually the command ran in another directory than s-hole's own. | Run the purge again from s-hole's directory: for the Linux installer, run `cd /var/lib/s-hole` first. On Windows, s-hole uses the folder of `config.yaml` itself. If an earlier purge deleted the file, there is nothing to do. |
+| `downloaded blocklists ... none found in <dir>` | No downloaded list is in that directory: s-hole has not downloaded one there, or a purge deleted them. The lists hold no personal data, so this gives no note. | Nothing. The next reload downloads the lists again. |
 
 ## Privacy and security warnings
 

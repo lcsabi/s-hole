@@ -2842,3 +2842,25 @@ Found in the pre-merge test on Windows 10.
 A platform helper, `connRefused`, also matches `WSAECONNREFUSED` on Windows.
 Checked live: an offline purge from `C:\Windows\System32` deletes the files
 next to `config.yaml`.
+
+## b/095: blocklist: a stale-cache fallback logged that it used a copy it could not read
+
+**Priority:** P3
+**Component:** blocklist
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-07
+
+### Description
+
+When a list's download failed, s-hole logged `download failed, using stale
+cache` (or the non-200 and size-cap variants) before it read the cached
+copy. If the copy could not be read, the list then failed, so the log said
+that s-hole used a cache that it could not use. Found by the CL 93
+documentation review after the b/092 fix, which made an unreadable cache
+file a known case.
+
+### Fix
+
+A helper, `staleFallback`, reads the copy first and logs the WARN only when
+the read works. Otherwise the list fails with the download error and the
+read error together.

@@ -142,7 +142,7 @@ const (
 // DefaultUpstreams is the upstream list when the config sets none: two
 // encrypted DoH resolvers first, then the same two over plain DNS as a
 // fallback. s-hole uses a plain entry only when every DoH entry has failed,
-// and warns each time it does.
+// and warns once a minute while it does.
 var DefaultUpstreams = []string{
 	"https://9.9.9.9/dns-query",
 	"https://1.1.1.1/dns-query",
@@ -867,7 +867,7 @@ func (c *Config) UpstreamNotes() []string {
 	case doh > 0 && plain == 0:
 		notes = append(notes, "every upstream is DoH; if TLS fails (for example, the system clock is wrong), s-hole cannot resolve names until it works again")
 	case doh > 0 && plain > 0:
-		notes = append(notes, "plain upstreams are a fallback; s-hole uses one only when every DoH upstream has failed, and warns each time")
+		notes = append(notes, "plain upstreams are a fallback; s-hole uses one only when every DoH upstream has failed, and warns once a minute while it does")
 	}
 	return notes
 }

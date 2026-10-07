@@ -13,7 +13,8 @@ import (
 // user info, so that case is redacted by hand: everything before the last
 // "@" in the authority is replaced. A string with neither part is returned
 // unchanged. Logs, /metrics, and /api/stats show URLs through it, so a token
-// in a private blocklist URL or a DoH path never reaches them.
+// in the user info or the query string of a blocklist or DoH URL never
+// reaches them. A token in the path is not hidden.
 func URL(u string) string {
 	parsed, err := url.Parse(u)
 	if err == nil {

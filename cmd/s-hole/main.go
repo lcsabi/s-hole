@@ -19,8 +19,9 @@
 //   - construct the single-flight reload closure and the admin API server
 //     (which exposes /healthz, /readyz, /metrics, and, opt-in via
 //     admin.pprof, /debug/pprof/* alongside the REST API)
-//   - launch background tickers for the stats line and the blocklist reload,
-//     both panic-recovered
+//   - launch the background goroutines: the stats line and blocklist reload
+//     tickers (both panic-recovered), the unresolved-query summary, the
+//     stale-row check, and the host-resolver check
 //   - either enter the Windows SCM event loop (service mode) or run the DNS
 //     server in the background and block until doStop completes the ordered
 //     teardown (interactive mode)
@@ -52,6 +53,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -176,9 +178,20 @@ func main() {
 	}
 
 	// -purge deletes the stored data, through the running s-hole when there is
-	// one, and exits.
+	// one, and exits. On Windows the service's relative paths resolve next to
+	// config.yaml (see below), so an offline purge resolves them there too,
+	// not in the directory of the prompt it was run from (b/091).
 	if *purge {
-		os.Exit(runPurge(mainLog, *cfgPath))
+		path := *cfgPath
+		if runtime.GOOS == "windows" {
+			abs, err := chdirToConfigDir(path, os.Chdir)
+			if err != nil {
+				mainLog.Error("working directory change failed", "config", path, "err", err)
+				os.Exit(1)
+			}
+			path = abs
+		}
+		os.Exit(runPurge(mainLog, path))
 	}
 
 	// Under the Windows SCM the working directory is C:\Windows\System32, so

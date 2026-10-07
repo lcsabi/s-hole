@@ -115,7 +115,7 @@ type Handler struct {
 	counter      *stats.Counter
 	upstreams    []string
 	logger       Logger
-	blockMode    string // "zero" or "nxdomain"
+	blockMode    string // "zero_ip" or "nxdomain"
 	blockTTL     uint32
 	cache        *cache.Cache // nil when caching is disabled
 	localPTR     bool         // when true, answer RFC 6303 private PTR queries locally
@@ -363,7 +363,7 @@ func (h *Handler) writeSinkhole(w dns.ResponseWriter, req *dns.Msg, q dns.Questi
 		return
 	}
 
-	// Default: "zero" returns 0.0.0.0 / ::
+	// Default: "zero_ip" returns 0.0.0.0 / ::
 	switch q.Qtype {
 	case dns.TypeA:
 		resp.Answer = append(resp.Answer, &dns.A{

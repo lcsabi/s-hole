@@ -93,7 +93,7 @@ s-hole sees every DNS query on your network, so it could hold the browsing histo
 - **Loud warnings.** Each setting that records more than the default (and a few other less private or less secure settings) gives a WARN at `-check-config`, at startup, and again with every stats line, and appears on the dashboard. You cannot turn these warnings off; change the setting to remove one.
 - **LAN only.** s-hole answers devices on the local network only.
 
-The network owner decides what s-hole records, and everyone who uses the network trusts that person. If you turn on more recording, tell the people who use your network.
+The network owner decides what s-hole records, and everyone who uses the network has to trust that person. If you turn on more recording, tell the people who use your network.
 
 **Devices with their own encrypted DNS.** Some devices and apps send DNS queries encrypted to their own provider: Firefox with DNS over HTTPS, iCloud Private Relay, or Android Private DNS set to another provider. s-hole does not see those queries, so it cannot block ads or trackers for them. s-hole does not try to stop these features, because the person who turned one on chose that privacy.
 
@@ -105,7 +105,7 @@ To delete everything s-hole stored, run on the s-hole host:
 s-hole -purge -config /etc/s-hole/config.yaml     # sudo for the systemd install
 ```
 
-On the s-hole host, the dashboard's **Delete history** button does the same. When s-hole runs, it deletes the history through the running process, so the data in memory goes too. When s-hole is stopped, the command deletes the files itself.
+On the s-hole host, the dashboard's **Delete history** button does the same. When s-hole runs, it deletes the history through the running process, so the data in memory goes too. When s-hole is stopped, the command deletes the files itself. Relative paths in the config then start in the current directory, so run the command from s-hole's working directory: `cd /var/lib/s-hole` first for the systemd install. On Windows, s-hole uses the folder of `config.yaml`. If a file is not there, the command says `not found at` and the path it tried.
 
 A purge deletes the query database rows, the query log file, the downloaded blocklists (the next reload downloads them again), the Top Domains and Top Clients lists, the per-minute graph, and the DNS response cache. It keeps the allowlist, which is configuration, and the since-start counters, which are counts only. It cannot delete what went to standard output: those lines are in the system journal or the container log.
 
@@ -181,10 +181,10 @@ Do not add a public resolver (such as `1.1.1.1`) as a second DNS server in the r
 After the router change, DHCP also gives s-hole's address to the machine that runs s-hole. Do not let the s-hole host use s-hole as its own DNS server. While s-hole is down (a restart, an upgrade, a crash), that host could not resolve any name:
 
 - s-hole could not download its blocklists at startup.
-- `apt` and other updates would fail, also the update that would fix s-hole.
+- `apt` and other updates would fail, including the update that would fix s-hole.
 - A host without a battery-backed clock (a Raspberry Pi 4 or older) could not reach its time server. With a wrong clock, the DoH upstreams' certificates do not check, and s-hole cannot resolve at all.
 
-So set the s-hole host's own resolver by hand, before you change the router. Use your router's address, unless the router itself forwards its DNS to s-hole; then use a public resolver such as `9.9.9.9`. s-hole warns at startup and every hour (`this host uses s-hole as its own DNS server`) when the host points at itself, and the installer checks it too.
+So set the s-hole host's own resolver by hand, before you change the router. Use your router's address, unless the router itself forwards its DNS to s-hole; then use a public resolver such as `9.9.9.9`. s-hole checks this at startup and every hour. When it finds the host pointing at itself, it warns once (`this host uses s-hole as its own DNS server`), and again after the setting changes back and forth. The installer checks it too.
 
 **Raspberry Pi OS (bookworm) and Debian with NetworkManager** (tested on a Raspberry Pi 5 and on Debian 13):
 
@@ -558,7 +558,7 @@ A few things to know once s-hole runs as a systemd service:
 - **Config is *copied*, not live-linked.** The installer copies your config to `/etc/s-hole/config.yaml` on the **first** install only. It never overwrites an existing one (it prints `config already exists, skipping`), and re-running the installer or `scp`-ing a new file to your home directory does **not** update it. To apply a config change on an installed host, edit `/etc/s-hole/config.yaml` directly (or `sudo cp your-config.yaml /etc/s-hole/config.yaml`), then `sudo systemctl restart s-hole`. To catch a mistake before the restart, validate the file first with `sudo -u s-hole s-hole -check-config -config /etc/s-hole/config.yaml`, which loads and validates it exactly the way startup does and exits non-zero on any error. A reload (`POST /api/reload` or SIGHUP) does not apply a config edit. It re-downloads from the URLs read at startup and re-reads the certificate files at the `dns.dot_cert` and `dns.dot_key` paths read at startup, so a changed blocklist URL or a changed certificate path also needs a restart to take effect.
 - **`S_HOLE_*` environment overrides do not reach the service.** The systemd unit runs with a clean environment, so shell env vars only take effect when you run the binary directly. On the service, put values in `/etc/s-hole/config.yaml` (or add `Environment=` lines to the unit).
 - **`query_log.database`, `query_log.file`, and `blocking.cache_dir` are relative to `/var/lib/s-hole`.** Relative paths resolve against the service's working directory. Because the unit sets `ProtectSystem=strict` with `ReadWritePaths=/var/lib/s-hole`, the rest of the filesystem is read-only to the service. Keep these paths under `/var/lib/s-hole` (a relative path such as `queries.db` does). Pointing them at `/tmp` or a home directory fails to write.
-- **The query history flushes on an interval.** With `query_log.database` on, newly recorded queries appear in `/api/queries` and the dashboard's "Stored" panel only after the next SQLite flush (`query_log.flush_interval`, default `30s`), not instantly. Lower it for a more responsive view.
+- **The query history flushes on an interval.** With `query_log.database` on, newly recorded queries appear in `/api/queries` and the dashboard's Recent Queries panel and Stored list only after the next SQLite flush (`query_log.flush_interval`, default `30s`), not instantly. Lower it for a more responsive view.
 
 To remove s-hole, run the bundled uninstaller as root (from the `deploy/`
 directory, or wherever you copied it):
@@ -771,8 +771,8 @@ expose `/metrics` to the public internet: the admin API is unauthenticated.
 make
 
 # Cross-compilation targets
-make pi          # Linux arm64 (Raspberry Pi 4 / 5)
-make pi32        # Linux armv7 (Raspberry Pi 2 / 3)
+make pi          # Linux arm64: a 64-bit OS (Raspberry Pi 3, 4, 5)
+make pi32        # Linux armv7: a 32-bit OS (Pi 2, or a Pi 3 or 4 on a 32-bit OS)
 make linux       # Linux amd64
 
 # Clean
@@ -874,6 +874,7 @@ $env:GOOS=""; $env:GOARCH=""
 ├── Makefile           build + lint + test + install targets
 ├── CONTRIBUTING.md    development workflow + PR conventions
 ├── LICENSE            MIT
+├── PRIVACY.md         what s-hole stores and sends
 ├── README.md          you are here
 └── SECURITY.md        security disclosure policy
 ```
@@ -904,7 +905,7 @@ The "afternoon's reading" claim extends to the dependency graph: a small set of 
 | `github.com/miekg/dns` | Complete RFC-compliant DNS codec, server, and client; rolling our own would be a correctness minefield |
 | `modernc.org/sqlite` | Pure-Go SQLite for the query log; no CGO, so cross-compilation stays a one-liner |
 | `gopkg.in/yaml.v3` | Parses `config.yaml` |
-| `golang.org/x/sys` | Windows Service Control Manager and Event Log integration |
+| `golang.org/x/sys` | Windows Service Control Manager, Event Log, and the service folder's access list |
 
 The indirect modules in `go.mod` are almost all pulled in by the pure-Go SQLite port; none are used directly. Everything else is deliberately hand-rolled or omitted. The Prometheus exposition is written by hand rather than importing `client_golang`, the web UI is framework-free embedded HTML/CSS/JS, and the systemd integration is a static unit file rather than a service library. The reasoning behind each choice (and the alternatives rejected) is in `docs/DESIGN.md`. New dependencies need discussion first; see `CONTRIBUTING.md`.
 
@@ -932,7 +933,7 @@ Coverage targets (checked in review, not a strict CI gate; run
 
 | Package | Target |
 |---|---|
-| `internal/stats`, `internal/config`, `internal/version` | 100 % |
+| `internal/stats`, `internal/config`, `internal/version`, `internal/redact` | 100 % |
 | `internal/logging` | ≥ 95 % |
 | `internal/cache` | ≥ 94 % |
 | `internal/api`, `internal/blocklist`, `internal/dnsserver`, `internal/querylog` | ≥ 85 % |

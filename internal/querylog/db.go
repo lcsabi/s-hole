@@ -175,8 +175,8 @@ PRAGMA temp_store=MEMORY;
 // or initialised; callers should treat the error as non-fatal and
 // continue without SQLite logging.
 func NewDBLogger(path, logQueries string, flushInterval time.Duration, retentionDays int) (*DBLogger, error) {
-	// Defense-in-depth: config.ParsedDBFlushInterval already rejects a
-	// non-positive interval before main reaches here (b/046). Guard the
+	// Defense-in-depth: config.Load (setDuration) already rejects a
+	// non-positive query_log.flush_interval before main reaches here (b/046). Guard the
 	// constructor too so the type can never panic its writer goroutine on
 	// time.NewTicker regardless of caller.
 	if flushInterval <= 0 {
@@ -717,7 +717,7 @@ func (d *DBLogger) TopBlocked(ctx context.Context, n int) ([]Entry, error) {
 	// ORDER BY cnt DESC, domain ASC: the domain tie-break makes equal-count rows
 	// deterministic (SQLite leaves the order of a plain ORDER BY cnt DESC
 	// unspecified) and matches the in-memory topN tie-break, so the dashboard's
-	// "Since start" and "All time" tabs order ties identically (b/056).
+	// "Since start" and "Stored" tabs order ties identically (b/056).
 	rows, err := d.db.QueryContext(ctx, `
 		SELECT domain, COUNT(*) AS cnt
 		FROM queries WHERE blocked=1

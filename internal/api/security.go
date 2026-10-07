@@ -9,8 +9,8 @@ import (
 	"strings"
 )
 
-// The admin server has no login (a settled scope decision, see the ROADMAP
-// non-goals). The checks in this file are not authentication. They stop a web
+// The admin server has no login yet (device pairing is planned, ROADMAP
+// #42). The checks in this file are not authentication. They stop a web
 // page in the operator's own browser from using that browser to reach the
 // server, which binding to localhost alone does not stop:
 //
@@ -45,7 +45,7 @@ var securityHeaders = map[string]string{
 		"object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
 }
 
-// secure wraps the routes with the Host check, the security headers, and the
+// secure wraps the routes with the security headers, the Host check, and the
 // cross-origin check, in that order. Every route goes through it, /metrics
 // and the probes included: Prometheus, Docker, and Kubernetes reach s-hole by
 // IP address, which the Host check accepts.

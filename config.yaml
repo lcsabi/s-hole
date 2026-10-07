@@ -5,8 +5,8 @@
 # until you turn that on here.
 #
 # s-hole logs a WARN at startup, and again with every stats line, for each
-# setting that is less private than its default. You cannot turn these
-# warnings off.
+# setting that is less private or less secure than its default. You cannot
+# turn these warnings off.
 #
 # If a value is not valid, s-hole logs a warning and uses the default for that
 # setting. To check this file before a restart, run:
@@ -49,7 +49,7 @@ dns:
   # cannot read or change them. The defaults are two DoH resolvers, Quad9 and
   # then Cloudflare. The same two resolvers over plain DNS follow as a
   # fallback. s-hole uses a plain entry only when every DoH entry has failed,
-  # and it logs a WARN each time that happens. For DoH only, delete the two
+  # and it logs a WARN with the count, at most once a minute, while it does. For DoH only, delete the two
   # plain entries. Then, if TLS fails (for example, the system clock is wrong),
   # s-hole cannot resolve names until it works again.
   #
@@ -155,14 +155,16 @@ query_log:
   file: "off"
 
   # Delete database rows older than this many days. 0 keeps them forever.
-  # s-hole warns while this is 0 or more than 7.
+  # s-hole warns while this is 0 or more than 7 and the database records
+  # queries (database is not "off" and mode is not "none").
   retention_days: 7
 
   # How often s-hole writes recorded queries to the database. A longer
   # interval writes to an SD card less often.
   flush_interval: "30s"
 
-  # A display label for a client address in the dashboard and the log.
+  # A display label for a client address in the dashboard and the query
+  # export.
   # A key is an exact IP or a CIDR. The value is the label.
   # s-hole looks up the label from the stored client value, so a label never
   # shows more than "clients" keeps:

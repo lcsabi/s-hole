@@ -18,7 +18,7 @@
 //	GET    /api/check            block decision for ?domain=NAME (diagnostic; no stats/log side effects)
 //	GET    /api/queries          recent rows from SQLite (?limit=N, default 50, max 1000; filter ?domain= substring, ?client= exact, ?blocked=true/false, ?outcome=unresolved/upstream-error)
 //	GET    /api/queries/export   stream the filtered query log (?format=csv|json, default csv; same filters as /api/queries; optional ?limit=N, else all)
-//	GET    /api/top-blocked      all-time most-blocked domains from SQLite (?limit=N, default 50, max 1000)
+//	GET    /api/top-blocked      most-blocked domains in the stored history (SQLite) (?limit=N, default 50, max 1000)
 //	GET    /api/history          per-bucket query volume (?window=24h&bucket=1h; up to 24h from in-memory counts, longer from SQLite; bucket count capped at 1000)
 //	GET    /api/allowlist        runtime allowlist (sorted)
 //	POST   /api/allowlist        add a domain (JSON body, ValidDomain-gated, 64 KiB cap)
@@ -27,7 +27,7 @@
 //	POST   /api/purge            delete the query history and other stored data ({"confirm": true}; from this machine only)
 //	GET    /healthz              liveness probe (always 200 when running)
 //	GET    /readyz               readiness probe (200 once blocklist > 0)
-//	GET    /metrics              Prometheus text exposition (queries, blocked, local_ptr, cache, failures, blocklist, DoT certificate, runtime gauges)
+//	GET    /metrics              Prometheus text exposition (queries, blocked, local_ptr, cache, failures, refused, plaintext fallbacks, query-log drops, blocklist, allowlist, DoT certificate, runtime gauges)
 //	GET    /debug/pprof/*        net/http/pprof handlers (/symbol also POST); opt-in via EnablePprof
 //	GET    /                     embedded SPA from internal/api/static/
 package api
@@ -110,7 +110,7 @@ type Server struct {
 	warnings func() []string
 	// labeler resolves a stored client value to a config client_names label at
 	// display time. It keys off the already-masked value the store holds, so it
-	// never exceeds the active queryPrivacy granularity. nil = attribution off.
+	// never exceeds the query_log.clients setting. nil = attribution off.
 	labeler *clientLabeler
 	// upstreamTransportFailures returns the cumulative per-upstream
 	// transport-failure counts for the shole_upstream_transport_failures_total{upstream}
@@ -228,7 +228,7 @@ func (s *Server) privacyInfo() PrivacyInfo {
 // resolver for the Top Clients panel and the recent-queries list. The labels
 // are resolved against the already-masked client value, so they never expose
 // more than the active query_log.clients mode. Call before Serve; an empty map
-// leaves attribution off. Like SetQueryPrivacy, this does not affect masking.
+// leaves attribution off. Like SetPrivacy, this does not affect masking.
 func (s *Server) SetClientNames(m map[string]string) {
 	s.labeler = newClientLabeler(m)
 }
@@ -396,7 +396,8 @@ func (s *Server) handler() http.Handler {
 // TopClients is redeclared here so it can carry the client_names label; the
 // outer field shadows the one embedded from Summary for JSON, so the payload
 // key stays "top_clients" and the stats package needs no change. The label is
-// resolved from the masked Name, so it never exposes more than QueryPrivacy.
+// resolved from the masked Name, so it never exposes more than
+// query_log.clients allows.
 type statsResponse struct {
 	stats.Summary
 	TopClients []clientEntry            `json:"top_clients"`
@@ -523,7 +524,7 @@ func parseLimit(r *http.Request) int {
 // queryRow is a recent-queries row: the stored columns plus an optional
 // config-resolved client label and a derived outcome label. The label is
 // resolved from the masked ClientIP, so the recent-queries list never exposes
-// more than QueryPrivacy. Outcome ("blocked"/"allowed"/"unresolved"/
+// more than query_log.clients allows. Outcome ("blocked"/"allowed"/"unresolved"/
 // "upstream_error") is computed once here from the row so the dashboard and any
 // export read a name instead of decoding rcode and the synthesized flag.
 type queryRow struct {
@@ -789,11 +790,10 @@ func csvSanitize(s string) string {
 	return s
 }
 
-// handleTopBlocked serves the all-time most-blocked domains from the SQLite
-// query log, the persistent, unpruned companion to the in-memory
-// top_domains list in /api/stats (which resets on restart and caps at
-// topNMaxEntries). When query logging is disabled (s.db == nil) it returns an
-// empty list rather than an error, so the dashboard's "All time" toggle
+// handleTopBlocked serves the most-blocked domains in the stored query
+// history (SQLite), the companion to the in-memory top_domains list in
+// /api/stats (which resets on restart and caps at topNMaxEntries). When query logging is disabled (s.db == nil) it returns an
+// empty list rather than an error, so the dashboard's "Stored" toggle
 // degrades to an empty panel instead of a failure, exactly like /api/queries.
 func (s *Server) handleTopBlocked(w http.ResponseWriter, r *http.Request) {
 	limit := parseLimit(r)
@@ -1001,7 +1001,9 @@ func (s *Server) handleAllowlistRemove(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
-	logger.Info("reload requested via API", "client", clientIP(r))
+	// No client address: the log keeps only the allowlist audit lines'
+	// (see PRIVACY.md), and a reload changes no data.
+	logger.Info("reload requested via API")
 	if !s.reloadFn() {
 		writeJSON(w, map[string]string{"status": "reload queued"})
 		return

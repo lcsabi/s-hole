@@ -24,11 +24,11 @@ help:
 all:
 	CGO_ENABLED=0 go build -trimpath $(LDFLAGS) -o $(BINARY) $(PKG)
 
-## pi: Raspberry Pi 4 / 5 and any 64-bit ARM board (arm64)
+## pi: 64-bit ARM Linux (arm64): a Raspberry Pi 3, 4, or 5 on a 64-bit OS
 pi:
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath $(LDFLAGS) -o $(BINARY)-linux-arm64 $(PKG)
 
-## pi32: Raspberry Pi 2 / 3 and older 32-bit ARM boards (armv7)
+## pi32: 32-bit ARM Linux (armv7): a Raspberry Pi 2, or a Pi 3 or 4 on a 32-bit OS
 pi32:
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -trimpath $(LDFLAGS) -o $(BINARY)-linux-armv7 $(PKG)
 

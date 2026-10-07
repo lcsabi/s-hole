@@ -103,8 +103,8 @@ layout, so a 1.x config needs an edit. (CL 93)
   counts kept in memory (no domains, no clients, never on disk), so it works
   under every setting. (CL 93)
 - **`s-hole -healthcheck`**, used by the Docker image's new `HEALTHCHECK`. (CL 93)
-- **A warning when the s-hole host uses s-hole as its own DNS server**, at
-  startup, hourly, and in the installer, with a README walkthrough to set the
+- **A warning when the s-hole host uses s-hole as its own DNS server**,
+  checked at startup, hourly, and in the installer, with a README walkthrough to set the
   host's resolver. (CL 93)
 - **Metrics:** `shole_refused_total`, `shole_upstream_plaintext_fallback_total`,
   and `shole_query_log_file_dropped_total`. (CL 93)
@@ -119,8 +119,8 @@ layout, so a 1.x config needs an edit. (CL 93)
   usually on port 853. It is aimed at Android's default Automatic Private DNS
   mode: the phone uses DoT on its own when the network's DNS server offers it
   and does not check the certificate, so a self-signed certificate works and
-  the phone needs no setup. Set `dot_listen`, `tls_cert`, and `tls_key` to turn
-  it on; it is off by default. The README also covers strict mode (a domain you
+  the phone needs no setup. Set `dns.dot_listen`, `dns.dot_cert`, and `dns.dot_key`
+  to turn it on; it is off by default. The README also covers strict mode (a domain you
   own and a publicly trusted certificate) and desktop DoT clients. DoT queries
   get the same blocking, cache, and logging as plain ones. If the port is taken
   or the certificate does not load, s-hole stops with an error instead of
@@ -140,8 +140,8 @@ layout, so a 1.x config needs an edit. (CL 93)
   `shole_dot_certificate_reload_failures_total`, with example alert rules and
   Grafana panels. The log and `-check-config` warn when the certificate has
   expired or expires within 14 days. (CL 86)
-- **DNS-over-HTTPS (DoH) upstream forwarding.** An `upstreams` entry can now be a
-  DoH endpoint with an IP host, for example `https://1.1.1.1/dns-query` (also
+- **DNS-over-HTTPS (DoH) upstream forwarding.** A `dns.upstreams` entry can now be
+  a DoH endpoint with an IP host, for example `https://1.1.1.1/dns-query` (also
   `8.8.8.8`, `9.9.9.9`). s-hole POSTs the query to it over HTTPS (RFC 8484), so
   the hop to the upstream is encrypted and an ISP that intercepts plain port-53
   traffic no longer sees or rewrites it. DoH and plain entries share the one
@@ -163,7 +163,8 @@ layout, so a 1.x config needs an edit. (CL 93)
   source. (CL 93)
 - **The application log names no queried domain and no client address**,
   except a warning about one failed query under `query_log.mode: "all"` and the
-  allowlist audit lines. Unresolved queries are summarized once a minute
+  allowlist audit lines. `reload requested via API` no longer has a `client`
+  field. Unresolved queries are summarized once a minute
   (`queries could not be resolved`, with each upstream's error and a hint when
   the system clock looks wrong) instead of one `upstream forward failed` line
   each. Update a log search that matched the old line. (CL 93)
@@ -187,7 +188,8 @@ layout, so a 1.x config needs an edit. (CL 93)
 - **The pprof warning has its advice in a `hint` field.** The message
   `pprof endpoints enabled; bind api_listen to localhost only` is now
   `pprof endpoints enabled`. Update a log search that matches the old text.
-  (CL 91)
+  (CL 91; CL 93 replaced it with a `privacy warning` line,
+  `key=admin.pprof`)
 - **A Windows service tells Windows how long a stop can take.** The stop
   state now carries a 15-second wait hint. (CL 91)
 - **A port conflict on the DNS port stops startup with `dns listen failed`.**
@@ -251,7 +253,8 @@ layout, so a 1.x config needs an edit. (CL 93)
   - `retention prune failed`, `retention prune`: `query log retention prune
     failed`, `query log retention prune done`
   - `ignoring malformed upstream (want host:port ...)`: `ignoring malformed
-    upstream`, with the advice in a `hint` field
+    upstream`, with the advice in a `hint` field (CL 93 replaced it with a
+    `config problem` line, `key=dns.upstreams`)
   - `admin UI listening` no longer has an `addr` field; `url` has the address.
   (CL 89)
 
@@ -272,6 +275,10 @@ layout, so a 1.x config needs an edit. (CL 93)
 - **The Router setup banner listed LAN addresses that s-hole did not listen
   on** when `dns.listen` named one address; it now shows that address
   (b/088). (CL 93)
+- **`s-hole -purge` on a stopped s-hole could report success and leave the
+  history** when it ran from another directory than s-hole's own; it now
+  reports `not found at` with the path, and on Windows it uses the folder of
+  `config.yaml` (b/091). (CL 93)
 - **A `blocking.cache_dir` that did not exist was never created**, so every
   start downloaded every list again; s-hole now creates it, mode `700`
   (b/089). (CL 93)
@@ -312,7 +319,7 @@ layout, so a 1.x config needs an edit. (CL 93)
   `level=WARN` or `level=ERROR` missed them, and the Windows Event Log recorded
   them as Information. Each line now has its real level and separate fields.
   (CL 89, b/062)
-- **The blocklists now refresh every `refresh_interval`.** With the default 24h
+- **The blocklists now refresh every `blocking.refresh_interval`.** With the default 24h
   interval, s-hole downloaded its blocklists only every 48 hours: the first
   timer reload after a download found the cache just under 24 hours old and
   used it without a fetch. A manual reload within a day of a download also did

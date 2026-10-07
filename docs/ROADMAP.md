@@ -511,7 +511,7 @@ Design points to settle in the CL:
 
 - Whether to check only CNAME targets or also the final A/AAAA target.
 - Whether a reply blocked by chain inspection counts as a "blocked" query in the
-  stats, and whether the whitelist suffix walk applies to chain targets the same
+  stats, and whether the allowlist suffix walk applies to chain targets the same
   way it applies to the queried name.
 - Cache interaction: a reply blocked this way must not enter the cache as a
   normal upstream answer.
@@ -528,7 +528,7 @@ operator who wants `nas.home` or `printer.home` to resolve has to run a second
 resolver or edit every client's hosts file. Pi-hole and dnsmasq both answer
 local A/AAAA records; s-hole forwards them upstream, where they NXDOMAIN.
 
-Add a `local_records:` map to config (name to one or more A/AAAA addresses).
+Add a `dns.local_records` map to config (name to one or more A/AAAA addresses).
 Answer a matching query authoritatively before the forward step, the same
 short-circuit pattern the private-PTR handler already uses (CL 27): the match
 runs before the blocklist check, costs one map lookup for a non-matching query,
@@ -916,7 +916,7 @@ Suffix blocking (CL 30) covers the common cases, but some trackers need a patter
 (for example a family such as `ad[sx]?[0-9]*\.`). Add an optional pattern list
 checked after the fast set lookups.
 
-A `block_patterns:` list is compiled once at load. `IsBlocked` checks the two O(1)
+A `blocking.patterns` list is compiled once at load. `IsBlocked` checks the two O(1)
 sets and the suffix walk first, and falls through to the patterns only on a miss,
 so a blocked or exact-allowed query pays no regex cost. Patterns are the
 last-resort tool; suffix blocking stays the fast path.
@@ -926,11 +926,12 @@ Design decisions to settle in the CL:
 - **Hot-path guard.** A benchmark companion (the pattern-miss worst case, which
   runs every pattern) so a large list cannot regress the hot path unseen. Add it
   the way `BenchmarkStore_IsBlocked_Miss` guards the suffix walk.
-- **Whitelist interaction.** Whether the whitelist walk (CL 30) overrides a pattern
-  match the way it overrides a suffix match. It should: whitelist-wins stays the
+- **Allowlist interaction.** Whether the allowlist walk (CL 30) overrides a pattern
+  match the way it overrides a suffix match. It should: allowlist-wins stays the
   single escape hatch.
-- **Compile-time validation.** A bad pattern in config fails `config.Validate` with
-  the offending line, not at the first query.
+- **Compile-time validation.** A bad pattern in config is a config problem that
+  names the offending line (`-check-config` fails), not an error at the first
+  query.
 - **Stats attribution.** A pattern-blocked query counts as blocked like any other.
   Whether to distinguish the reason in the #18 `/api/check` output.
 
@@ -1467,7 +1468,7 @@ so it adds complexity and loses the guarantee.
 
 These numbers are the "before" side of the win. Capture the "after" the same way in
 the CL that implements this item, so the PR shows the delta. Method: build with
-`S_HOLE_ENABLE_PPROF=1`, drive `POST /api/reload`, read `TotalAlloc` from
+`S_HOLE_ADMIN_PPROF=1`, drive `POST /api/reload`, read `TotalAlloc` from
 `/debug/pprof/heap?debug=1&gc=1` across reloads for the churn, and
 `go tool pprof -alloc_space -base before.pb.gz after.pb.gz` for the attribution.
 Environment: Go 1.26.5, branch `cl77-failed-query-visibility`, 2026-09-13.
@@ -1624,9 +1625,10 @@ complexity in the cache and the DNS write path.
 
 ## 34. General admin-API rate limiting
 
-The admin API has no login (authentication is planned as device pairing, #42). Today its only abuse defenses are the localhost-default bind, the slowloris
-timeouts, the 64 KiB body cap, and the `?limit=` clamp; there is no request-rate
-throttle. CL 81 added an export-only concurrency guard for the one endpoint whose
+The admin API has no login (authentication is planned as device pairing, #42).
+Today its abuse defenses are the localhost-default bind, the Host check, the
+cross-origin check, the JSON content-type rule, the slowloris timeouts, the
+64 KiB body cap, and the `?limit=` clamp; there is no request-rate throttle. CL 81 added an export-only concurrency guard for the one endpoint whose
 cost is unbounded, but a broad limiter across every route is a separate decision.
 It would touch every handler and would add a dependency (`golang.org/x/time/rate`)
 or a hand-rolled token bucket, which cuts against the dependency-minimalism and the
@@ -1999,7 +2001,7 @@ server, a `dns.ResponseWriter` adapter, request parsing and size limits, a
 decision on trusting `X-Forwarded-For`, and a second shutdown drain.
 
 The trigger to build it is demand from those clients, most likely Windows
-desktops. It would reuse the CL 86 certificate (`tls_cert`, `tls_key`) and
+desktops. It would reuse the CL 86 certificate (`dns.dot_cert`, `dns.dot_key`) and
 reload path.
 
 Rated Low: it reaches Windows desktops and browsers, but on a LAN their plain
@@ -2019,7 +2021,7 @@ a loud, repeating warning for every less private setting; owner-only files and
 `secure_delete` erasure; a purge; a LAN-only DNS server; the Host and
 cross-origin checks and security headers; log hygiene; a non-root Docker image
 and a least-privilege Windows service. See `docs/cls/CL-93.md`, `PRIVACY.md`, and
-b/072 to b/087.
+b/072 to b/091.
 
 ## 41. Minimal upstream query (planned as CL 94)
 
@@ -2063,7 +2065,7 @@ Host and cross-origin checks fit. It needs its own CL.
 
 - **Cache eviction beyond drop-on-full.** Now that `shole_cache_dropped_total`
   (CL 54) and expired-slot reclaim ship, watch the counter on real traffic. A
-  sustained non-zero drop rate at a sensible `cache_size` is the trigger to add
+  sustained non-zero drop rate at a sensible `dns.cache_entries` is the trigger to add
   sampled TTL-aware eviction: sample K entries on a full insert, evict the one
   closest to expiry, keeping `Get` read-only. Not LRU (see "Deliberately not
   planned" and the DESIGN eviction rationale). No policy without that evidence.
@@ -2092,7 +2094,7 @@ Host and cross-origin checks fit. It needs its own CL.
     while keeping A/AAAA inline. These pay off at 250 billion entries. At a home
     cache of a few thousand they save kilobytes.
 
-  Why parked, not declined: none of it pays off at the `cache_size` a Raspberry
+  Why parked, not declined: none of it pays off at the `dns.cache_entries` a Raspberry
   Pi holds, and most of it trades the small, readable cache for memory we are not
   short of. The trigger to revisit is a deployment that holds a large working set
   under real memory pressure. At that point weigh the wire-format store first (it
@@ -2129,7 +2131,7 @@ Host and cross-origin checks fit. It needs its own CL.
   1. **Lock-free reads.** `IsBlocked` takes an `RWMutex.RLock` today, and the
      parallel benchmark shows a small read-lock cost that grows with core count
      (62 ns vs 54 ns across 12 goroutines). `Store.Replace` already builds a whole
-     new map and swaps it, so changing `blocked` and `whitelist` to
+     new map and swaps it, so changing `blocked` and `allowlist` to
      `atomic.Pointer[map[string]struct{}]` lets reads take no lock at all (a map is
      safe for concurrent reads once it is published). This removes the only
      per-query cost that scales with load, keeps the data structure, and stays
@@ -2144,15 +2146,15 @@ Host and cross-origin checks fit. It needs its own CL.
   3. **Small but positive tweaks, for a project that aims to stay as efficient as
      possible (each tradeoff is acceptable, so record them even when the win is
      tiny):**
-     - **One probe per level instead of two.** Each level probes the whitelist map
+     - **One probe per level instead of two.** Each level probes the allowlist map
        and then the blocked map, hashing the same suffix string twice. Merging both
-       into one `map[string]uint8` (bit 0 blocked, bit 1 whitelisted) halves the
+       into one `map[string]uint8` (bit 0 blocked, bit 1 allowlisted) halves the
        probes and the hashing on the dominant full-walk path. Tradeoff: it couples
        the two update paths, since the blocked set is rebuilt on refresh and the
-       whitelist changes at runtime, so a runtime whitelist add must copy-update the
+       allowlist changes at runtime, so a runtime allowlist add must copy-update the
        merged map. Small and acceptable, but a real coupling to note.
-     - **Skip the whitelist probe when the whitelist is empty.** Most deployments
-       run no runtime whitelist, so a single `len == 0` guard hoisted out of the
+     - **Skip the allowlist probe when the allowlist is empty.** Most deployments
+       run no runtime allowlist, so a single `len == 0` guard hoisted out of the
        loop removes one probe per level on the common path, with no downside.
      - **No `defer` on the read path.** Explicit unlock over `defer RUnlock` saves a
        few ns per query. Moot if lock-free reads (item 1) land, which remove the
@@ -2193,8 +2195,8 @@ Recorded so future reviews don't re-propose them; each trades the
 "auditable in an afternoon" identity for features better served by
 Pi-hole/AdGuard Home:
 
-- **A "Restart s-hole" button in the web UI.** The admin API is
-  unauthenticated by design, so the button would let any device that can
+- **A "Restart s-hole" button in the web UI.** The admin API has
+  no login today (#42), so the button would let any device that can
   reach the UI cut DNS for the whole LAN with one request. s-hole also cannot
   restart itself portably: under systemd, `Restart=on-failure` does not
   restart a clean exit, and the unprivileged `s-hole` user has no polkit

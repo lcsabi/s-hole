@@ -892,7 +892,7 @@
         a.setAttribute('aria-disabled', off ? 'true' : 'false');
         if (off) {
           a.removeAttribute('href');
-          a.title = 'No stored history to export (query_log.database or query_log.mode is off)';
+          a.title = 'No stored history to export (query_log.database is "off" or query_log.mode is "none")';
         } else {
           a.href = exportURL(format);
           a.title = 'Download the current filter as ' + format.toUpperCase();
@@ -1354,7 +1354,7 @@
       $('domains-count').textContent = domains.length ? `(${domains.length})` : '';
     }
 
-    // Fetch and render the all-time list independently of the stats poll so
+    // Fetch and render the stored list independently of the stats poll so
     // the toggle updates instantly on click and on each refresh tick.
     async function refreshTopDomainsAllTime() {
       try {

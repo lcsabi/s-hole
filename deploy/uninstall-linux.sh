@@ -77,7 +77,7 @@ fi
 if $PURGE; then
   echo "  - delete $DATA_DIR (blocklist caches + query log)   [--purge]"
 else
-  echo "  - keep   $DATA_DIR (blocklist caches and query log, owned by root. Pass --purge to remove)"
+  echo "  - keep   $DATA_DIR (blocklist caches and query database, owned by root. Pass --purge to remove)"
 fi
 echo "  - remove the s-hole system user and group"
 if [[ -f "$RESOLVED_DROPIN" ]]; then

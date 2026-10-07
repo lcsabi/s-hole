@@ -70,7 +70,8 @@ Out of scope:
   stops DNS rebinding. `http.CrossOriginProtection` refuses cross-site
   state-changing requests, and JSON endpoints require `application/json`.
   Every response carries `Cache-Control: no-store`, a Content-Security-Policy,
-  `X-Frame-Options: DENY`, `nosniff`, and `Referrer-Policy: no-referrer`.
+  `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`, and
+  `Cross-Origin-Resource-Policy: same-origin`.
   None of this is authentication: the dashboard has no login (see
   `docs/ROADMAP.md` for the planned device pairing). A purge
   (`POST /api/purge`) is accepted only from the s-hole host itself.
@@ -126,8 +127,8 @@ Out of scope:
   `client_names` map adds device labels to the admin API, so it is device-
   identity PII on the unauthenticated read surface. The label is resolved from
   the stored (already masked) client value, so it can never reveal more than
-  `query_log.clients` already exposes (under `subnet` only a CIDR key
-  resolves, under `drop` none). The map is parsed once at load, so it adds no
+  `query_log.clients` already exposes (under `subnet` only a CIDR or
+  network-address key resolves, under `drop` none). The map is parsed once at load, so it adds no
   network call or new wire-parsed input, and labels are HTML-escaped in the
   UI. Keep `admin.listen` on localhost or a trusted LAN when you use it.
 

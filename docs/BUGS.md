@@ -2749,3 +2749,28 @@ worktree did not build.
 
 The binary entries are anchored to the repository root (`/s-hole`), and the
 five files are committed.
+
+## b/091: main: an offline purge could report success and leave the history
+
+**Priority:** P2
+**Component:** main
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-07
+
+### Description
+
+`s-hole -purge` on a stopped s-hole resolved relative paths in the config
+against the current directory. Run from another directory (for example
+`sudo s-hole -purge -config /etc/s-hole/config.yaml` from a home directory
+while the history is in `/var/lib/s-hole`), it found no files, treated that
+as success, and printed "files deleted" while the history stayed. On Windows
+the same command from an elevated prompt looked in the prompt's directory,
+not next to `config.yaml`, where the service keeps its files. Found by the
+CL 93 documentation review.
+
+### Fix
+
+A configured file that does not exist is reported as `not found at` with
+its absolute path, and the command then says that relative paths start in
+the current directory and where to run it. On Windows, `-purge` changes to
+the folder of `config.yaml` first, as the service does.

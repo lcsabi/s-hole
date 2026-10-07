@@ -188,8 +188,8 @@ router-setup banner. Then, in a second terminal:
    disk cache).
 8. **Purge.** With the same variables, run
    `/tmp/s-hole -purge -config config.yaml`: it reports each step, and
-   `/api/queries` is then empty. Stop s-hole and run it again: it deletes
-   the files itself.
+   `/api/queries` is then empty. Stop s-hole and run the purge again: it
+   deletes the files itself.
 
 **Optional: DNS over TLS.** Run this pass after a change to the DoT listener,
 the certificate reload, or the reload path. You need BIND `dig` 9.18 or later.
@@ -299,7 +299,7 @@ should contain:
   updates `PRIVACY.md` in the same CL, and a less private default needs the
   maintainer's agreement first (see the privacy rules in `CLAUDE.md`).
 
-Look at `docs/cls/CL-20.md` for a recent example.
+Look at `docs/cls/CL-93.md` for a recent example with a Privacy impact block.
 
 ### Issue/staff-review IDs
 
@@ -320,7 +320,7 @@ context.
 Every behaviour change needs a test. Coverage gates are not enforced
 strictly, but the per-package targets are:
 
-- `internal/stats`, `internal/config`, `internal/version`: 100 %
+- `internal/stats`, `internal/config`, `internal/version`, `internal/redact`: 100 %
 - `internal/logging`: ≥ 95 %
 - `internal/cache`: ≥ 94 %
 - `internal/api`, `internal/blocklist`, `internal/dnsserver`,

@@ -39,8 +39,8 @@ level=WARN msg="download failed, using stale cache" pkg=blocklist url=https://ad
 
 - `level` is `INFO`, `WARN`, or `ERROR`.
 - `msg` says what happened. To find an event, search for the text of its `msg`.
-- `pkg` is the part of s-hole that wrote the line: `main`, `config`,
-  `blocklist`, `dns`, `api`, `querylog`, or `stats`.
+- `pkg` is the part of s-hole that wrote the line: `main`, `blocklist`,
+  `dns`, `api`, `querylog`, or `stats`. Config problems come from `main`.
 - `err` is the error, when there is one.
 - `hint` says what to check, when s-hole knows.
 
@@ -222,8 +222,9 @@ s-hole sent these queries to a plain upstream. Correct the DoH problem as
 above. For DoH only, remove the plain upstreams from `dns.upstreams`.
 
 At startup, s-hole writes a note about the upstream list: `single upstream
-configured; no forwarding fallback if it fails`, or that every upstream is
-DoH (no fallback if TLS fails). These are notes, not errors.
+configured; no forwarding fallback if it fails`, that every upstream is DoH
+(no fallback if TLS fails), or, with the default list, `plain upstreams are a
+fallback; ...`. These are notes, not errors.
 
 ## A device's queries do not reach s-hole
 

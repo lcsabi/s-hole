@@ -22,6 +22,7 @@ dashboard. You cannot turn these warnings off.
 | DNS response cache: recent answers, by name | memory | on (`dns.cache_entries`) | each answer's TTL | nobody directly; a LAN device can tell from the response time whether a name was looked up recently | restart, or purge |
 | Application log: startup, reloads, errors | the system journal, standard output, or the Windows Event Log | on | the log's own rules | root and the log groups; on Windows, every interactive user | outside s-hole |
 | Downloaded blocklists (public lists) | `blocking.cache_dir` | on | replaced on each download | the s-hole user only | `s-hole -purge` |
+| Client labels (`query_log.client_names`): a name for each device or subnet address | `config.yaml` | none | until you edit the config | anyone who can reach the dashboard; the labels show on the dashboard, in the API, and in the query export | edit the config |
 | Allowlist | `config.yaml`, and memory for runtime additions | as configured | config: until you edit it; runtime: until a restart | anyone who can reach the dashboard | edit the config; remove an entry in the dashboard |
 
 The application log never holds a queried domain or a client address, with
@@ -33,7 +34,7 @@ domain and the address of the device that made the change, as an audit line.
 
 | To | What | When |
 |---|---|---|
-| The upstream resolvers (default: Quad9, then Cloudflare) | the name and type of each allowed query that is not in the cache | every cache miss. Encrypted (DoH) by default. A plain upstream is used only when every DoH upstream has failed, and s-hole logs a warning each time |
+| The upstream resolvers (default: Quad9, then Cloudflare) | the name and type of each allowed query that is not in the cache | every cache miss. Encrypted (DoH) by default. A plain upstream is used only when every DoH upstream has failed, and s-hole logs a warning with the count, at most once a minute |
 | The blocklist hosts | an HTTPS request for each list, with `User-Agent: s-hole` | at startup and every `blocking.refresh_interval` |
 
 s-hole sends nothing else: no telemetry, no update check, no crash report. The

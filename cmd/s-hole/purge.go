@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -25,8 +26,8 @@ import (
 )
 
 // purgeTargets are the stores a purge reaches in a running s-hole. db,
-// fileLog, and dnsCache are nil when that store is off; resetGraph is nil
-// until the dashboard graph is wired.
+// fileLog, and dnsCache are nil when that store is off; resetGraph empties
+// the per-minute graph (stats.Counter.ResetTimeline).
 type purgeTargets struct {
 	cfg        *config.Config
 	db         *querylog.DBLogger
@@ -119,8 +120,16 @@ func runPurge(log *slog.Logger, path string) int {
 	case err == nil:
 		fmt.Println("The running s-hole deleted its stored data:")
 	case errors.Is(err, errNotRunning):
-		rep = purgeOffline(cfg)
+		var notFound bool
+		rep, notFound = purgeOffline(cfg)
 		fmt.Println("s-hole is not running. Deleted the files it stores:")
+		defer func() {
+			if notFound {
+				fmt.Println("A file was not found. Relative paths in the config start in the current directory.")
+				fmt.Println("If s-hole keeps its files in another directory, run the purge again from there")
+				fmt.Println("(/var/lib/s-hole after the Linux installer).")
+			}
+		}()
 	default:
 		log.Error("purge failed", "err", err)
 		return 1
@@ -165,25 +174,42 @@ func purgeViaAPI(adminListen string) (api.PurgeReport, error) {
 
 // purgeOffline deletes the stored files of an s-hole that is not running:
 // the query database with its -wal and -shm files, the query log file, and
-// the downloaded blocklists.
-func purgeOffline(cfg *config.Config) api.PurgeReport {
-	var rep api.PurgeReport
+// the downloaded blocklists. A configured file that does not exist is
+// reported as "not found" with its absolute path, and notFound is true: a
+// relative path resolves against the current directory, so a purge run from
+// the wrong directory must not claim that it deleted the history (b/091).
+func purgeOffline(cfg *config.Config) (rep api.PurgeReport, notFound bool) {
 	add := func(what, result string, failed bool) {
 		rep.Steps = append(rep.Steps, api.PurgeStep{What: what, Result: result, Failed: failed})
 	}
-	remove := func(paths ...string) error {
+	// remove deletes paths and reports whether any of them existed.
+	remove := func(paths ...string) (bool, error) {
+		found := false
 		for _, p := range paths {
-			if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				return err
+			err := os.Remove(p)
+			switch {
+			case err == nil:
+				found = true
+			case !errors.Is(err, fs.ErrNotExist):
+				return found, err
 			}
 		}
-		return nil
+		return found, nil
+	}
+	missing := func(what, path string) {
+		if abs, err := filepath.Abs(path); err == nil {
+			path = abs
+		}
+		add(what, "not found at "+path, false)
+		notFound = true
 	}
 
 	if db := cfg.QueryLog.Database; db == "" {
 		add("query database", "off, nothing stored", false)
-	} else if err := remove(db, db+"-wal", db+"-shm"); err != nil {
+	} else if found, err := remove(db, db+"-wal", db+"-shm"); err != nil {
 		add("query database", "delete failed: "+err.Error(), true)
+	} else if !found {
+		missing("query database", db)
 	} else {
 		add("query database", "files deleted", false)
 	}
@@ -194,20 +220,25 @@ func purgeOffline(cfg *config.Config) api.PurgeReport {
 	case config.FileStdout:
 		add("query log output", journalNote, false)
 	default:
-		if err := remove(f); err != nil {
+		if found, err := remove(f); err != nil {
 			add("query log file", "delete failed: "+err.Error(), true)
+		} else if !found {
+			missing("query log file", f)
 		} else {
 			add("query log file", "deleted", false)
 		}
 	}
 
 	n, err := blocklist.PurgeCache(cfg.Blocking.CacheDir)
-	if err != nil {
+	switch {
+	case err != nil:
 		add("downloaded blocklists", fmt.Sprintf("%d files deleted, then: %v", n, err), true)
-	} else {
+	case n == 0 && len(cfg.Blocking.Lists) > 0:
+		missing("downloaded blocklists", cfg.Blocking.CacheDir)
+	default:
 		add("downloaded blocklists", strconv.Itoa(n)+" files deleted", false)
 	}
-	return rep
+	return rep, notFound
 }
 
 // localAdminAddr is the address a command on the s-hole host uses to reach

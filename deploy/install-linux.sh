@@ -88,8 +88,8 @@ if command -v file >/dev/null 2>&1; then
   fi
   case "$(uname -m)" in
     x86_64)            arch_pat='x86-64' ;;
-    # A 64-bit ARM kernel also runs 32-bit ARM (armv7) binaries, which a
-    # Raspberry Pi 2 or 3 build is; the -version run below proves it runs.
+    # A 64-bit ARM kernel also runs 32-bit ARM binaries, such as the armv7
+    # (32-bit OS) build; the -version run below proves it runs.
     aarch64|arm64)     arch_pat='aarch64|ARM' ;;
     armv7l|armv6l|arm) arch_pat='ARM' ;;
     *)                 arch_pat='' ;;

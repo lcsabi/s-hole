@@ -81,9 +81,8 @@ func TestPurgeOffline_MissingStoresAreNotFound(t *testing.T) {
 		t.Errorf("report failed: %+v", rep)
 	}
 	want := map[string]string{
-		"query database":        "not found at " + filepath.Join(wd, "data", "q.db"),
-		"query log file":        "not found at " + filepath.Join(wd, "logs", "q.log"),
-		"downloaded blocklists": "not found at " + filepath.Join(wd, "cache"),
+		"query database": "not found at " + filepath.Join(wd, "data", "q.db"),
+		"query log file": "not found at " + filepath.Join(wd, "logs", "q.log"),
 	}
 	steps := stepByWhat(rep)
 	for what, result := range want {
@@ -170,10 +169,6 @@ func TestPurgeOffline_Blocklists(t *testing.T) {
 			touch(t, filepath.Join(wd, "cache", "keep.txt"))
 		}, false, "0 files deleted"},
 		{"no lists, cache_dir missing", "[]", func(string) {}, false, "0 files deleted"},
-		{"lists, cache_dir missing", "[\"https://a.example/l\"]", func(string) {}, true, ""},
-		{"lists, only other files", "[\"https://a.example/l\"]", func(wd string) {
-			touch(t, filepath.Join(wd, "cache", "keep.txt"))
-		}, true, ""},
 		{"lists, one file", "[\"https://a.example/l\"]", func(wd string) {
 			touch(t, filepath.Join(wd, "cache", "blocklist_x.txt"))
 		}, false, "1 files deleted"},

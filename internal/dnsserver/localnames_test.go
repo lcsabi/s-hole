@@ -215,7 +215,7 @@ func TestServeDNS_LocalhostAnswer(t *testing.T) {
 	defer c.Close()
 	for _, name := range []string{"localhost.", "foo.localhost."} {
 		q := dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET}
-		c.Set(q, buildResp(q, net.IPv4(6, 6, 6, 6), 300))
+		c.Set(asQuery(q), buildResp(q, net.IPv4(6, 6, 6, 6), 300))
 	}
 	counter := stats.New()
 	h := NewHandler(store, counter, []string{sink}, nullLogger{}, "zero", 60, c, false, "drop")
@@ -276,7 +276,7 @@ func TestServeDNS_LocalhostAnswer(t *testing.T) {
 	if s.BlockedCount != 0 || s.CacheHits != 0 {
 		t.Errorf("blocked %d, cache hits %d; want 0 and 0", s.BlockedCount, s.CacheHits)
 	}
-	if _, ok := c.Get(dns.Question{Name: "app.localhost.", Qtype: dns.TypeAAAA, Qclass: dns.ClassINET}); ok {
+	if _, ok := c.Get(asQuery(dns.Question{Name: "app.localhost.", Qtype: dns.TypeAAAA, Qclass: dns.ClassINET})); ok {
 		t.Error("a localhost answer was stored in the cache")
 	}
 }
@@ -292,7 +292,7 @@ func TestServeDNS_NeverResolvedNames(t *testing.T) {
 	c := cache.New(10)
 	defer c.Close()
 	q := dns.Question{Name: "cached.onion.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-	c.Set(q, buildResp(q, net.IPv4(6, 6, 6, 6), 300))
+	c.Set(asQuery(q), buildResp(q, net.IPv4(6, 6, 6, 6), 300))
 	counter := stats.New()
 	h := NewHandler(store, counter, []string{sink}, nullLogger{}, "zero", 60, c, false, "drop")
 	h.lan = testACL(newFakeAddrs())

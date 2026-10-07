@@ -1,8 +1,8 @@
 // Package dnsserver implements the DNS sinkhole's listening servers and
 // per-query handler. For each query the handler:
 //  0. Refuses a query from outside the LAN (see lan.go). Answers SERVFAIL to a
-//     query without exactly one question and NOTIMP to an opcode other than
-//     QUERY, without counting or logging it.
+//     query without exactly one question, NOTIMP to an opcode other than
+//     QUERY, and REFUSED to a query with RD=0, without counting or logging it.
 //  1. Intercepts PTR queries for RFC 6303 private-range zones and returns
 //     authoritative NXDOMAIN locally, without consulting the blocklist,
 //     cache, or upstream (see privateReverseZones, isPrivatePTR).
@@ -10,10 +10,12 @@
 //     .alt) locally, and LAN-only names (such as "printer" or "nas.lan")
 //     locally while no upstream is on the LAN (see localnames.go).
 //  3. Consults the blocklist and writes a sinkhole reply for blocked domains.
-//  4. Checks the in-memory response cache and returns cached replies.
+//  4. Checks the in-memory response cache and returns cached replies. The
+//     cache key holds the query's CD and DO bits as well as the question.
 //  5. Forwards cache misses upstream in a fresh query that carries nothing
 //     from the client but the question and a few flags (see edns.go). A
-//     LAN-only name goes only to upstreams on the LAN.
+//     LAN-only name goes only to upstreams on the LAN. A reply that does not
+//     match the query is a failed attempt (see checkReply in upstream.go).
 //
 // UDP and TCP listeners (and the optional DNS-over-TLS listener, see dot.go)
 // run in parallel and share this handler; clients fall back to TCP
@@ -22,11 +24,12 @@
 // against the same upstream before being returned. An "https://" upstream is
 // forwarded over DNS-over-HTTPS (RFC 8484) instead. See exchange in upstream.go.
 //
-// Every reply except REFUSED (see refuse in lan.go) goes to the client through
-// send (edns.go), which mirrors the client's EDNS0 OPT record without
-// options, so clients that advertise EDNS0 do not fall back to legacy DNS. A
-// query with a question count other than one gets SERVFAIL, and one with an
-// opcode other than QUERY gets NOTIMP; neither is counted or logged.
+// Every reply except the REFUSED to a source outside the LAN (see refuse in
+// lan.go) goes to the client through send (edns.go), which mirrors the
+// client's EDNS0 OPT record without options, so clients that advertise EDNS0
+// do not fall back to legacy DNS. A query with a question count other than
+// one gets SERVFAIL, one with an opcode other than QUERY gets NOTIMP, and one
+// with RD=0 gets REFUSED; none of them is counted or logged.
 //
 // Upstream forwarding is context-aware (per-query 10 s deadline,
 // per-upstream 3 s timeout) and health-tracked: an upstream that failed
@@ -255,6 +258,16 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		h.writeRcode(w, req, dns.RcodeNotImplemented, "")
 		return
 	}
+	if !req.RecursionDesired {
+		// A query with RD=0 reads only the cache. A LAN
+		// device could use it to read the cache without adding to it, and the
+		// remaining TTL of a cached answer tells to the second when another
+		// device looked the name up. Unbound refuses such a query by default,
+		// and a stub resolver always sets RD, so s-hole refuses it too, before
+		// the stats, the cache, and the query log see it.
+		h.writeRcode(w, req, dns.RcodeRefused, "")
+		return
+	}
 
 	q := req.Question[0]
 	// The name as s-hole records it: lowercase, with the trailing dot. DNS
@@ -330,7 +343,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 
 	// Serve from cache if available; avoids upstream round-trip entirely.
 	if h.cache != nil {
-		if cached, ok := h.cache.Get(q); ok {
+		if cached, ok := h.cache.Get(req); ok {
 			h.counter.RecordCacheHit()
 			// Relayed from cache, not synthesized. The cache stores only
 			// NOERROR-with-answers replies, so cached.Rcode is NOERROR.
@@ -377,7 +390,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// cached reply holds no options; send gives each client its own.
 	stripOPT(resp)
 	if h.cache != nil {
-		h.cache.Set(q, resp)
+		h.cache.Set(req, resp)
 	}
 	h.send(w, req, resp, "write response failed", domain)
 }
@@ -411,9 +424,9 @@ func (h *Handler) writeSinkhole(w dns.ResponseWriter, req *dns.Msg, q dns.Questi
 }
 
 // writeRcode sends an empty reply with rcode: SERVFAIL for an unresolved or
-// malformed query, NOTIMP for an opcode s-hole does not forward. It goes
-// through send like every other reply, so the client keeps its OPT record and
-// a DoT client its padding.
+// malformed query, NOTIMP for an opcode s-hole does not forward, and REFUSED
+// for a query with RD=0. It goes through send like every reply except refuse
+// (lan.go), so the client keeps its OPT record and a DoT client its padding.
 func (h *Handler) writeRcode(w dns.ResponseWriter, req *dns.Msg, rcode int, domain string) {
 	resp := new(dns.Msg)
 	resp.SetRcode(req, rcode)

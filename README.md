@@ -96,6 +96,7 @@ s-hole sees every DNS query on your network, so it could hold the browsing histo
 - **Local names stay on the LAN.** s-hole sends local names (`printer`, `nas.lan`, `.local`, `home.arpa`, and the domains in `dns.local_domains`) only to an upstream on the LAN. If no upstream is on the LAN, it answers "no such name".
 - **Loud warnings.** Each setting that records more than the default (and a few other less private or less secure settings) gives a WARN at `-check-config`, at startup, and again with every stats line, and appears on the dashboard. You cannot turn these warnings off; change the setting to remove one.
 - **LAN only.** s-hole answers devices on the local network only.
+- **No cache-only queries.** s-hole refuses a query that reads only the cache (RD=0). So a device that checks whether another device queried a name also puts that name in the cache. `PRIVACY.md` says what a device can still learn from the cache.
 
 The network owner decides what s-hole records, and everyone who uses the network has to trust that person. If you turn on more recording, tell the people who use your network.
 
@@ -855,7 +856,7 @@ $env:GOOS=""; $env:GOARCH=""
      │                                                      │
      │   ┌──────────────────────────────────────────────┐   │
      │   │  DNS Handler  (per query)                    │   │
-     │   │    0. source not on the LAN → REFUSED        │   │
+     │   │    0. not on the LAN, or RD=0 → REFUSED      │   │
      │   │    1. private PTR → local NXDOMAIN (RFC6303) │   │
      │   │    2. local name → local answer, or LAN only │   │
      │   │    3. blocklist  → sinkhole reply            │   │

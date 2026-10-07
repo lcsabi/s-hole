@@ -106,7 +106,7 @@ func TestServeDNS_DoTReplyIsPadded(t *testing.T) {
 			}
 			// The padding is for one reply only; the cache does not keep it.
 			q := dns.Question{Name: "fwd.example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-			if m, ok := c.Get(q); !ok || m.IsEdns0() != nil {
+			if m, ok := c.Get(asQuery(q)); !ok || m.IsEdns0() != nil {
 				t.Errorf("cached reply: ok=%v, extra=%v; want it cached without an OPT record", ok, m)
 			}
 		})

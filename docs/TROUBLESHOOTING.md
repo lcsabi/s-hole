@@ -232,6 +232,11 @@ upstream. The clients got SERVFAIL. The line names no domain, except
   does not use s-hole as its own DNS server, or it cannot reach its time
   server while DoH fails: read
   [This host uses s-hole as its own DNS server](#this-host-uses-s-hole-as-its-own-dns-server).
+- If a cause is `reply does not match the query`, the upstream sent a reply
+  for a different name, type, or class, or a reply that is not a standard
+  answer. s-hole does not use such a reply and tries the next upstream. If
+  the cause continues, use a different upstream: this upstream, or the network
+  path to it, is broken.
 - Otherwise, s-hole cannot reach its upstreams. Send a query to an upstream
   from the s-hole host:
 
@@ -304,6 +309,11 @@ subnets of its own interfaces. A device on a routed subnet with public IPv6
 addresses, or behind a VPN with its own address range (such as Tailscale's
 100.64.0.0/10), gets REFUSED. Give the device an address in a private range
 or in one of the s-hole host's subnets.
+
+If a test query from a LAN device gets REFUSED, make sure that the query asks
+for recursion. s-hole refuses a query with the RD bit clear, such as
+`dig +norec`, because such a query reads only the cache. A device's own
+resolver always sets the RD bit.
 
 ## A domain is blocked, but you want to allow it
 

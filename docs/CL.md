@@ -110,6 +110,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 94](cls/CL-94.md) | Minimal upstream query: a fresh query with no client EDNS options or ID, local-only names to LAN upstreams only (`dns.local_domains`), EDNS padding, localhost names never blocked |
 | [CL 95](cls/CL-95.md) | Wildcard blocklists (`*.example.com`), a warning for a list s-hole cannot read, and stricter domain validation |
 | [CL 96](cls/CL-96.md) | Graduate the CHANGELOG to v2.0.0 |
+| [CL 97](cls/CL-97.md) | DNS answer integrity: the cache key holds the CD and DO bits, upstream replies must match the question, a one-day cache lifetime cap, RD=0 queries refused (b/096) |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

@@ -206,7 +206,7 @@ func newRefusalFixture(t *testing.T) *refusalFixture {
 	c := cache.New(10)
 	t.Cleanup(c.Close)
 	q := dns.Question{Name: "cached.example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-	c.Set(q, buildResp(q, net.IPv4(1, 2, 3, 4), 300))
+	c.Set(asQuery(q), buildResp(q, net.IPv4(1, 2, 3, 4), 300))
 	counter := stats.New()
 	log := &captureLogger{}
 	h := NewHandler(store, counter, []string{addr}, log, "zero", 60, c, true, "full")

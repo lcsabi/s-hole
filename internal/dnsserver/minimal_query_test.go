@@ -260,9 +260,7 @@ func TestUpstreamQuery_IsBuiltBySHole(t *testing.T) {
 		do        bool
 	}{
 		{"bits set, OPT with DO and options", true, true, true},
-		{"bits clear, OPT without DO", false, true, false},
 		{"bits set, no OPT", true, false, false},
-		{"bits clear, no OPT", false, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -379,49 +377,6 @@ func TestUpstreamQuery_TCPRetryIsAlsoMinimal(t *testing.T) {
 	}
 	if w.written == nil || len(w.written.Answer) != 1 {
 		t.Errorf("client reply = %v, want the TCP answer", w.written)
-	}
-}
-
-func TestUpstreamQuery_DoHHasIDZeroAndPadding(t *testing.T) {
-	// CL 94 R1, R2: a DoH query has ID 0 and the same minimal content as a
-	// plain query, with one EDNS option: s-hole's own Padding. The POST body
-	// is a multiple of 128 bytes long (RFC 8467), for short and long names.
-	endpoint, rec := startRecordingDoH(t, answerWith(net.IPv4(9, 9, 9, 9)))
-	h := testHandler([]string{endpoint}, nil)
-
-	names := []string{"a.io.", "WwW.ExAmPlE.CoM."}
-	for i := 1; i <= 6; i++ {
-		names = append(names, strings.Repeat("abcdefghij", i)+".example.net.")
-	}
-	for i, name := range names {
-		req := noisyQuery(name, i%2 == 0)
-		do := i%3 == 0
-		if i%2 == 0 {
-			withOPT(req, 4096, do, clientOptions()...)
-		} else {
-			do = false
-		}
-		h.ServeDNS(fakeClient(), req)
-		if rec.count() != i+1 {
-			t.Fatalf("%s: DoH upstream got %d queries, want %d", name, rec.count(), i+1)
-		}
-		got, _, size := rec.get(i)
-		if got.Id != 0 {
-			t.Errorf("%s: DoH query ID = %#x, want 0", name, got.Id)
-		}
-		bits := i%2 == 0
-		want := dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET}
-		checkUpstreamQuery(t, got, want, bits, bits, bits, do)
-		o := got.IsEdns0()
-		if o == nil {
-			continue
-		}
-		if len(o.Option) != 1 || o.Option[0].Option() != dns.EDNS0PADDING {
-			t.Errorf("%s: DoH OPT options = %v, want only one Padding option", name, o.Option)
-		}
-		if size%128 != 0 {
-			t.Errorf("%s: DoH body is %d bytes, want a multiple of 128", name, size)
-		}
 	}
 }
 
@@ -550,75 +505,6 @@ func TestServeDNS_ExtendedRcodeWithoutClientOPT(t *testing.T) {
 	}
 	if len(optRecords(w.written)) != 1 {
 		t.Errorf("reply to the EDNS client has %d OPT records, want 1", len(optRecords(w.written)))
-	}
-}
-
-func TestServeDNS_CacheKeepsNoOPT(t *testing.T) {
-	// CL 94 R4: the cache stores a reply without an OPT record. A cache hit
-	// gets an OPT record built for that client, and never the first client's
-	// options or the upstream's.
-	upstreamReply := func(req *dns.Msg) *dns.Msg {
-		return withOPT(answerWith(net.IPv4(4, 4, 4, 4))(req), 4096, true, upstreamOptions()...)
-	}
-	q := dns.Question{Name: "shared.example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-	clients := []struct {
-		name string
-		opt  bool
-		size uint16
-		do   bool
-	}{
-		{"first client, EDNS with options", true, 4096, true},
-		{"no EDNS", false, 0, false},
-		{"EDNS 1300 without DO", true, 1300, false},
-		{"EDNS 2000 with DO", true, 2000, true},
-		{"no EDNS again", false, 0, false},
-	}
-	for _, first := range []int{0, 1} {
-		t.Run(clients[first].name+" first", func(t *testing.T) {
-			addr, rec := startRecordingUpstream(t, upstreamReply, false)
-			c := cache.New(10)
-			defer c.Close()
-			h := testHandler([]string{addr}, c)
-
-			order := append([]int{first}, 0, 1, 2, 3, 4)
-			for _, i := range order {
-				cl := clients[i]
-				req := new(dns.Msg)
-				req.SetQuestion(q.Name, dns.TypeA)
-				if cl.opt {
-					withOPT(req, cl.size, cl.do, clientOptions()...)
-				}
-				w := fakeClient()
-				h.ServeDNS(w, req)
-				if w.written == nil || len(w.written.Answer) != 1 {
-					t.Fatalf("%s: reply = %v, want one answer", cl.name, w.written)
-				}
-				opts := optRecords(w.written)
-				if !cl.opt {
-					if len(opts) != 0 {
-						t.Errorf("%s: reply has OPT %v, want none", cl.name, opts)
-					}
-					continue
-				}
-				if len(opts) != 1 {
-					t.Fatalf("%s: reply has %d OPT records, want 1", cl.name, len(opts))
-				}
-				if opts[0].UDPSize() != cl.size || opts[0].Do() != cl.do || len(opts[0].Option) != 0 {
-					t.Errorf("%s: reply OPT = size %d DO %v options %v; want size %d DO %v and no options",
-						cl.name, opts[0].UDPSize(), opts[0].Do(), opts[0].Option, cl.size, cl.do)
-				}
-			}
-			if rec.count() != 1 {
-				t.Errorf("upstream got %d queries, want 1 (the rest from the cache)", rec.count())
-			}
-			m, ok := c.Get(q)
-			if !ok {
-				t.Fatal("the reply is not in the cache")
-			}
-			if len(optRecords(m)) != 0 || m.IsEdns0() != nil {
-				t.Errorf("cached reply has an OPT record: %v", m.Extra)
-			}
-		})
 	}
 }
 

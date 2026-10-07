@@ -242,18 +242,28 @@ func clockSuspect(err error) bool {
 	return errors.As(err, &invalid) && invalid.Reason == x509.Expired
 }
 
-// exchange dispatches an "https://" upstream to exchangeDoH (DNS-over-HTTPS).
-// Otherwise it performs one UDP exchange with upstream, retrying once over
-// TCP when the reply comes back truncated (TC bit set). Without the
-// retry, the truncated answer would be relayed verbatim, and because
-// queries arriving over TCP are also forwarded over UDP, the client's
-// own TCP fallback would loop straight back into the same truncated
-// reply, dead-ending the fallback chain documented in DESIGN.md (T2).
-//
-// If the TCP retry fails (e.g. 53/tcp filtered on the upstream path),
-// the truncated UDP reply is returned instead: the upstream is
-// demonstrably alive, and a TC-flagged partial answer is more useful to
-// the client than a SERVFAIL.
+// errReplyMismatch is the error for an upstream reply that does not answer
+// the query s-hole sent. Its text names no query, because a forward error
+// reaches the failure summary in the log (b/078).
+var errReplyMismatch = errors.New("reply does not match the query")
+
+// checkReply returns errReplyMismatch unless resp is a reply (QR set) with
+// opcode QUERY and one question that equals the question of req: the same
+// name (DNS names are case-insensitive), type, and class. miekg/dns checks
+// only the message ID. On the plain-DNS path, an off-path attacker who
+// guesses the ID and the source port could otherwise answer with records for
+// another name, and s-hole would cache them under the name it asked for.
+func checkReply(req, resp *dns.Msg) error {
+	if !resp.Response || resp.Opcode != dns.OpcodeQuery || len(resp.Question) != 1 {
+		return errReplyMismatch
+	}
+	got, want := resp.Question[0], req.Question[0]
+	if got.Qtype != want.Qtype || got.Qclass != want.Qclass || !strings.EqualFold(got.Name, want.Name) {
+		return errReplyMismatch
+	}
+	return nil
+}
+
 // udpClient and tcpClient are reused across queries. dns.Client is a
 // concurrency-safe config object with no per-call state, so one of each
 // suffices instead of allocating a fresh pair per cache-miss query (matching
@@ -286,22 +296,51 @@ const maxDoHResponse = dns.MaxMsgSize
 // dohMediaType is the RFC 8484 content type for a wire-format DNS message.
 const dohMediaType = "application/dns-message"
 
+// exchange dispatches an "https://" upstream to exchangeDoH (DNS-over-HTTPS).
+// Otherwise it performs one UDP exchange with upstream, retrying once over
+// TCP when the reply comes back truncated (TC bit set). Without the
+// retry, the truncated answer would be relayed verbatim, and because
+// queries arriving over TCP are also forwarded over UDP, the client's
+// own TCP fallback would loop straight back into the same truncated
+// reply, dead-ending the fallback chain documented in DESIGN.md (T2).
+//
+// If the TCP retry fails (e.g. 53/tcp filtered on the upstream path),
+// the truncated UDP reply is returned instead: the upstream is
+// demonstrably alive, and a TC-flagged partial answer is more useful to
+// the client than a SERVFAIL.
+//
+// Every reply goes through checkReply. A reply that does not match the
+// query is a failed attempt; a TCP retry that returns one counts as a
+// failed retry, so the truncated UDP reply is returned.
 func exchange(ctx context.Context, req *dns.Msg, upstream string) (*dns.Msg, error) {
 	if strings.HasPrefix(upstream, "https://") {
-		return exchangeDoH(ctx, req, upstream)
+		resp, err := exchangeDoH(ctx, req, upstream)
+		if err != nil {
+			return nil, err
+		}
+		if err := checkReply(req, resp); err != nil {
+			return nil, err
+		}
+		return resp, nil
 	}
 
 	attemptCtx, cancel := context.WithTimeout(ctx, perUpstreamTimeout)
 	resp, _, err := udpClient.ExchangeContext(attemptCtx, req, upstream)
 	cancel()
-	if err != nil || !resp.Truncated {
-		return resp, err
+	if err != nil {
+		return nil, err
+	}
+	if err := checkReply(req, resp); err != nil {
+		return nil, err
+	}
+	if !resp.Truncated {
+		return resp, nil
 	}
 
 	attemptCtx, cancel = context.WithTimeout(ctx, perUpstreamTimeout)
 	full, _, tcpErr := tcpClient.ExchangeContext(attemptCtx, req, upstream)
 	cancel()
-	if tcpErr != nil {
+	if tcpErr != nil || checkReply(req, full) != nil {
 		return resp, nil
 	}
 	return full, nil

@@ -2864,3 +2864,35 @@ file a known case.
 A helper, `staleFallback`, reads the copy first and logs the WARN only when
 the read works. Otherwise the list fails with the download error and the
 read error together.
+
+## b/096: cache: one client's CD or DO bit decided the cached answer for every client
+
+**Priority:** P1
+**Component:** cache, dns
+**Status:** Fixed in CL 97
+**Filed:** 2026-10-08
+
+### Description
+
+s-hole sends the client's CD (checking disabled) and DO (DNSSEC OK) bits
+upstream, but the cache stored the reply under the name, type, and class
+only. The next client got that reply, whatever bits it sent.
+
+- **CD:** a validating upstream (Quad9, Cloudflare) returns data that failed
+  DNSSEC validation when CD is set. One CD=1 query from any LAN device put
+  that data in the cache, and every other device got it until the TTL ran
+  out. A validating stub resolver on the LAN sends CD=1 in normal operation,
+  so this needs no attacker. Live on s-hole v2.0.0: `dig dnssec-failed.org`
+  gave SERVFAIL, `dig +cd dnssec-failed.org` gave an address, and a second
+  `dig dnssec-failed.org` gave the same address, while the upstream asked
+  directly still gave SERVFAIL.
+- **DO:** a client that asked with DO=1 got a cached DO=0 reply without
+  RRSIG records, so its own validation failed. Live: `dig isc.org`, then
+  `dig +dnssec isc.org`, gave no RRSIG record through s-hole.
+
+### Fix
+
+The cache key holds the query's CD and DO bits as well as the name, type,
+and class. `Cache.Get` and `Cache.Set` take the client's query, so a caller
+cannot leave the bits out. The AD bit is not in the key: it only asks the
+upstream to report the AD bit.

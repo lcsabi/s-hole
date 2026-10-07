@@ -24,9 +24,15 @@ layout, so a 1.x config needs an edit. (CL 93)
    value. `s-hole -check-config` fails while any 1.x key is left.
    `install-linux.sh` runs the same check with the new binary before it
    changes anything. If the check fails, the 1.x install keeps running as it
-   was. Edit `/etc/s-hole/config.yaml`, then run the installer again right
-   away: until it does, a restart of the 1.x build would read the 2.0 file
-   with its 1.x defaults.
+   was. A 1.x build reads a 2.0 file without an error, but with its 1.x
+   defaults, so do not edit `/etc/s-hole/config.yaml` in place while 1.x
+   runs. Write the 2.0 config to a new file, then put it in place and run the
+   installer in one step:
+
+   ```bash
+   sudo install -m 640 -o root -g s-hole config-2.0.yaml /etc/s-hole/config.yaml \
+     && sudo bash install-linux.sh ./s-hole ./config.yaml
+   ```
 
    | 1.x key | 2.0 key | Value changes |
    |---|---|---|
@@ -305,6 +311,10 @@ layout, so a 1.x config needs an edit. (CL 93)
 - **An offline purge failed on Windows**: s-hole did not recognize a refused
   connection there, so `s-hole -purge` with the service stopped deleted
   nothing (b/094). (CL 93)
+- **A failed download logged "using stale cache" for a cached copy that
+  could not be read**; the list then failed anyway. s-hole now reads the copy
+  first, and a list whose download and copy both fail names both errors
+  (b/095). (CL 93)
 - **The graph's last time label was cut off** at the right edge. (CL 93)
 - **A `blocking.cache_dir` that did not exist was never created**, so every
   start downloaded every list again; s-hole now creates it, mode `700`

@@ -1,7 +1,7 @@
 // Package blocklist owns the blocked-domain set: downloading lists from
-// operator-configured URLs, parsing them (hosts-file and plain-domain
-// formats), caching them on disk, and serving membership lookups to the
-// DNS handler.
+// operator-configured URLs, parsing them (hosts-file, plain-domain, and
+// "*.domain" wildcard formats), caching them on disk, and serving membership
+// lookups to the DNS handler.
 //
 // Store is the in-memory hash set queried by every DNS request; loader
 // handles the periodic refresh and disk cache. Both are safe for concurrent

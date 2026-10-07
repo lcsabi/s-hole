@@ -104,10 +104,11 @@ func Update(store *Store, urls []string, cacheDir string, mode Mode) error {
 
 // warnUnreadList warns about a list that loaded but gave s-hole little or
 // nothing to block: an empty list, or one where most lines were skipped. The
-// usual cause is a format s-hole does not read, such as an Adblock list
-// (EasyList gives one stray match in 80,000 lines), so a zero-only check
-// would miss it. A hosts list skips only a few lines (localhost,
-// broadcasthost), far fewer than it reads.
+// usual cause is a format s-hole does not read, such as an Adblock list. A
+// zero-only check would miss such a list, because a stray rule can pass
+// ValidDomain (EasyList gave one match in about 80,000 lines before CL 95
+// made ValidDomain stricter). A hosts list skips only a few lines
+// (localhost, broadcasthost), far fewer than it reads.
 func warnUnreadList(url string, read, skipped int) {
 	const hint = "s-hole reads hosts lines (0.0.0.0 example.com), one domain per line, and *.example.com lines. Use the list's hosts or domains version"
 	switch {
@@ -147,7 +148,7 @@ const (
 type sourceMeta struct {
 	from     string
 	snapshot time.Time
-	skipped  int // non-comment lines that gave no domain (see parseHostsFormat)
+	skipped  int // non-blank, non-comment lines that gave no domain (see parseHostsFormat)
 }
 
 func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
@@ -294,8 +295,8 @@ func loadFromFile(path string) ([]string, int, error) {
 // oisd's "domains (wildcards)" lists). A wildcard line means the domain and
 // every subdomain, which is what the store's suffix walk already does for a
 // plain entry, so "*." is dropped and the rest stored as a plain domain.
-// Tokens that fail ValidDomain are silently dropped to keep one malformed
-// list line from polluting the store; see R14. A "*.com" line fails it too
+// Tokens that fail ValidDomain are silently dropped (each counts as a skipped
+// line) to keep one malformed list line from polluting the store; see R14. A "*.com" line fails it too
 // (no interior dot), so a wildcard line cannot block a whole TLD. skipped
 // counts the non-blank, non-comment lines that gave no domain, so Update can
 // warn about a list in a format s-hole does not read.
@@ -339,9 +340,9 @@ func parseHostsFormat(r io.Reader) (domains []string, skipped int, err error) {
 
 // ValidDomain rejects obvious garbage: empty strings, anything over
 // the 253-character DNS name limit, names without a dot (we don't block
-// bare TLDs), and names with characters that cannot legally appear in a
-// DNS label (whitespace, control chars, slashes, etc.), empty labels, and
-// labels that start or end with a hyphen. It is deliberately lenient
+// bare TLDs), names with characters that cannot legally appear in a DNS
+// label (whitespace, control chars, slashes, etc.), empty labels, and labels
+// that start or end with a hyphen. It is deliberately lenient
 // otherwise: IDN punycode and underscore-prefixed service labels pass.
 //
 // Exported so the api package can validate user-supplied allowlist
@@ -371,8 +372,8 @@ func ValidDomain(s string) bool {
 		}
 	}
 	// No empty label ("a..com") and no label that starts or ends with a
-	// hyphen: DNS names cannot have either, so such a line is list junk, such
-	// as the EasyList URL rule "-728.90.". The root dot of an FQDN leaves an
+	// hyphen: DNS names cannot have either, so such a name is a typo or list
+	// junk, such as the EasyList URL rule "-728.90.". The root dot of an FQDN leaves an
 	// empty last label, which is allowed.
 	name := strings.TrimSuffix(s, ".")
 	prev := byte('.') // a label starts here

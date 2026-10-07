@@ -107,7 +107,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 91](cls/CL-91.md) | Fixes from the code review of CL 85 to CL 90: DoH URL normalization (b/067), stale-cache fallback on a broken download (b/068), Windows relative `-config` (b/069), no reload after shutdown starts (b/070); hint fields, comment and doc sync, test hygiene |
 | [CL 92](cls/CL-92.md) | Test fix: the truncating-upstream helper binds UDP and TCP through `pickFreePort` (b/071) |
 | [CL 93](cls/CL-93.md) | Privacy hardening: config format 2.0 with private defaults, loud repeating warnings, owner-only erasable storage, purge, LAN-only DNS, admin browser defenses, non-root Docker, least-privilege Windows service (b/072 to b/091) |
-| [CL 95](cls/CL-95.md) | Wildcard blocklists (`*.example.com`), a warning for a list s-hole cannot read, and a stricter domain check |
+| [CL 95](cls/CL-95.md) | Wildcard blocklists (`*.example.com`), a warning for a list s-hole cannot read, and stricter domain validation |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

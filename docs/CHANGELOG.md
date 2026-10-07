@@ -159,10 +159,12 @@ layout, so a 1.x config needs an edit. (CL 93)
   warning that shows `redacted` in place of them. (CL 85, CL 91)
 
 ### Changed
-- **The domain check is stricter.** A blocklist line, an allowlist entry in
-  the config, or a domain added on the dashboard is now rejected if it has an
-  empty label (`a..com`) or a label that starts or ends with a hyphen
-  (`-ads.example.com`). DNS names cannot have either. (CL 95)
+- **Stricter domain validation.** s-hole now rejects a name with an empty
+  label (`a..com`) or a label that starts or ends with a hyphen
+  (`-ads.example.com`). DNS names cannot have either. The rule applies to
+  blocklist lines, `blocking.allowlist` entries, domains added on the
+  dashboard or through `POST /api/allowlist`, and the dashboard's domain
+  check (`/api/check` returns 400). (CL 95)
 - **Config format 2.0 and private defaults.** See "Upgrade to 2.0" above. A
   config mistake no longer stops s-hole: it warns and uses the default for that
   setting, and `-check-config` fails on any problem. Only a malformed

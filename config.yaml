@@ -86,9 +86,9 @@ blocking:
     - "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
     - "https://adaway.org/hosts.txt"
     # Optional lists from HaGeZi (GPL-3.0, https://github.com/hagezi/dns-blocklists).
-    # Use the plain-domain "-onlydomains" files. s-hole blocks subdomains too,
-    # and it removes duplicates, so you can add these to the lists above. To
-    # turn one on, delete the leading "# ".
+    # Use the plain-domain "-onlydomains" files (the "*." wildcard files also
+    # work). s-hole blocks subdomains too, and it removes duplicates, so you
+    # can add these to the lists above. To turn one on, delete the leading "# ".
     #
     # Multi PRO is HaGeZi's recommended ads, tracker, and malware list. PRO++
     # blocks more (it also blocks referral domains). Pick one tier, and use a

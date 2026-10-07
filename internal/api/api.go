@@ -981,7 +981,7 @@ func (s *Server) handleAllowlistAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	domain := strings.TrimSpace(body.Domain)
 	if !blocklist.ValidDomain(domain) {
-		http.Error(w, "invalid domain (max 253 chars, must contain a dot, alphanumerics/hyphen/underscore only)", http.StatusBadRequest)
+		http.Error(w, "invalid domain (max 253 chars, must contain a dot, alphanumerics/hyphen/underscore only, no empty label, no label that starts or ends with a hyphen)", http.StatusBadRequest)
 		return
 	}
 	s.store.AddToAllowlist(domain)

@@ -91,9 +91,10 @@ Out of scope:
   timeout and a 256 MiB `io.LimitReader` cap. Non-200 responses fall back
   to the stale cache rather than poisoning it. Files are written
   atomically via `.tmp` + `os.Rename`.
-- **Domain inputs** (both from blocklists and the allowlist API) are
-  validated by `blocklist.ValidDomain` (length ≤ 253, must contain a dot,
-  alphanumerics + `.-_` only).
+- **Domain inputs** (blocklist lines, `blocking.allowlist` entries, and the
+  allowlist API) are validated by `blocklist.ValidDomain`: length ≤ 253, an
+  interior dot, letters, digits, and `.-_` only, no empty label, and no label
+  that starts or ends with `-`.
 - **Profiling endpoints** (`/debug/pprof/*`) are off by default. They
   register only when `admin.pprof: true` is set (which also turns on
   mutex and block profiling), and s-hole then warns at startup and with every

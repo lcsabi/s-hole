@@ -26,11 +26,13 @@ layout, so a 1.x config needs an edit. (CL 93)
    changes anything. If the check fails, the 1.x install keeps running as it
    was. A 1.x build reads a 2.0 file without an error, but with its 1.x
    defaults, so do not edit `/etc/s-hole/config.yaml` in place while 1.x
-   runs. Write the 2.0 config to a new file, then put it in place and run the
-   installer in one step:
+   runs. Write the 2.0 config to a new file. Then check it, put it in place,
+   and run the installer with one command. The command checks the new file
+   first; if the check fails, it stops before it replaces the installed config:
 
    ```bash
-   sudo install -m 640 -o root -g s-hole config-2.0.yaml /etc/s-hole/config.yaml \
+   sudo ./s-hole -check-config -config config-2.0.yaml \
+     && sudo install -m 640 -o root -g s-hole config-2.0.yaml /etc/s-hole/config.yaml \
      && sudo bash install-linux.sh ./s-hole ./config.yaml
    ```
 

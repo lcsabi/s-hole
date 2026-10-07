@@ -136,9 +136,11 @@ if ! check_out=$("$BINARY" -check-config -config "$check_cfg" 2>&1); then
   echo "error: this s-hole build does not accept $check_cfg" >&2
   echo "       The installer changed nothing." >&2
   if grep -q 'was renamed to' <<<"$check_out"; then
-    echo "       The config uses s-hole 1.x keys. See \"Upgrade to 2.0\" in the 2.0.0 release notes (docs/CHANGELOG.md)." >&2
+    echo "       The config uses s-hole 1.x keys. Do not edit $check_cfg while 1.x runs." >&2
+    echo "       See \"Upgrade to 2.0\" in the 2.0.0 release notes (docs/CHANGELOG.md)." >&2
+  else
+    echo "       Fix $check_cfg, then run the installer again." >&2
   fi
-  echo "       Fix $check_cfg, then run the installer again." >&2
   exit 1
 fi
 printf '%s\n' "$check_out"

@@ -109,6 +109,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 93](cls/CL-93.md) | Privacy hardening: config format 2.0 with private defaults, loud repeating warnings, owner-only erasable storage, purge, LAN-only DNS, admin browser defenses, non-root Docker, least-privilege Windows service (b/072 to b/095) |
 | [CL 94](cls/CL-94.md) | Minimal upstream query: a fresh query with no client EDNS options or ID, local-only names to LAN upstreams only (`dns.local_domains`), EDNS padding, localhost names never blocked |
 | [CL 95](cls/CL-95.md) | Wildcard blocklists (`*.example.com`), a warning for a list s-hole cannot read, and stricter domain validation |
+| [CL 96](cls/CL-96.md) | Graduate the CHANGELOG to v2.0.0 |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

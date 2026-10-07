@@ -1009,6 +1009,46 @@ func TestAllowlistAdd_RejectsInvalidDomain(t *testing.T) {
 	}
 }
 
+func TestAllowlistAdd_RejectsBadLabels(t *testing.T) {
+	// CL 95 (W3): POST /api/allowlist rejects a domain with an empty label
+	// or a label that starts or ends with "-" with a 400, and adds nothing.
+	// Valid names with hyphens inside a label are still accepted.
+	s, srv := newTestServer(t, nil)
+	post := func(domain string) int {
+		t.Helper()
+		body, err := json.Marshal(map[string]string{"domain": domain})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.Post(srv.URL+"/api/allowlist", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST %q: %v", domain, err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	for _, d := range []string{
+		"-ads.example.com", "ads-.example.com", "a.-b.com", "a.b-.com",
+		"a.com-", "a.com-.", "-728.90.", "a..com", "example.com..",
+		"  -ads.example.com  ",
+	} {
+		if code := post(d); code != http.StatusBadRequest {
+			t.Errorf("POST %q = %d, want 400", d, code)
+		}
+	}
+	if got := s.store.GetAllowlist(); len(got) != 0 {
+		t.Fatalf("allowlist after rejected POSTs = %v, want empty", got)
+	}
+	for _, d := range []string{"a-b.example.com", "xn--bcher-kva.de", "_dmarc.example.com"} {
+		if code := post(d); code != http.StatusOK {
+			t.Errorf("POST %q = %d, want 200", d, code)
+		}
+	}
+	if got := s.store.AllowlistLen(); got != 3 {
+		t.Errorf("allowlist has %d entries, want the 3 valid ones: %v", got, s.store.GetAllowlist())
+	}
+}
+
 // brokenResponseWriter is an http.ResponseWriter whose Write always
 // errors. Used to drive the writeJSON encoder-error branch.
 type brokenResponseWriter struct {

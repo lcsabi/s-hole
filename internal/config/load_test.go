@@ -702,6 +702,46 @@ func TestLoad_DroppedEntriesAreProblems(t *testing.T) {
 	}
 }
 
+func TestLoad_AllowlistRejectsBadLabels(t *testing.T) {
+	// CL 95 (W3): an allowlist entry with an empty label or a label that
+	// starts or ends with "-" is a problem that names it, and the entry is
+	// dropped. Hyphens inside a label, underscore labels, and a root dot stay
+	// valid.
+	bad := []string{"-ads.example.com", "ads-.example.com", "a..com", "example.com..", "a.-b.com", "a.com-", "a.com-.", "-728.90."}
+	good := []string{"a-b.example.com", "xn--bcher-kva.de", "_dmarc.example.com", "example.com."}
+	var body strings.Builder
+	body.WriteString("blocking:\n  allowlist:\n")
+	for i := range bad {
+		// Interleave the bad and good entries to check that order is kept.
+		body.WriteString("    - \"" + bad[i] + "\"\n")
+		if i < len(good) {
+			body.WriteString("    - \"" + good[i] + "\"\n")
+		}
+	}
+	cfg, probs := mustLoadYAML(t, body.String(), nil)
+	if !reflect.DeepEqual(cfg.Blocking.Allowlist, good) {
+		t.Errorf("allowlist = %v, want %v", cfg.Blocking.Allowlist, good)
+	}
+	if len(probs) != len(bad) {
+		t.Errorf("got %d problems, want %d:\n%s", len(probs), len(bad), problemText(probs))
+	}
+	for _, p := range probs {
+		if p.Key != "blocking.allowlist" {
+			t.Errorf("problem key = %q, want blocking.allowlist", p.Key)
+		}
+	}
+	for _, d := range bad {
+		if !strings.Contains(problemText(probs), `"`+d+`"`) {
+			t.Errorf("problems do not name %q:\n%s", d, problemText(probs))
+		}
+	}
+	for _, d := range good {
+		if strings.Contains(problemText(probs), `"`+d+`"`) {
+			t.Errorf("a valid entry %q is a problem:\n%s", d, problemText(probs))
+		}
+	}
+}
+
 func TestLoad_MalformedUpstreamHidesQueryString(t *testing.T) {
 	// C3: a malformed upstream is shown with its query string redacted, as well
 	// as its user info (TestLoad_NormalizesDoHAndReportsDrops covers that).

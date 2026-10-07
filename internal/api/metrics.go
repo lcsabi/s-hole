@@ -1,6 +1,8 @@
 package api
 
 import (
+	"github.com/lcsabi/s-hole/internal/redact"
+
 	"fmt"
 	"net/http"
 	"runtime/metrics"
@@ -88,7 +90,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 			fmt.Fprintln(w, "# HELP shole_upstream_transport_failures_total Per-upstream cumulative transport failures (no usable answer: a timeout, a refused connection, or for a DoH upstream a non-200 status or unparsable body) seen by the forward cooldown tracker.")
 			fmt.Fprintln(w, "# TYPE shole_upstream_transport_failures_total counter")
 			for addr, n := range failures {
-				fmt.Fprintf(w, "shole_upstream_transport_failures_total{upstream=\"%s\"} %d\n", escapeLabel(addr), n)
+				fmt.Fprintf(w, "shole_upstream_transport_failures_total{upstream=\"%s\"} %d\n", escapeLabel(redact.URL(addr)), n)
 			}
 		}
 	}
@@ -118,7 +120,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "# TYPE shole_cache_size gauge")
 		fmt.Fprintf(w, "shole_cache_size %d\n", size)
 		// Cache back-pressure: non-zero means the cache filled with live
-		// entries and dropped inserts. A sustained rate means cache_size is
+		// entries and dropped inserts. A sustained rate means dns.cache_entries is
 		// too small for the working set.
 		fmt.Fprintln(w, "# HELP shole_cache_dropped_total DNS cache entries dropped because the cache was full of unexpired entries.")
 		fmt.Fprintln(w, "# TYPE shole_cache_dropped_total counter")
@@ -138,7 +140,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "# HELP shole_blocklist_source_size Domains contributed by one blocklist source (pre-dedup).")
 		fmt.Fprintln(w, "# TYPE shole_blocklist_source_size gauge")
 		for _, src := range sources {
-			fmt.Fprintf(w, "shole_blocklist_source_size{url=\"%s\"} %d\n", escapeLabel(src.URL), src.Count)
+			fmt.Fprintf(w, "shole_blocklist_source_size{url=\"%s\"} %d\n", escapeLabel(redact.URL(src.URL)), src.Count)
 		}
 		fmt.Fprintln(w, "# HELP shole_blocklist_source_stale Whether a blocklist source is serving stale or no data (1) or fresh data (0).")
 		fmt.Fprintln(w, "# TYPE shole_blocklist_source_stale gauge")
@@ -147,13 +149,13 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 			if src.Stale {
 				stale = 1
 			}
-			fmt.Fprintf(w, "shole_blocklist_source_stale{url=\"%s\"} %d\n", escapeLabel(src.URL), stale)
+			fmt.Fprintf(w, "shole_blocklist_source_stale{url=\"%s\"} %d\n", escapeLabel(redact.URL(src.URL)), stale)
 		}
 	}
 
-	fmt.Fprintln(w, "# HELP shole_whitelist_size Current number of domains in the runtime whitelist.")
-	fmt.Fprintln(w, "# TYPE shole_whitelist_size gauge")
-	fmt.Fprintf(w, "shole_whitelist_size %d\n", s.store.WhitelistLen())
+	fmt.Fprintln(w, "# HELP shole_allowlist_size Current number of domains in the runtime allowlist.")
+	fmt.Fprintln(w, "# TYPE shole_allowlist_size gauge")
+	fmt.Fprintf(w, "shole_allowlist_size %d\n", s.store.AllowlistLen())
 
 	// Querylog back-pressure: non-zero means flush_interval is too long
 	// for the query volume or the database is too slow to drain the queue.
@@ -161,6 +163,21 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "# HELP shole_query_log_dropped_total Query log entries dropped because the writer queue was full.")
 		fmt.Fprintln(w, "# TYPE shole_query_log_dropped_total counter")
 		fmt.Fprintf(w, "shole_query_log_dropped_total %d\n", s.db.Dropped())
+	}
+	if s.refusedQueries != nil {
+		fmt.Fprintln(w, "# HELP shole_refused_total Queries refused because they came from outside the LAN.")
+		fmt.Fprintln(w, "# TYPE shole_refused_total counter")
+		fmt.Fprintf(w, "shole_refused_total %d\n", s.refusedQueries())
+	}
+	if s.plaintextFallbacks != nil {
+		fmt.Fprintln(w, "# HELP shole_upstream_plaintext_fallback_total Queries sent to a plain upstream because every DoH upstream had failed.")
+		fmt.Fprintln(w, "# TYPE shole_upstream_plaintext_fallback_total counter")
+		fmt.Fprintf(w, "shole_upstream_plaintext_fallback_total %d\n", s.plaintextFallbacks())
+	}
+	if s.fileLogDropped != nil {
+		fmt.Fprintln(w, "# HELP shole_query_log_file_dropped_total Query log lines dropped because the file or standard-output writer fell behind.")
+		fmt.Fprintln(w, "# TYPE shole_query_log_file_dropped_total counter")
+		fmt.Fprintf(w, "shole_query_log_file_dropped_total %d\n", s.fileLogDropped())
 	}
 
 	s.writeRuntimeGauges(w)

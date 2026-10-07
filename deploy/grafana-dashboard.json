@@ -62,13 +62,13 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "Whitelist size",
+      "title": "Allowlist size",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "none", "graphMode": "none", "textMode": "auto" },
       "targets": [
-        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "shole_whitelist_size", "legendFormat": "domains" }
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "shole_allowlist_size", "legendFormat": "domains" }
       ]
     },
     {

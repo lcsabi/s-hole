@@ -1,5 +1,6 @@
 // Package dnsserver implements the DNS sinkhole's listening servers and
 // per-query handler. For each query the handler:
+//  0. Refuses a query from outside the LAN (see lan.go).
 //  1. Intercepts PTR queries for RFC 6303 private-range zones and returns
 //     authoritative NXDOMAIN locally, without consulting the blocklist,
 //     cache, or upstream (see privateReverseZones, isPrivatePTR).
@@ -114,19 +115,25 @@ type Handler struct {
 	counter      *stats.Counter
 	upstreams    []string
 	logger       Logger
-	blockMode    string // "zero" or "nxdomain"
+	blockMode    string // "zero_ip" or "nxdomain"
 	blockTTL     uint32
 	cache        *cache.Cache // nil when caching is disabled
 	localPTR     bool         // when true, answer RFC 6303 private PTR queries locally
-	queryPrivacy string       // "raw", "drop", or "subnet"; how the client IP is stored
+	queryPrivacy string       // "drop", "subnet", or "full"; how the client IP is stored
+	// logMode is query_log.mode: which queries are recorded. It decides what
+	// reaches the Top Domains and Top Clients tallies and whether a WARN line
+	// may name the query. The zero value records nothing.
+	logMode  string
+	failures *failureLog
+	lan      *lanACL
 }
 
 // NewHandler wires together all dependencies needed to answer a query.
 // c may be nil to disable response caching entirely (the handler then
 // always forwards on a cache miss). localPTR enables authoritative NXDOMAIN
 // replies for RFC 6303 private-range PTR queries; see privateReverseZones.
-// queryPrivacy selects how the client IP is stored ("raw", "drop", or
-// "subnet"); see maskClientIP.
+// queryPrivacy selects how the client IP is stored ("drop", "subnet", or
+// "full"); see querylog.MaskClientIP.
 func NewHandler(
 	store *blocklist.Store,
 	counter *stats.Counter,
@@ -148,24 +155,83 @@ func NewHandler(
 		cache:        c,
 		localPTR:     localPTR,
 		queryPrivacy: queryPrivacy,
+		failures:     newFailureLog(),
+		lan:          newLANACL(),
 	}
+}
+
+// SetQueryLogMode sets query_log.mode ("none", "blocked", or "all"). Call it
+// before the server starts. Until it is called the handler records nothing,
+// the most private choice.
+func (h *Handler) SetQueryLogMode(mode string) {
+	h.logMode = mode
+}
+
+// records reports whether the query log records a query with this outcome,
+// the same rule the query loggers apply.
+func (h *Handler) records(blocked bool) bool {
+	switch h.logMode {
+	case "all":
+		return true
+	case "blocked":
+		return blocked
+	default:
+		return false
+	}
+}
+
+// tally returns the client and domain to count in the Top Clients and Top
+// Domains lists: both empty when the query log does not record this query,
+// so query_log.mode governs the in-memory lists exactly as it governs the
+// database and the log file.
+func (h *Handler) tally(clientIP, domain string, blocked bool) (string, string) {
+	if !h.records(blocked) {
+		return "", ""
+	}
+	return clientIP, domain
+}
+
+// warnAttrs builds the attributes of a WARN line about one query: the safe
+// part of the error (see writeErr), and the domain only when the query log
+// records every query. A WARN line never holds the client address.
+func (h *Handler) warnAttrs(err error, domain string) []any {
+	attrs := []any{"err", writeErr(err)}
+	if h.logMode == "all" {
+		// Lowercase, as the query log records it (b/082); the reply writers
+		// pass the name as sent.
+		attrs = append(attrs, "domain", strings.ToLower(domain))
+	}
+	return attrs
 }
 
 // ServeDNS satisfies miekg/dns.Handler. It intercepts private-range PTR
 // queries (when localPTR is enabled), returns a sinkhole reply for blocked
 // domains, and otherwise serves from cache or forwards upstream.
 func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
+	// Answer the LAN only (see lan.go). This runs first, so a query from
+	// outside leaves no trace in the stats, the cache, or the query log.
+	if ip := remoteIP(w); ip.IsValid() && !h.lan.allows(ip) {
+		refuse(w, req)
+		return
+	}
 	if len(req.Question) == 0 {
 		dns.HandleFailed(w, req)
 		return
 	}
 
 	q := req.Question[0]
-	domain := q.Name // already has trailing dot
+	// The name as s-hole records it: lowercase, with the trailing dot. DNS
+	// names are case-insensitive, and a dns-0x20 forwarder randomizes the
+	// case, so recording q.Name as sent split one domain into several rows in
+	// Top Blocked and missed the domain filter (b/082). Replies still echo
+	// q.Name exactly, which the forwarder checks. strings.ToLower returns the
+	// string unchanged, without an allocation, when it is lowercase already.
+	domain := strings.ToLower(q.Name)
 	// Mask the client once, at this single write-time choke point, so the
 	// stats counter (Top Clients) and every query-log sink downstream see the
-	// same value. See maskClientIP and the query_privacy config setting.
-	clientIP := maskClientIP(clientAddr(w), h.queryPrivacy)
+	// same value. See querylog.MaskClientIP and the query_log.clients config
+	// setting.
+	clientIP := querylog.MaskClientIP(clientAddr(w), h.queryPrivacy)
 
 	// RFC 6303: answer PTR queries for private-range zones (10/8, 172.16/12,
 	// 192.168/16, fc00::/7, fe80::/10) locally with authoritative NXDOMAIN.
@@ -173,7 +239,8 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// a round-trip and leaks LAN addressing to the upstream. Checked before
 	// the blocklist so these queries are never counted as blocked.
 	if h.localPTR && isPrivatePTR(q.Qtype, domain) {
-		h.counter.RecordQuery(clientIP, domain, false)
+		ptrClient, ptrDomain := h.tally(clientIP, domain, false)
+		h.counter.RecordQuery(ptrClient, ptrDomain, false)
 		h.counter.RecordLocalPTR()
 		h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Rcode: dns.RcodeNameError, Synthesized: true})
 		h.writeLocalNXDOMAIN(w, req)
@@ -181,7 +248,8 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	blocked := h.store.IsBlocked(domain)
-	h.counter.RecordQuery(clientIP, domain, blocked)
+	tallyClient, tallyDomain := h.tally(clientIP, domain, blocked)
+	h.counter.RecordQuery(tallyClient, tallyDomain, blocked)
 
 	// Log at the point each outcome is decided, so the query-log row records
 	// the cache-hit flag (cache_hit) and the outcome (rcode + synthesized). A
@@ -207,8 +275,9 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			// Relayed from cache, not synthesized. The cache stores only
 			// NOERROR-with-answers replies, so cached.Rcode is NOERROR.
 			h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, CacheHit: true, Rcode: cached.Rcode})
+			fitUDP(w, req, cached)
 			if err := w.WriteMsg(cached); err != nil {
-				logger.Warn("write cached response failed", "err", err, "domain", domain)
+				logger.Warn("write cached response failed", h.warnAttrs(err, domain)...)
 			}
 			return
 		}
@@ -225,7 +294,14 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	if err != nil {
 		// Unresolved: every upstream failed at the transport level or the
 		// deadline hit, so s-hole synthesizes the SERVFAIL (dns.HandleFailed).
-		logger.Warn("upstream forward failed", "err", err, "domain", domain)
+		// The failure goes into the once-a-minute summary (RunFailureReport),
+		// not a per-query WARN, so an outage does not write every failed name
+		// to the system log.
+		failedDomain := ""
+		if h.logMode == "all" {
+			failedDomain = domain
+		}
+		h.failures.record(err, failedDomain)
 		h.counter.RecordForwardFailure()
 		h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Rcode: dns.RcodeServerFailure, Synthesized: true})
 		dns.HandleFailed(w, req)
@@ -244,9 +320,28 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		h.cache.Set(q, resp)
 	}
 
+	fitUDP(w, req, resp)
 	if err := w.WriteMsg(resp); err != nil {
-		logger.Warn("write response failed", "err", err, "domain", domain)
+		logger.Warn("write response failed", h.warnAttrs(err, domain)...)
 	}
+}
+
+// fitUDP truncates a relayed reply to the size the client can take over
+// UDP: 512 bytes without EDNS0, or the buffer size the client advertised.
+// An upstream reply can be larger: after a TC retry over TCP, or from a DoH
+// upstream, which has no UDP size limit. A larger UDP reply is dropped or
+// cut by the network or the client's stub (b/081). Truncate sets the TC bit,
+// so the client asks again over TCP and gets the full reply. TCP and DoT
+// replies are not changed.
+func fitUDP(w dns.ResponseWriter, req, resp *dns.Msg) {
+	if _, udp := w.RemoteAddr().(*net.UDPAddr); !udp {
+		return
+	}
+	size := dns.MinMsgSize
+	if opt := req.IsEdns0(); opt != nil && int(opt.UDPSize()) > size {
+		size = int(opt.UDPSize())
+	}
+	resp.Truncate(size)
 }
 
 func (h *Handler) writeSinkhole(w dns.ResponseWriter, req *dns.Msg, q dns.Question) {
@@ -263,12 +358,12 @@ func (h *Handler) writeSinkhole(w dns.ResponseWriter, req *dns.Msg, q dns.Questi
 	if h.blockMode == "nxdomain" {
 		resp.SetRcode(req, dns.RcodeNameError)
 		if err := w.WriteMsg(resp); err != nil {
-			logger.Warn("write sinkhole reply failed", "err", err, "domain", q.Name)
+			logger.Warn("write sinkhole reply failed", h.warnAttrs(err, q.Name)...)
 		}
 		return
 	}
 
-	// Default: "zero" returns 0.0.0.0 / ::
+	// Default: "zero_ip" returns 0.0.0.0 / ::
 	switch q.Qtype {
 	case dns.TypeA:
 		resp.Answer = append(resp.Answer, &dns.A{
@@ -283,7 +378,7 @@ func (h *Handler) writeSinkhole(w dns.ResponseWriter, req *dns.Msg, q dns.Questi
 	}
 	// For MX, TXT, etc. return NOERROR with no answer; clients won't retry.
 	if err := w.WriteMsg(resp); err != nil {
-		logger.Warn("write sinkhole reply failed", "err", err, "domain", q.Name)
+		logger.Warn("write sinkhole reply failed", h.warnAttrs(err, q.Name)...)
 	}
 }
 
@@ -300,7 +395,7 @@ func (h *Handler) writeLocalNXDOMAIN(w dns.ResponseWriter, req *dns.Msg) {
 		resp.SetEdns0(opt.UDPSize(), opt.Do())
 	}
 	if err := w.WriteMsg(resp); err != nil {
-		logger.Warn("write local PTR reply failed", "err", err, "domain", req.Question[0].Name)
+		logger.Warn("write local PTR reply failed", h.warnAttrs(err, req.Question[0].Name)...)
 	}
 }
 
@@ -331,35 +426,5 @@ func clientAddr(w dns.ResponseWriter) string {
 			return a.String()
 		}
 		return host
-	}
-}
-
-// maskClientIP applies the query_privacy transform to a client address before
-// it is recorded. It runs on the query path, so it does no work in the default
-// "raw" mode. The modes are:
-//
-//	raw    return the address unchanged (the default and any unknown mode).
-//	drop   return "" so no client identity is stored.
-//	subnet zero the host bits: IPv4 to /24, IPv6 to /64, keeping the subnet as
-//	       a meaningful group on segmented or VLAN networks.
-//
-// A value that net.ParseIP cannot read (for example the "unknown" sentinel from
-// clientAddr) is returned unchanged under subnet, so masking never invents an
-// address.
-func maskClientIP(ip, mode string) string {
-	switch mode {
-	case "drop":
-		return ""
-	case "subnet":
-		parsed := net.ParseIP(ip)
-		if parsed == nil {
-			return ip
-		}
-		if v4 := parsed.To4(); v4 != nil {
-			return v4.Mask(net.CIDRMask(24, 32)).String()
-		}
-		return parsed.Mask(net.CIDRMask(64, 128)).String()
-	default:
-		return ip
 	}
 }

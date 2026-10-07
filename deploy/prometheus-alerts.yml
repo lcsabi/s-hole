@@ -39,7 +39,7 @@ groups:
           severity: warning
         annotations:
           summary: "s-hole is dropping query-log rows"
-          description: "The query-log writer queue is full. db_flush_interval may be too long for the query volume, or the database is too slow to drain the queue."
+          description: "The query-log writer queue is full. query_log.flush_interval may be too long for the query volume, or the database is too slow to drain the queue."
 
       - alert: HighForwardFailureRate
         expr: rate(shole_forward_failures_total[5m]) > 0.2
@@ -77,7 +77,7 @@ groups:
           severity: warning
         annotations:
           summary: "The s-hole DNS-over-TLS certificate expires within 14 days"
-          description: "The DoT certificate expires in {{ $value | humanizeDuration }} (a negative value means it has already expired). Clients such as Android Private DNS reject an expired certificate. Renew it, replace the tls_cert and tls_key files, and reload s-hole."
+          description: "The DoT certificate expires in {{ $value | humanizeDuration }} (a negative value means it has already expired). Clients such as Android Private DNS reject an expired certificate. Renew it, replace the dns.dot_cert and dns.dot_key files, and reload s-hole."
 
       - alert: DoTCertificateReloadFailed
         expr: increase(shole_dot_certificate_reload_failures_total[24h]) > 0
@@ -85,4 +85,4 @@ groups:
           severity: warning
         annotations:
           summary: "s-hole could not load a new DNS-over-TLS certificate"
-          description: "In the last 24 hours a reload found tls_cert or tls_key unreadable or mismatched, so s-hole kept serving the previous certificate. Check the files and the s-hole log, then reload again. The 24h window matches the default refresh_interval, so the alert stays up for 24 hours after the last failed reload."
+          description: "In the last 24 hours a reload found dns.dot_cert or dns.dot_key unreadable or mismatched, so s-hole kept serving the previous certificate. Check the files and the s-hole log, then reload again. The 24h window matches the default refresh_interval, so the alert stays up for 24 hours after the last failed reload."

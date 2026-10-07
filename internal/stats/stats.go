@@ -69,6 +69,10 @@ type Counter struct {
 	blocked    int64            // guarded by mu
 	topDomains map[string]int64 // blocked domain → block count
 	topClients map[string]int64 // client IP → total query count
+
+	// timeline is the per-minute graph (see timeline.go). Its counts are not
+	// part of the LOAD-ORDER INVARIANT: the graph shows counts, not ratios.
+	timeline timeline
 }
 
 // Entry is a name/count pair used in top-N lists (domains and clients).
@@ -113,18 +117,31 @@ func New() *Counter {
 
 // RecordQuery records one DNS query. clientIP and domain are added to the
 // top-N maps; if blocked, both the blocked counter and the top-blocked-
-// domains tally are bumped.
+// domains tally are bumped. An empty clientIP or domain is not tallied: the
+// DNS handler passes "" when query_log.clients drops the client or when
+// query_log.mode does not record the query, so the Top Clients and Top
+// Domains lists hold only what the query log would hold. The counters are
+// bumped either way.
 //
 // Ordering note: total.Add is performed before taking the mutex, so that
 // snapshots that read blocked before total observe blocked ≤ total
 // (see Snapshot).
 func (c *Counter) RecordQuery(clientIP, domain string, blocked bool) {
 	c.total.Add(1)
+	b := c.timeline.at(time.Now())
+	b.total.Add(1)
+	if blocked {
+		b.blocked.Add(1)
+	}
 	c.mu.Lock()
-	c.topClients[clientIP]++
+	if clientIP != "" {
+		c.topClients[clientIP]++
+	}
 	if blocked {
 		c.blocked++
-		c.topDomains[domain]++
+		if domain != "" {
+			c.topDomains[domain]++
+		}
 	}
 	// Cap the maps so a long-running process does not accumulate every
 	// unique key forever. We prune lazily, only when a map exceeds the
@@ -166,10 +183,23 @@ func pruneBottomHalf(m map[string]int64) map[string]int64 {
 	return out
 }
 
+// ResetTallies empties the Top Domains and Top Clients lists, which name the
+// domains and clients s-hole has seen. A purge calls it. The counters (total,
+// blocked, cache hits, and so on) are not reset: they are counts, not
+// history, and resetting them while queries are in flight could make a ratio
+// exceed 100 % (see the LOAD-ORDER INVARIANT on Counter).
+func (c *Counter) ResetTallies() {
+	c.mu.Lock()
+	c.topDomains = make(map[string]int64)
+	c.topClients = make(map[string]int64)
+	c.mu.Unlock()
+}
+
 // RecordCacheHit increments the cache-hit counter. Called from the DNS
 // handler when a query is satisfied from the in-memory response cache.
 func (c *Counter) RecordCacheHit() {
 	c.cacheHit.Add(1)
+	c.timeline.at(time.Now()).cached.Add(1)
 }
 
 // RecordLocalPTR increments the local-PTR counter. Called from the DNS
@@ -186,6 +216,7 @@ func (c *Counter) RecordLocalPTR() {
 // total ≥ forwardFailures at all times.
 func (c *Counter) RecordForwardFailure() {
 	c.forwardFailures.Add(1)
+	c.timeline.at(time.Now()).unresolved.Add(1)
 }
 
 // RecordUpstreamError increments the relayed-failure counter. Called from the
@@ -194,6 +225,7 @@ func (c *Counter) RecordForwardFailure() {
 // RecordQuery first so that total ≥ upstreamErrors at all times.
 func (c *Counter) RecordUpstreamError() {
 	c.upstreamErrors.Add(1)
+	c.timeline.at(time.Now()).upstreamError.Add(1)
 }
 
 // topNTarget selects which of the two tally maps Snapshot/topN reads.

@@ -2310,3 +2310,557 @@ random probing over both transports.
 
 When the test needs TCP, `startTruncatingUpstream` takes its port and both
 sockets from `pickFreePort`. A UDP-only caller keeps `127.0.0.1:0`.
+
+## b/072: cache: a cached reply lost its DNSSEC OK flag
+
+**Priority:** P2
+**Component:** cache
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-06
+
+### Description
+
+A reply served from the cache a few seconds after it was stored carried
+DO=false and junk in the EDNS0 flag bits, so a client that asked for DNSSEC
+records got a reply that said it had not. Found by the CL 93 privacy review
+and reproduced with a probe on `decrementTTLs`.
+
+### Root Cause
+
+`decrementTTLs` subtracted the elapsed seconds from the TTL field of every
+record in the Answer, Authority, and Additional sections, the OPT
+pseudo-record included. OPT has no TTL: that field holds the extended rcode,
+the EDNS version, and the DO flag (0x8000), so the subtraction cleared DO.
+
+### Fix
+
+`decrementTTLs` skips OPT records. The fuller fix (strip the reply's options
+before caching and rebuild OPT for each client, so one client's cookie is not
+served to another) is ROADMAP #41, planned as CL 94.
+
+## b/073: api: DNS rebinding let a web page read the query history
+
+**Priority:** P0
+**Component:** api
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-06
+
+### Description
+
+A web page in the operator's browser could read every admin endpoint,
+`/api/queries/export` included, through DNS rebinding: the page points its
+own name at the admin address, and the browser then treats the dashboard as
+the page's own origin. Binding the admin server to localhost did not help,
+because the attacker is the operator's own browser. Reproduced with a request
+that carried a foreign `Host` header: 200 with the rows.
+
+### Root Cause
+
+The admin server checked nothing about the `Host` header.
+
+### Fix
+
+Every route answers only when the `Host` header names an IP address,
+`localhost`, or the machine's own hostname (also with `.local`), and answers
+anything else with 421 and a hint.
+
+## b/074: api: a cross-site request could change the allowlist
+
+**Priority:** P0
+**Component:** api
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-06
+
+### Description
+
+Any web page the operator visited could add a domain to the allowlist (and so
+unblock a tracker for the whole LAN) or start a reload, with a `text/plain`
+POST that needs no CORS preflight. Reproduced: 200 `whitelisted`.
+
+### Root Cause
+
+`POST /api/whitelist` decoded the JSON body whatever its `Content-Type`, and
+no handler checked where a request came from.
+
+### Fix
+
+`http.CrossOriginProtection` refuses a state-changing request that the
+browser marks as cross-site, and the allowlist POST requires
+`application/json`. A request with no browser headers (curl) still works.
+
+## b/075: querylog: every query went to the system journal by default
+
+**Priority:** P1
+**Component:** querylog, main
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-06
+
+### Description
+
+With the default empty `log_file`, every query line went to standard output,
+which systemd stores in the journal and Docker in an unrotated container log.
+Retention and purge never reached that copy: a test VM held 8,213 query lines
+with client addresses after four weeks. On Raspberry Pi OS the first user is
+in the `adm` group and could read them without sudo. Under load on a
+Raspberry Pi 5, journald logged "Suppressed 975700 messages from
+s-hole.service", which dropped s-hole's own warnings too, and the direct
+writes blocked the DNS goroutines (the pprof block profile showed it).
+
+### Root Cause
+
+`NewFileLogger("")` meant standard output, and `FileLogger.Log` wrote each
+line synchronously with `fmt.Fprintf`.
+
+### Fix
+
+`query_log.file` is off by default; `"stdout"` turns the stream on. The
+FileLogger writes from its own goroutine through a buffered channel and drops
+lines when it falls behind, counted by `shole_query_log_file_dropped_total`.
+
+## b/076: querylog, deploy: every local account could read the query history
+
+**Priority:** P1
+**Component:** querylog, deploy, service
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-06
+
+### Description
+
+The query database and its `-wal` and `-shm` files, and the query log file,
+were mode `0644` in a `0755` directory, so every account on the host could
+read the household's history (reproduced on a Debian VM as an unprivileged
+user). On Windows, the data files in a new folder under `C:\` inherited
+modify rights for every signed-in user.
+
+### Root Cause
+
+SQLite and `os.OpenFile(..., 0644)` created the files under the usual `022`
+umask, the installer created the data directory with `mkdir -p`, and the
+unit set no `UMask`. A Go file mode does not restrict access on Windows.
+
+### Fix
+
+s-hole sets a `077` umask on Unix, pre-creates the database `0600`, and
+tightens existing files; the log file is `0600`; the unit sets `UMask=0077`
+and the installer makes the data directory `0700`. On Windows,
+`-service install` gives the config folder an owner-only access list.
+
+## b/077: querylog: the retention prune did not erase the deleted rows
+
+**Priority:** P1
+**Component:** querylog
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-06
+
+### Description
+
+A row that the retention prune deleted stayed readable in `queries.db`, and
+the WAL kept its page images until a checkpoint. Reproduced with a probe: the
+deleted domain was still in the file after `DELETE` and close.
+
+### Root Cause
+
+A plain `DELETE` only marks SQLite space as free (`secure_delete` defaults to
+off, and `FAST` leaves freed pages untouched).
+
+### Fix
+
+The database runs with `secure_delete=ON` and `journal_size_limit`, and a
+prune that deleted rows runs `wal_checkpoint(TRUNCATE)`. The purge also
+resets the row counter and runs `VACUUM`.
+
+## b/078: dns: the application log held query names and client addresses
+
+**Priority:** P1
+**Component:** dns
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-06
+
+### Description
+
+With `log_queries: none` and `query_privacy: drop`, an upstream failure still
+logged `WARN msg="upstream forward failed" ... domain=secret-site.example.`,
+once per query, so an outage wrote every failed name to the journal or the
+Windows Event Log. A reply-write error logged the raw `*net.OpError`, whose
+text holds the client's address.
+
+### Root Cause
+
+The handler's WARN lines took the domain and the raw error, and the
+forwarder's error named the query.
+
+### Fix
+
+A WARN about one query names the domain only under `query_log.mode: "all"`
+and never names the client; write errors keep only the operation and the
+underlying error. Unresolved queries are summarized once a minute, and the
+forwarder's error names the upstreams, not the query.
+
+## b/079: config: privacy settings failed open
+
+**Priority:** P1
+**Component:** config, dns, querylog
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-06
+
+### Description
+
+A typo such as `query_privcy: drop` was ignored without a word and left the
+full client address in the log. An unknown `query_privacy` value in the
+handler meant `raw`. A negative `query_db_retention_days` meant forever. A
+`log_file` that could not be opened fell back to standard output, the
+journal.
+
+### Root Cause
+
+The YAML decode accepted unknown keys, and each fallback picked the least
+private behavior.
+
+### Fix
+
+Config format 2.0 reports unknown keys, renamed keys, and invalid values as
+problems and keeps the default, which is the most private value. An unknown
+client mode drops the client, negative retention is invalid, and a log file
+that cannot open turns the output off.
+
+## b/080: dns: s-hole answered queries from any source
+
+**Priority:** P1
+**Component:** dns
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-06
+
+### Description
+
+s-hole answered every source that could reach port 53. On a host with a
+public IPv6 address behind a permissive router it was an open resolver:
+strangers could use it, their queries landed in the household's statistics,
+and they could probe the cache for names the household looked up.
+
+### Root Cause
+
+`ServeDNS` had no source check.
+
+### Fix
+
+A query is answered only from a loopback, private IPv4, link-local, or
+unique-local address, or from a subnet of one of the host's interfaces;
+anything else gets REFUSED and is only counted (`shole_refused_total`).
+
+## b/081: dns: a UDP reply could exceed the client's size
+
+**Priority:** P3
+**Component:** dns
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-06
+
+### Description
+
+A relayed reply could be larger than a UDP client accepts (512 bytes without
+EDNS0): after the forwarder's TC retry over TCP, or from a DoH upstream.
+
+### Root Cause
+
+The handler wrote the upstream's reply as it came.
+
+### Fix
+
+`fitUDP` truncates a UDP reply to 512 bytes or the client's EDNS0 size and
+sets TC, so the client retries over TCP.
+
+## b/082: dns, querylog: domains were stored in the client's letter case
+
+**Priority:** P3
+**Component:** dns, querylog
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-06
+
+### Description
+
+The query log and the Top lists stored the name as the client sent it, so a
+dns-0x20 forwarder split one domain into several Top Blocked rows. A code
+comment said the domains were stored in lowercase.
+
+### Root Cause
+
+`ServeDNS` recorded `q.Name` as it was.
+
+### Fix
+
+The recorded name is lowercased (the reply still echoes the name as sent),
+and a one-time migration lowercases stored rows.
+
+## b/083: main: memory stayed near double after a blocklist reload
+
+**Priority:** P2
+**Component:** main
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-06
+
+### Description
+
+On a Raspberry Pi 5 with 405,000 domains, RSS was 65 MB idle and stayed at
+105 to 125 MB for minutes after each reload. DESIGN said the reload transient
+lasted a few seconds. pprof showed no leak: the retained heap stayed at 37 MB
+and the goroutine count at 28.
+
+### Root Cause
+
+A reload allocates about 250 bytes of short-lived memory per domain, and the
+Go runtime keeps freed heap (about 76 MB here) for reuse instead of returning
+it to the OS.
+
+### Fix
+
+`main` calls `debug.FreeOSMemory` after each blocklist load.
+
+## b/084: deploy: the installer rejected the armv7 build on a 64-bit kernel
+
+**Priority:** P3
+**Component:** deploy
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-06
+
+### Description
+
+On a Raspberry Pi with a 64-bit kernel, `install-linux.sh` refused the armv7
+build ("not built for this host"), although that build runs there. The README
+told Pi 2 and Pi 3 owners to use it, and a Pi 3 often runs a 64-bit OS.
+
+### Root Cause
+
+The architecture check matched only `aarch64` in the `file` output on an
+`aarch64` host.
+
+### Fix
+
+On an `aarch64` host the check also accepts a 32-bit ARM binary; the
+`-version` run proves it runs. The README picks the build by the OS bitness.
+
+## b/085: docs: the smoke-test port 5353 collides with avahi
+
+**Priority:** P3
+**Component:** docs
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-06
+
+### Description
+
+The CONTRIBUTING smoke test and the CLAUDE.md run command used port 5353,
+which `avahi-daemon` (mDNS) holds on Raspberry Pi OS and most desktop
+installs, so s-hole failed with "address already in use".
+
+### Fix
+
+The smoke test and the run command use port 5354.
+
+## b/086: service: the Windows service ran as LocalSystem
+
+**Priority:** P1
+**Component:** service
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-06
+
+### Description
+
+`-service install` created the service without an account, so it ran as
+LocalSystem, the most powerful account on the machine.
+
+### Fix
+
+The service runs as its own virtual account, `NT SERVICE\s-hole`, with an
+unrestricted service SID, and install gives the config folder an owner-only
+access list.
+
+## b/087: docker: the image ran as root with an unpinned builder
+
+**Priority:** P2
+**Component:** docker
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-06
+
+### Description
+
+The image ran s-hole as root, and its builder was `FROM golang:alpine`, a
+tag that moves: the v1.0.0 image was built with go1.27.1, the v1.0.0 archives
+with Go 1.26. Dependabot cannot track an unversioned tag.
+
+### Fix
+
+The image runs as UID 65532 with a file capability for port 53, the builder
+is `golang:1.26-alpine` and cross-compiles from `$BUILDPLATFORM`, and builds
+use `-trimpath`.
+
+## b/088: main: the Router setup banner ignored the dns.listen address
+
+**Priority:** P3
+**Component:** main
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-06
+
+### Description
+
+With `dns.listen` bound to one address, such as `127.0.0.1:5399`, the
+"Router setup" banner still listed every LAN address as the DNS server. A
+router or device set to one of those addresses got no answer. Found during
+the Windows service check for CL 93.
+
+### Fix
+
+The banner shows only the bound address when `dns.listen` names one, with
+"(this machine only)" for a loopback address. A wildcard listener still shows
+every LAN address.
+
+## b/089: blocklist: a blocking.cache_dir that did not exist was never created
+
+**Priority:** P3
+**Component:** blocklist
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-06
+
+### Description
+
+If `blocking.cache_dir` named a directory that did not exist, s-hole did not
+create it. Every cache write failed, so each start downloaded every list
+again. Found on the Raspberry Pi during the CL 93 memory check.
+
+### Fix
+
+s-hole creates the directory, owner-only (`0700`), before it writes a cache
+file.
+
+## b/090: repo: .gitignore hid new source files in cmd/s-hole
+
+**Priority:** P1
+**Component:** repo
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-06
+
+### Description
+
+The `.gitignore` entry `s-hole`, meant for the binary at the repository
+root, also matched the `cmd/s-hole/` directory. A new file there was
+ignored without a message, so `git add -A` skipped it. The CL 93 branch
+built in the author's checkout but not from git: five files in
+`cmd/s-hole` were missing. Found by the cold test sub-agent, whose
+worktree did not build.
+
+### Fix
+
+The binary entries are anchored to the repository root (`/s-hole`), and the
+five files are committed.
+
+## b/091: main: an offline purge could report success and leave the history
+
+**Priority:** P2
+**Component:** main
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-07
+
+### Description
+
+`s-hole -purge` on a stopped s-hole resolved relative paths in the config
+against the current directory. Run from another directory (for example
+`sudo s-hole -purge -config /etc/s-hole/config.yaml` from a home directory
+while the history is in `/var/lib/s-hole`), it found no files, treated that
+as success, and printed "files deleted" while the history stayed. On Windows
+the same command from an elevated prompt looked in the prompt's directory,
+not next to `config.yaml`, where the service keeps its files. Found by the
+CL 93 documentation review.
+
+### Fix
+
+A configured file that does not exist is reported as `not found at` with
+its absolute path, and the command then says that relative paths start in
+the current directory and where to run it. On Windows, `-purge` changes to
+the folder of `config.yaml` first, as the service does.
+
+## b/092: deploy: a reinstall after a default uninstall could not use the kept data
+
+**Priority:** P2
+**Component:** deploy, blocklist
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-07
+
+### Description
+
+Since CL 93, a default uninstall hands the kept data in `/var/lib/s-hole` to
+root (`0600`). A later install chowned the directory back to `s-hole`, but
+not the files in it. s-hole then could not open its query database
+(`permission denied`), and a fresh blocklist cache file that it could not
+read made the whole list fail to load, although a download would have
+worked. The permission hints named only the Docker fix. Found in the
+pre-merge test on the Debian VM.
+
+### Fix
+
+The installer chowns the data directory recursively. A cache file that
+cannot be read logs `blocklist cache could not be read` and s-hole downloads
+the list instead. The permission hints also name the Linux fix,
+`sudo chown -R s-hole:s-hole /var/lib/s-hole`.
+
+## b/093: deploy: a failed upgrade left the new binary installed
+
+**Priority:** P2
+**Component:** deploy
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-07
+
+### Description
+
+`install-linux.sh` replaced `/usr/local/bin/s-hole` before it ran
+`-check-config`. An upgrade from 1.x with the old config failed the check
+and printed "service not started", but the old process kept running from
+the replaced file. The next restart or reboot started the 2.0 binary with
+the 1.x config, so every setting fell back to its default: no blocklists,
+and nothing blocked. Found in the pre-merge test on the Debian VM.
+
+### Fix
+
+The installer checks the config with the new binary before it installs
+anything, and on a failure says that it changed nothing. A 1.x config also
+gets a pointer to "Upgrade to 2.0" in the release notes (docs/CHANGELOG.md).
+
+## b/094: main: an offline purge failed on Windows
+
+**Priority:** P2
+**Component:** main
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-07
+
+### Description
+
+`s-hole -purge` decides that no s-hole runs when the connection to the admin
+address is refused, and then deletes the files itself. It checked for
+`syscall.ECONNREFUSED`, but Windows reports a refused connection as
+`WSAECONNREFUSED` (10061). With the service stopped, the purge on Windows
+failed with "purge failed ... actively refused it" and deleted nothing.
+Found in the pre-merge test on Windows 10.
+
+### Fix
+
+A platform helper, `connRefused`, also matches `WSAECONNREFUSED` on Windows.
+Checked live: an offline purge from `C:\Windows\System32` deletes the files
+next to `config.yaml`.
+
+## b/095: blocklist: a stale-cache fallback logged that it used a copy it could not read
+
+**Priority:** P3
+**Component:** blocklist
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-07
+
+### Description
+
+When a list's download failed, s-hole logged `download failed, using stale
+cache` (or the non-200 and size-cap variants) before it read the cached
+copy. If the copy could not be read, the list then failed, so the log said
+that s-hole used a cache that it could not use. Found by the CL 93
+documentation review after the b/092 fix, which made an unreadable cache
+file a known case.
+
+### Fix
+
+A helper, `staleFallback`, reads the copy first and logs the WARN only when
+the read works. Otherwise the list fails with the download error and the
+read error together.

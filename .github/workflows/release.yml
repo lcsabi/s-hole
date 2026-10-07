@@ -53,14 +53,14 @@ jobs:
 
           stage="dist/s-hole_${VERSION}_${SLUG}"
           mkdir -p "$stage"
-          go build -ldflags="-s -w \
+          go build -trimpath -ldflags="-s -w \
             -X '${VPKG}.Version=${VERSION}' \
             -X '${VPKG}.Commit=${COMMIT}' \
             -X '${VPKG}.BuildDate=${BUILD_DATE}'" \
             -o "$stage/$bin" ./cmd/s-hole
 
           # Ship the sample config and the docs/license in every archive.
-          cp config.yaml LICENSE README.md "$stage/"
+          cp config.yaml LICENSE README.md PRIVACY.md "$stage/"
           # The deploy helpers are Linux-only.
           if [ "$GOOS" = "linux" ]; then
             cp deploy/install-linux.sh deploy/uninstall-linux.sh deploy/s-hole.service "$stage/"

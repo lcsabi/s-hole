@@ -56,8 +56,11 @@ go build -o s-hole ./cmd/s-hole
 sudo ./s-hole -config config.yaml          # Linux / macOS
 ```
 
-`-version` prints the build identity; `-check-config -config <path>` loads and
-validates a config the way startup does, then exits (non-zero on any error);
+`-version` prints the build identity; `-check-config -config <path>` loads a
+config the way startup does, prints the privacy and security warnings, and
+exits non-zero on any config problem (startup would only warn);
+`-purge -config <path>` deletes everything s-hole stored; `-healthcheck`
+asks a running s-hole for `/readyz` (the Docker `HEALTHCHECK`);
 `-service install|uninstall|start|stop` controls the Windows Service.
 
 On Linux, `deploy/install-linux.sh` installs and health-checks the systemd
@@ -106,8 +109,9 @@ go tool pprof -top -sample_index=alloc_objects bench.test mem.out  # allocation 
 go tool pprof -http=: bench.test cpu.out                           # flame graph in a browser
 ```
 
-A live instance profiles the same way once `enable_pprof: true` is set. Bind
-`api_listen` to localhost first (see the README Security Notes):
+A live instance profiles the same way once `admin.pprof: true` is set (s-hole
+warns while it is on). Keep `admin.listen` on localhost (see the README
+Security Notes):
 
 ```bash
 go tool pprof http://127.0.0.1:8080/debug/pprof/profile?seconds=30   # 30s CPU
@@ -116,7 +120,7 @@ go tool pprof http://127.0.0.1:8080/debug/pprof/mutex                # lock cont
 go tool pprof http://127.0.0.1:8080/debug/pprof/block                # blocking events
 ```
 
-`enable_pprof: true` also turns on mutex and block profiling (both are off in
+`admin.pprof: true` also turns on mutex and block profiling (both are off in
 the Go runtime by default and their endpoints report nothing until a rate is
 set). Use them to find a lock stall on the RWMutex-guarded hot path (`Store`,
 `Cache`, `stats.Counter`), the contention that the `_Parallel` benchmarks guard
@@ -130,38 +134,47 @@ target hardware when the absolute value matters, not on a development box.
 
 ### Manual smoke test
 
-Unit tests cover the packages. This seven-step pass (about five minutes)
+Unit tests cover the packages. This eight-step pass (about five minutes)
 exercises the running binary end-to-end. Run it before a release tag, or after
-you change startup, shutdown, or anything in the query path. Port 5353
-avoids both the privileged-port bind and the local resolver's claim on
-port 53 (`systemd-resolved` holds `127.0.0.53:53` on most distros).
+you change startup, shutdown, or anything in the query path. Port 5354
+avoids the privileged-port bind, the local resolver's claim on port 53
+(`systemd-resolved` holds `127.0.0.53:53` on most distros), and the mDNS
+daemon on port 5353 (`avahi-daemon`, on Raspberry Pi OS and most desktop
+installs). The defaults record no queries, so the run turns the query
+history and the query lines on through `S_HOLE_*` variables.
 
 ```bash
 # Terminal 1: build and run; this terminal is also the live query log.
 go build -o /tmp/s-hole ./cmd/s-hole
-S_HOLE_LISTEN=:5353 S_HOLE_QUERY_DB=/tmp/q.db S_HOLE_CACHE_DIR=/tmp \
+S_HOLE_DNS_LISTEN=:5354 S_HOLE_BLOCKING_CACHE_DIR=/tmp \
+  S_HOLE_QUERY_LOG_MODE=all S_HOLE_QUERY_LOG_CLIENTS=full \
+  S_HOLE_QUERY_LOG_DATABASE=/tmp/q.db S_HOLE_QUERY_LOG_FILE=stdout \
   /tmp/s-hole -config config.yaml
 ```
 
 Expect: `blocklist updated total=…`, two `dns listener started` lines,
-and the router-setup banner. Then, in a second terminal:
+`privacy warning` lines for the three query-log settings, and the
+router-setup banner. Then, in a second terminal:
 
 1. **Probes.** `curl localhost:8080/healthz` → `ok`;
    `curl localhost:8080/readyz` → `ok` (503 means the blocklist
    download failed).
-2. **DNS behaviour.** `dig @127.0.0.1 -p 5353 doubleclick.net +short`
-   → `0.0.0.0`; `dig @127.0.0.1 -p 5353 sub.doubleclick.net +short`
+2. **DNS behaviour.** `dig @127.0.0.1 -p 5354 doubleclick.net +short`
+   → `0.0.0.0`; `dig @127.0.0.1 -p 5354 sub.doubleclick.net +short`
    → `0.0.0.0` too (suffix blocking: a subdomain of a blocked domain
-   is blocked); `dig @127.0.0.1 -p 5353 example.com +short` → a real
+   is blocked); `dig @127.0.0.1 -p 5354 example.com +short` → a real
    IP; repeat the third query → same answer, near-instant (cache
    hit). Terminal 1 shows a `BLOCK` / `ALLOW` line per query; if a
    query produces no line, it never reached the process.
 3. **Dashboard.** Open `http://localhost:8080`; the stat cards and
    recent-queries table should reflect step 2 within one poll (~3 s).
-4. **Whitelist round-trip.** Query a blocked domain, `POST
-   /api/whitelist` with `{"domain":"…"}`, query again (now resolves),
-   `DELETE /api/whitelist?domain=…`, query again (blocked again).
-   Do one add via the dashboard's actions panel to cover the UI path.
+   The header shows `recording all queries`, the PER-DEVICE HISTORY ON
+   badge, and the warnings panel.
+4. **Allowlist round-trip.** Query a blocked domain,
+   `curl -X POST -H 'Content-Type: application/json' -d '{"domain":"…"}' localhost:8080/api/allowlist`,
+   query again (now resolves), `curl -X DELETE 'localhost:8080/api/allowlist?domain=…'`,
+   query again (blocked again). Do one add via the dashboard's actions panel
+   to cover the UI path.
 5. **Reload single-flight.** Two immediate
    `curl -X POST localhost:8080/api/reload` calls: the first returns
    `"reload triggered"`, the second `"reload queued"`. The log shows
@@ -173,6 +186,10 @@ and the router-setup banner. Then, in a second terminal:
    and a clean exit. Restart: `/api/queries?limit=10` still shows the
    pre-restart rows, and startup is faster (blocklists load from the
    disk cache).
+8. **Purge.** With the same variables, run
+   `/tmp/s-hole -purge -config config.yaml`: it reports each step, and
+   `/api/queries` is then empty. Stop s-hole and run the purge again: it
+   deletes the files itself.
 
 **Optional: DNS over TLS.** Run this pass after a change to the DoT listener,
 the certificate reload, or the reload path. You need BIND `dig` 9.18 or later.
@@ -183,9 +200,9 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
   -days 30 -keyout /tmp/key.pem -out /tmp/cert.pem -subj "/CN=dns.home" \
   -addext "subjectAltName=DNS:dns.home,IP:127.0.0.1" \
   -addext "basicConstraints=critical,CA:FALSE"
-S_HOLE_LISTEN=:5353 S_HOLE_DOT_LISTEN=127.0.0.1:8853 \
-  S_HOLE_TLS_CERT=/tmp/cert.pem S_HOLE_TLS_KEY=/tmp/key.pem \
-  S_HOLE_QUERY_DB=/tmp/q.db S_HOLE_CACHE_DIR=/tmp /tmp/s-hole -config config.yaml
+S_HOLE_DNS_LISTEN=:5354 S_HOLE_DNS_DOT_LISTEN=127.0.0.1:8853 \
+  S_HOLE_DNS_DOT_CERT=/tmp/cert.pem S_HOLE_DNS_DOT_KEY=/tmp/key.pem \
+  S_HOLE_BLOCKING_CACHE_DIR=/tmp /tmp/s-hole -config config.yaml
 ```
 
 Expect a third `dns listener started` line (`net=tcp-tls`) and a DoT line in
@@ -276,8 +293,13 @@ should contain:
 - The motivation (the "why", not the "what").
 - A *Files changed* block sketching the surface area.
 - A *Testing* block sketching how you verified the change.
+- A *Privacy impact* block, for a change that touches query data or any
+  other personal data: what it collects, where the data goes, how long it
+  stays, and who can read it. A change that stores or sends more data
+  updates `PRIVACY.md` in the same CL, and a less private default needs the
+  maintainer's agreement first (see the privacy rules in `CLAUDE.md`).
 
-Look at `docs/cls/CL-20.md` for a recent example.
+Look at `docs/cls/CL-93.md` for a recent example with a Privacy impact block.
 
 ### Issue/staff-review IDs
 
@@ -298,7 +320,7 @@ context.
 Every behaviour change needs a test. Coverage gates are not enforced
 strictly, but the per-package targets are:
 
-- `internal/stats`, `internal/config`, `internal/version`: 100 %
+- `internal/stats`, `internal/config`, `internal/version`, `internal/redact`: 100 %
 - `internal/logging`: ≥ 95 %
 - `internal/cache`: ≥ 94 %
 - `internal/api`, `internal/blocklist`, `internal/dnsserver`,

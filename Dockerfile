@@ -1,8 +1,12 @@
-# Requires Go 1.26+ (driven by the golang.org/x/sys dependency).
-# golang:alpine tracks the latest stable release.
+# Requires Go 1.26 (the go.mod go line). The builder image is pinned to that
+# release, so the image and the release archives build with the same Go
+# version; Dependabot proposes the next one.
 
 # ── Build stage ───────────────────────────────────────────────
-FROM golang:alpine AS builder
+# The builder runs on the build host's platform and cross-compiles for the
+# target platform. Go needs no emulation to cross-compile, so a multi-arch
+# build does not run the compiler under QEMU.
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
 WORKDIR /build
 
@@ -16,12 +20,15 @@ COPY . .
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
+# Set by BuildKit for each target platform.
+ARG TARGETOS TARGETARCH TARGETVARIANT
 
 # CGO_ENABLED=0: modernc.org/sqlite is pure Go, so no C toolchain is needed.
+# -trimpath: the binary does not carry the build paths.
 # -ldflags="-s -w": strip debug info to reduce binary size (~40%).
 # Version metadata is injected via -X so the binary can report its identity
 # at runtime (use `s-hole -version`).
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH GOARM=${TARGETVARIANT#v} go build -trimpath \
     -ldflags="-s -w \
       -X 'github.com/lcsabi/s-hole/internal/version.Version=${VERSION}' \
       -X 'github.com/lcsabi/s-hole/internal/version.Commit=${COMMIT}' \
@@ -31,11 +38,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # ── Runtime stage ─────────────────────────────────────────────
 FROM alpine:3.24
 
-# ca-certificates: required for HTTPS blocklist downloads.
+# ca-certificates: required for HTTPS blocklist downloads and DoH upstreams.
 # Container logs default to UTC (matches log/slog), so tzdata is not
-# pulled in, which saves ~30 MB of image size. Operators who want local-time
-# timestamps in their logs can install tzdata themselves in a downstream
-# layer.
+# pulled in, which saves ~30 MB of image size.
 RUN apk add --no-cache ca-certificates
 
 # The binary lives on PATH, NOT in /app. /app is declared a VOLUME and is
@@ -45,21 +50,40 @@ RUN apk add --no-cache ca-certificates
 # what the operator mounts over /app (b/039).
 COPY --from=builder /build/s-hole /usr/local/bin/s-hole
 
+# s-hole runs as an unprivileged user (65532), not root (b/087). The file
+# capability lets it bind port 53 (and 853 for DoT) without root, also with
+# --network host; NET_BIND_SERVICE is in Docker's default capability set.
+# libcap-utils provides setcap and is removed again in the same layer.
+RUN addgroup -S -g 65532 s-hole \
+ && adduser -S -D -H -u 65532 -G s-hole -s /sbin/nologin s-hole \
+ && apk add --no-cache libcap-utils \
+ && setcap cap_net_bind_service=+ep /usr/local/bin/s-hole \
+ && apk del libcap-utils
+
 WORKDIR /app
 # Baked-in default config, used only when /app is NOT bind-mounted. When an
 # operator mounts a host data directory over /app, they supply their own
-# /app/config.yaml (see the Docker section in README.md).
-COPY config.yaml .
+# /app/config.yaml (see the Docker section in README.md). The mounted directory
+# must belong to user 65532 (chown -R 65532:65532 on the host).
+COPY --chown=65532:65532 config.yaml .
+RUN chown 65532:65532 /app && chmod 0700 /app
 
-# DNS (UDP + TCP), DNS over TLS (off unless dot_listen is set), and admin UI.
+# DNS (UDP + TCP), DNS over TLS (off unless dns.dot_listen is set), and the
+# admin UI.
 EXPOSE 53/udp
 EXPOSE 53/tcp
 EXPOSE 853/tcp
 EXPOSE 8080/tcp
 
-# Mount /app to persist config.yaml, blocklist cache, and queries.db
-# across container restarts.
+# Mount /app to keep config.yaml, the blocklist cache, and a query database
+# (when query_log.database is on) across container restarts.
 VOLUME ["/app"]
+
+USER 65532:65532
+
+# Healthy once the admin server answers /readyz (the block set is loaded).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD ["s-hole", "-healthcheck", "-config", "/app/config.yaml"]
 
 ENTRYPOINT ["s-hole"]
 CMD ["-config", "/app/config.yaml"]

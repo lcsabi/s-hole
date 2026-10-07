@@ -149,7 +149,7 @@
       font-size: 12px;
     }
 
-    /* A small note under a panel header, e.g. the query_privacy caption on
+    /* A small note under a panel header, e.g. the query_log caption on
        Top Clients. */
     .panel-cap {
       padding: 8px 16px;
@@ -158,7 +158,7 @@
       border-bottom: 1px solid var(--border);
     }
 
-    /* Segmented toggle (Since start / All time) in a panel header */
+    /* Segmented toggle (Since start / Stored) in a panel header */
     .seg {
       display: inline-flex;
       gap: 2px;
@@ -335,6 +335,28 @@
       border-color: var(--border);
     }
 
+    /* The purge button: it deletes data, so it reads as a warning. */
+    .btn-danger {
+      color: var(--red);
+      border-color: rgba(248, 113, 113, 0.4);
+    }
+
+    /* Privacy and security warnings: the same list the stats line repeats. */
+    .warn-panel {
+      border-color: rgba(251, 191, 36, 0.45);
+    }
+
+    .warn-list {
+      margin: 0;
+      padding: 10px 16px 12px 34px;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .warn-list code {
+      color: var(--amber);
+    }
+
     .action-msg {
       font-size: 13px;
     }
@@ -349,7 +371,7 @@
 
     .check-result { font-size: 13px; flex-basis: 100%; }
     .check-result .dec-blocked { color: var(--red); font-weight: 700; }
-    .check-result .dec-whitelisted { color: var(--green); font-weight: 700; }
+    .check-result .dec-allowlisted { color: var(--green); font-weight: 700; }
     .check-result .dec-allowed { font-weight: 700; }
     .check-walk {
       margin-top: 5px;
@@ -546,7 +568,12 @@
       &nbsp;·&nbsp;
       refreshed <span id="last-refresh">–</span>
       &nbsp;·&nbsp;
-      query privacy <strong id="privacy-mode">–</strong>
+      recording <strong id="rec-mode">–</strong>
+      &nbsp;·&nbsp;
+      clients <strong id="rec-clients">–</strong>
+      &nbsp;·&nbsp;
+      stored history <strong id="rec-history">–</strong>
+      <span id="rec-badge" class="badge" hidden></span>
       <span id="dot-meta" hidden>
         &nbsp;·&nbsp;
         DNS over TLS <span id="dot-status" class="badge">–</span>
@@ -554,6 +581,11 @@
       </span>
     </div>
   </header>
+
+  <div class="full panel warn-panel" id="warn-panel" hidden>
+    <div class="panel-hd"><span>Privacy and security warnings <span class="count" id="warn-count"></span></span></div>
+    <ul class="warn-list" id="warn-list"></ul>
+  </div>
 
   <div class="cards">
     <div class="card">
@@ -593,7 +625,7 @@
       <span class="hd-controls">
         <span class="seg" id="history-window">
           <button type="button" data-window="24h" class="active">24h</button>
-          <button type="button" data-window="7d">7d</button>
+          <button type="button" data-window="7d" id="history-7d" title="Needs the stored history (query_log.database)">7d</button>
         </span>
         <button type="button" class="collapse-btn" data-collapse="history-body"
           aria-controls="history-body" aria-expanded="true" title="Collapse"
@@ -614,7 +646,7 @@
         <span class="hd-controls">
           <span class="seg" id="domains-mode">
             <button type="button" data-mode="start" class="active">Since start</button>
-            <button type="button" data-mode="all">All time</button>
+            <button type="button" data-mode="all" id="domains-stored" title="From the stored history (query_log.database)">Stored</button>
           </span>
           <button type="button" class="collapse-btn" data-collapse="domains-table"
             aria-controls="domains-table" aria-expanded="true" title="Collapse"
@@ -675,14 +707,15 @@
     <div class="panel-hd">Actions</div>
     <div class="actions-body">
       <button class="btn-secondary" onclick="reloadBlocklists()" title="Re-downloads the blocklists. With DNS over TLS on, it also reloads the certificate files.">↺ Reload</button>
-      <form onsubmit="addWhitelist(event)" style="display:flex;gap:8px;align-items:center">
-        <input id="wl-input" type="text" placeholder="domain to whitelist…">
-        <button type="submit" class="btn-primary">+ Whitelist</button>
+      <form onsubmit="addAllowlist(event)" style="display:flex;gap:8px;align-items:center">
+        <input id="wl-input" type="text" placeholder="domain to allowlist…">
+        <button type="submit" class="btn-primary">+ Allowlist</button>
       </form>
       <form onsubmit="checkDomain(event)" style="display:flex;gap:8px;align-items:center">
         <input id="check-input" type="text" placeholder="why is this blocked?…">
         <button type="submit" class="btn-secondary">? Check</button>
       </form>
+      <button class="btn-secondary btn-danger" onclick="purgeHistory()" title="Deletes the query history, the log file, the downloaded blocklists, the Top lists, the graph, and the DNS cache. Works only on the s-hole host.">✕ Delete history</button>
       <span id="action-msg" class="action-msg"></span>
       <div id="check-result" class="check-result"></div>
     </div>
@@ -736,7 +769,9 @@
   <script>
     const $ = id => document.getElementById(id);
     const fmt = n => Number(n).toLocaleString();
-    const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    // esc makes a value safe inside HTML text and inside a quoted attribute.
+    const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     // Strip the FQDN trailing dot for display: queries are logged as the
     // wire-format name ("sub.doubleclick.net."), but the dot is noise in the UI.
     const stripDot = s => String(s).replace(/\.$/, '');
@@ -790,14 +825,17 @@
 
     // ── Recent Queries filter ─────────────────────────────────
     // The filter runs server-side in SQL over the stored columns, so it can only
-    // match what the query_privacy mode wrote. State persists in localStorage; a
-    // stale filter is safe because the active-filter row below is always visible
-    // and the empty state names the filter. The client filter is gated on the
-    // privacy mode: 'drop' stores no client, so the picker is hidden.
+    // match what the query_log.clients mode wrote. The state lives in
+    // sessionStorage, not localStorage: a typed domain search is query data, and
+    // it must not stay in the browser profile after the tab is closed. A stale
+    // filter is safe because the active-filter row below is always visible and
+    // the empty state names the filter. The client filter is gated on the
+    // client mode: 'drop' stores no client, so the picker is hidden.
     const QUERY_FILTER_KEY = 'shole.queryFilter';
     let queryFilter = { domain: '', status: 'all', client: '' };
+    try { localStorage.removeItem(QUERY_FILTER_KEY); } catch (e) {} // left by older versions
     try {
-      const saved = JSON.parse(localStorage.getItem(QUERY_FILTER_KEY));
+      const saved = JSON.parse(sessionStorage.getItem(QUERY_FILTER_KEY));
       if (saved && typeof saved === 'object') {
         if (typeof saved.domain === 'string') queryFilter.domain = saved.domain.trim();
         if (['all', 'true', 'false', 'unresolved', 'upstream-error'].includes(saved.status)) queryFilter.status = saved.status;
@@ -806,7 +844,7 @@
     } catch (e) {}
 
     function saveQueryFilter() {
-      try { localStorage.setItem(QUERY_FILTER_KEY, JSON.stringify(queryFilter)); } catch (e) {}
+      try { sessionStorage.setItem(QUERY_FILTER_KEY, JSON.stringify(queryFilter)); } catch (e) {}
     }
 
     const queryFilterActive = () =>
@@ -841,12 +879,12 @@
       return '/api/queries/export?' + p.toString();
     }
 
-    // Point the export links at the current filter, and grey them when query
-    // logging is off or none (nothing to export). The logging mode is only known
-    // once /api/history has answered; until then the links stay enabled rather
-    // than falsely greying a working export.
+    // Point the export links at the current filter, and grey them when there is
+    // no stored history (nothing to export). The settings are known once
+    // /api/stats has answered; until then the links stay enabled rather than
+    // falsely greying a working export.
     function updateExportControls() {
-      const off = historyLoggingKnown && (historyLogging === 'off' || historyLogging === 'none');
+      const off = privacy !== null && !storedHistory();
       for (const format of ['csv', 'json']) {
         const a = $('export-' + format);
         if (!a) continue;
@@ -854,7 +892,7 @@
         a.setAttribute('aria-disabled', off ? 'true' : 'false');
         if (off) {
           a.removeAttribute('href');
-          a.title = 'Query logging is disabled; nothing to export';
+          a.title = 'No stored history to export (query_log.database is "off" or query_log.mode is "none")';
         } else {
           a.href = exportURL(format);
           a.title = 'Download the current filter as ' + format.toUpperCase();
@@ -969,23 +1007,85 @@
           }).join('')
           : `<tr><td colspan="4" class="empty">${queryFilterActive()
               ? 'No queries match the filter'
-              : 'No queries logged. Make sure that query_db is set in config.yaml'}</td></tr>`);
+              : historyEmptyText()}</td></tr>`);
       } catch (e) { console.error('queries fetch failed:', e); }
+    }
+
+    // ── What s-hole records ───────────────────────────────────
+    // privacy is the /api/stats "privacy" object: the query_log mode and
+    // clients settings, whether the database and the log file are on, and the
+    // retention. null until the first stats response.
+    let privacy = null;
+
+    // storedHistory reports whether s-hole keeps a query history: the database
+    // is on and the mode records queries. The Recent Queries panel, the export,
+    // the Stored list, and the 7d graph need it.
+    const storedHistory = () => !!privacy && privacy.database && privacy.mode !== 'none';
+
+    // historyEmptyText explains an empty Recent Queries panel by its setting.
+    function historyEmptyText() {
+      if (!privacy) return 'Loading…';
+      if (privacy.mode === 'none') return 'No queries are recorded (query_log.mode is "none").';
+      if (!privacy.database) return 'No query history is stored (query_log.database is "off").';
+      return 'No queries recorded yet';
+    }
+
+    // renderPrivacy shows what s-hole records in the header, a badge when it
+    // records which device asked, and the privacy and security warnings in
+    // effect: the same list the stats line repeats in the log.
+    function renderPrivacy(p, warnings) {
+      privacy = p;
+      $('rec-mode').textContent = p.mode === 'none' ? 'nothing' : p.mode === 'blocked' ? 'blocked queries' : 'all queries';
+      $('rec-clients').textContent = p.clients;
+      let hist = 'off';
+      if (storedHistory()) hist = p.retention_days > 0 ? `${p.retention_days} days` : 'forever';
+      $('rec-history').textContent = hist;
+      const badge = $('rec-badge');
+      if (p.mode !== 'none' && p.clients === 'full') {
+        badge.className = 'badge badge-block';
+        badge.textContent = 'PER-DEVICE HISTORY ON';
+        badge.title = 'query_log.clients is "full": s-hole records which device sent each query';
+        badge.hidden = false;
+      } else if (p.mode !== 'none' && p.clients === 'subnet') {
+        badge.className = 'badge badge-unresolved';
+        badge.textContent = 'SUBNETS RECORDED';
+        badge.title = 'query_log.clients is "subnet": s-hole records the subnet of each device';
+        badge.hidden = false;
+      } else {
+        badge.hidden = true;
+      }
+
+      const list = warnings || [];
+      $('warn-panel').hidden = list.length === 0;
+      $('warn-count').textContent = list.length ? `(${list.length})` : '';
+      $('warn-list').innerHTML = list.map(w => {
+        const i = w.indexOf(': ');
+        return i > 0
+          ? `<li><code>${esc(w.slice(0, i))}</code>: ${esc(w.slice(i + 2))}</li>`
+          : `<li>${esc(w)}</li>`;
+      }).join('');
+
+      // The 7d graph and the Stored list read the stored history; hide them
+      // when there is none, and fall back to what memory holds.
+      const stored = storedHistory();
+      $('history-7d').hidden = !stored;
+      $('domains-stored').hidden = !stored;
+      if (!stored && historyWindow !== '24h') selectHistoryWindow('24h');
+      if (!stored && domainsMode !== 'start') selectDomainsMode('start');
+      updateExportControls();
     }
 
     // ── Query-volume chart ────────────────────────────────────
     let historyWindow = '24h';
     let historySeries = [];
-    // The effective query-log mode the series reflects: 'all', 'blocked',
-    // 'none', or 'off' (query_db unset). The graph draws itself honestly from it:
-    // all lines (total, blocked, cached, and the two failure lines) for 'all', a
-    // single blocked line for 'blocked', an empty state for 'none'/'off'. This is
-    // why the graph can differ from the stat cards,
-    // which count every query from the in-memory counter regardless of logging.
-    let historyLogging = 'off';
-    // False until the first /api/history response, so the export links do not
-    // grey themselves off the 'off' default before the real mode is known.
-    let historyLoggingKnown = false;
+    // Where the series comes from: 'memory' (per-minute counts of every query
+    // for the last 24 hours, so every line is available under every setting)
+    // or 'database' (the stored history, for the 7d window). historyLogging is
+    // the mode the series reflects: 'all' for memory, and the database's mode
+    // for a stored series. Under 'blocked' the stored history holds blocked
+    // rows only, so the graph draws one labeled blocked line.
+    let historySource = 'memory';
+    let historyLogging = 'all';
 
     // hexA turns a #rrggbb color (read from the theme CSS variables) into an
     // rgba() string, matching how the rest of the sheet writes translucent fills.
@@ -1002,9 +1102,8 @@
       try {
         const data = await fetch(`/api/history?window=${historyWindow}&bucket=1h`).then(r => r.json());
         historySeries = data.series || [];
-        historyLogging = data.logging || 'off';
-        historyLoggingKnown = true;
-        updateExportControls();
+        historySource = data.source || 'memory';
+        historyLogging = data.logging || 'all';
         drawHistory();
       } catch (e) { console.error('history fetch failed:', e); }
     }
@@ -1030,18 +1129,16 @@
       $('legend-cached').hidden = blockedOnly;
       $('legend-unresolved').hidden = blockedOnly;
       $('legend-upstream').hidden = blockedOnly;
-      $('history-note').textContent = blockedOnly ? 'blocked queries only (log_queries: blocked)' : '';
+      $('history-note').textContent = blockedOnly
+        ? 'stored history: blocked queries only (query_log.mode is "blocked")'
+        : historySource === 'memory' ? 'counts only, kept in memory, last 24 hours' : 'stored history';
 
-      // No data source for a series: query logging is off (query_db unset, mode
-      // "off") or set to "none". Show an empty state with the reason instead of
-      // a misleading flat line. ("all"/"blocked" with no traffic yet still draw
-      // a real zero-filled series, a flat line at the baseline.)
-      if (mode === 'off' || mode === 'none' || !series.length) {
+      // No series yet (the first poll has not answered). A quiet network still
+      // gets a real zero-filled series, a flat line at the baseline.
+      if (!series.length) {
         canvas.hidden = true;
         empty.hidden = false;
-        empty.textContent = mode === 'none'
-          ? 'Query logging is off (log_queries: none).'
-          : 'No query history. Make sure that query_db is set in config.yaml';
+        empty.textContent = 'Loading…';
         return;
       }
       canvas.hidden = false;
@@ -1070,9 +1167,10 @@
       const plotW = cssW - padL - padR, plotH = cssH - padT - padB;
       const n = series.length;
 
-      // Under "blocked" the log holds only blocked rows (total == blocked), so
-      // draw the blocked line alone and scale to it; under "all" the total line
-      // is the envelope, so scale to total.
+      // Under "blocked" the stored history holds only blocked rows (total ==
+      // blocked), so draw the blocked line alone and scale to it; under "all"
+      // (and for the in-memory counts) the total line is the envelope, so scale
+      // to total.
       const drawTotal = mode === 'all';
       const maxKey = drawTotal ? 'total' : 'blocked';
       let max = 0;
@@ -1127,10 +1225,11 @@
       if (drawTotal) drawSeries('upstream_error', orange, hexA(orange, 0.16));
       drawSeries('blocked', red, hexA(red, 0.16));
 
-      // A few thinned x-axis time labels.
+      // A few thinned x-axis time labels. The first and last labels align to
+      // their tick from the inside, so the canvas edge does not cut them off;
+      // the others center on their tick.
       ctx.fillStyle = muted;
       ctx.textBaseline = 'top';
-      ctx.textAlign = 'center';
       const labels = Math.min(6, n);
       for (let k = 0; k < labels; k++) {
         const i = labels === 1 ? 0 : Math.round(k * (n - 1) / (labels - 1));
@@ -1138,6 +1237,8 @@
         const lbl = historyWindow === '24h'
           ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
           : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+        ctx.textAlign = labels === 1 ? 'center'
+          : k === 0 ? 'left' : k === labels - 1 ? 'right' : 'center';
         ctx.fillText(lbl, x(i), padT + plotH + 6);
       }
     }
@@ -1244,7 +1345,7 @@
     }
 
     // 'start' = in-memory tally from /api/stats (resets on restart);
-    // 'all' = persistent tally from /api/top-blocked (SQLite, survives restart).
+    // 'all' = the stored tally from /api/top-blocked (SQLite, survives restart).
     let domainsMode = 'start';
 
     function renderTopDomains(domains, emptyMsg) {
@@ -1256,12 +1357,12 @@
       $('domains-count').textContent = domains.length ? `(${domains.length})` : '';
     }
 
-    // Fetch and render the all-time list independently of the stats poll so
+    // Fetch and render the stored list independently of the stats poll so
     // the toggle updates instantly on click and on each refresh tick.
     async function refreshTopDomainsAllTime() {
       try {
         const { domains } = await fetch('/api/top-blocked?limit=10').then(r => r.json());
-        renderTopDomains(domains || [], 'No blocked queries recorded. Make sure that query_db is set in config.yaml');
+        renderTopDomains(domains || [], 'No blocked queries in the stored history');
       } catch (e) { console.error('top-blocked fetch failed:', e); }
     }
 
@@ -1276,30 +1377,36 @@
         $('stat-cache').textContent = s.cache_hit_pct.toFixed(1) + '%';
         $('stat-blocklist').textContent = fmt(s.blocklist_size);
 
+        const p = s.privacy || { mode: 'none', clients: 'drop', database: false, file: 'off', retention_days: 0 };
+        renderPrivacy(p, s.warnings);
+
         if (!isCollapsed('domains-table')) {
           if (domainsMode === 'all') {
             await refreshTopDomainsAllTime();
           } else {
-            renderTopDomains(s.top_domains || [], 'No blocked queries yet');
+            renderTopDomains(s.top_domains || [], p.mode === 'none'
+              ? 'Not recorded (query_log.mode is "none")'
+              : 'No blocked queries yet');
           }
         }
 
-        // The Top Clients panel describes itself from the active query_privacy
-        // mode. "drop" stores no client, so the list is meaningless and the
-        // panel says so instead of showing blank rows. "subnet" keeps the list
-        // but notes the entries are subnet-masked. "raw" is the plain list.
-        const privacy = s.query_privacy || 'raw';
-        $('privacy-mode').textContent = privacy;
+        // The Top Clients panel describes itself from the query_log settings.
+        // "none" records nothing and "drop" records no client, so the panel
+        // says so instead of showing blank rows. "subnet" keeps the list but
+        // notes the entries are subnet-masked. "full" is the plain list.
+        const clientMode = p.mode === 'none' ? 'drop' : p.clients;
         const clients = s.top_clients || [];
         const cap = $('clients-cap');
-        if (privacy === 'drop') {
-          cap.textContent = 'Client attribution is off (privacy mode: drop).';
+        if (clientMode === 'drop') {
+          cap.textContent = p.mode === 'none'
+            ? 'No queries are recorded (query_log.mode is "none").'
+            : 'Clients are not recorded (query_log.clients is "drop").';
           cap.hidden = false;
           setTbody('top-clients', '<tr><td colspan="2" class="empty">Clients not recorded</td></tr>');
           $('clients-count').textContent = '';
         } else {
-          if (privacy === 'subnet') {
-            cap.textContent = 'Clients are subnet-masked (privacy mode: subnet).';
+          if (clientMode === 'subnet') {
+            cap.textContent = 'Clients are subnet-masked (query_log.clients is "subnet").';
             cap.hidden = false;
           } else {
             cap.hidden = true;
@@ -1311,7 +1418,7 @@
             : '<tr><td colspan="2" class="empty">No queries yet</td></tr>');
           $('clients-count').textContent = clients.length ? `(${clients.length})` : '';
         }
-        updateClientPicker(privacy, clients);
+        updateClientPicker(clientMode, clients);
 
         renderSources(s.sources || []);
         renderDoT(s.dot);
@@ -1332,31 +1439,55 @@
       } catch (e) { flash('✗ ' + e.message, false); }
     }
 
-    async function addWhitelist(e) {
+    async function addAllowlist(e) {
       e.preventDefault();
       const input = $('wl-input');
       const domain = input.value.trim();
       if (!domain) return;
       try {
-        const res = await fetch('/api/whitelist', {
+        const res = await fetch('/api/allowlist', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ domain }),
         });
-        if (res.ok) { input.value = ''; flash(`✓ ${domain} whitelisted`, true); }
+        if (res.ok) { input.value = ''; flash(`✓ ${domain} allowlisted`, true); }
         else flash('✗ Request failed', false);
       } catch (e) { flash('✗ ' + e.message, false); }
     }
 
-    function flash(text, ok) {
+    // Delete everything s-hole stored (POST /api/purge). The server accepts it
+    // only from the s-hole host itself, so on another device the reply says
+    // where to run it.
+    async function purgeHistory() {
+      if (!confirm('Delete the query history and everything else s-hole stored?\n\n' +
+          'This deletes the stored queries, the query log file, the downloaded blocklists, ' +
+          'the Top lists, the graph, and the DNS cache. You cannot undo it. The allowlist stays.')) return;
+      try {
+        const res = await fetch('/api/purge', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ confirm: true }),
+        });
+        if (res.status === 403) { flash('✗ ' + (await res.text()).trim(), false, 10000); return; }
+        const rep = await res.json().catch(() => null);
+        if (!res.ok || !rep) { flash('✗ Delete failed. See the s-hole log', false); return; }
+        const failed = (rep.steps || []).filter(s => s.failed);
+        flash(failed.length
+          ? '✗ Some data was not deleted: ' + failed.map(s => s.what).join(', ')
+          : '✓ History deleted', !failed.length);
+        refresh();
+      } catch (e) { flash('✗ ' + e.message, false); }
+    }
+
+    function flash(text, ok, ms = 3000) {
       const el = $('action-msg');
       el.textContent = text;
       el.className = 'action-msg ' + (ok ? 'ok' : 'err');
-      setTimeout(() => { el.textContent = ''; el.className = 'action-msg'; }, 3000);
+      setTimeout(() => { el.textContent = ''; el.className = 'action-msg'; }, ms);
     }
 
     // Diagnostic: ask the server why a domain is (or is not) blocked. Shows the
-    // decision, the block entry that matched, any whitelist entry that overrode
+    // decision, the block entry that matched, any allowlist entry that overrode
     // it, and the full suffix walk that produced the decision. Changes no state.
     async function checkDomain(e) {
       e.preventDefault();
@@ -1371,17 +1502,17 @@
         let summary = `<span class="dec-${esc(r.decision)}">${esc(r.domain)}: ${r.decision.toUpperCase()}</span>`;
         if (r.decision === 'blocked') {
           summary += ` <span class="muted">matched ${esc(r.matched_block)}</span>`;
-        } else if (r.decision === 'whitelisted') {
-          summary += ` <span class="muted">by ${esc(r.matched_whitelist)}`;
+        } else if (r.decision === 'allowlisted') {
+          summary += ` <span class="muted">by ${esc(r.matched_allowlist)}`;
           summary += r.matched_block ? `, overrides block ${esc(r.matched_block)}</span>` : '</span>';
         }
 
         // Full walk: each label-suffix that was checked, most specific first,
-        // with a badge on the level that matched the block set or whitelist.
+        // with a badge on the level that matched the block set or allowlist.
         const walk = (r.walk || []).map(l => {
           let tags = '';
           if (l.blocked) tags += ' <span class="badge badge-block">BLOCK</span>';
-          if (l.whitelisted) tags += ' <span class="badge badge-allow">ALLOW</span>';
+          if (l.allowlisted) tags += ' <span class="badge badge-allow">ALLOW</span>';
           return `<div><span class="mono muted">${esc(l.suffix)}</span>${tags}</div>`;
         }).join('');
 
@@ -1389,14 +1520,17 @@
       } catch (e) { el.innerHTML = '<span style="color:var(--red)">✗ ' + esc(e.message) + '</span>'; }
     }
 
-    // Top Blocked "Since start / All time" toggle.
-    $('domains-mode').addEventListener('click', e => {
-      const btn = e.target.closest('button[data-mode]');
-      if (!btn || btn.dataset.mode === domainsMode) return;
-      domainsMode = btn.dataset.mode;
+    // Top Blocked "Since start / Stored" toggle.
+    function selectDomainsMode(mode) {
+      domainsMode = mode;
       for (const b of $('domains-mode').children) {
         b.classList.toggle('active', b.dataset.mode === domainsMode);
       }
+    }
+    $('domains-mode').addEventListener('click', e => {
+      const btn = e.target.closest('button[data-mode]');
+      if (!btn || btn.dataset.mode === domainsMode) return;
+      selectDomainsMode(btn.dataset.mode);
       // Redraw immediately from the correct source instead of waiting for
       // the next 3 s tick.
       if (domainsMode === 'all') {
@@ -1407,13 +1541,16 @@
     });
 
     // Query-volume 24h / 7d window toggle.
-    $('history-window').addEventListener('click', e => {
-      const btn = e.target.closest('button[data-window]');
-      if (!btn || btn.dataset.window === historyWindow) return;
-      historyWindow = btn.dataset.window;
+    function selectHistoryWindow(w) {
+      historyWindow = w;
       for (const b of $('history-window').children) {
         b.classList.toggle('active', b.dataset.window === historyWindow);
       }
+    }
+    $('history-window').addEventListener('click', e => {
+      const btn = e.target.closest('button[data-window]');
+      if (!btn || btn.dataset.window === historyWindow) return;
+      selectHistoryWindow(btn.dataset.window);
       refreshHistory();
     });
 
@@ -1449,7 +1586,7 @@
 
     $('qf-clear').addEventListener('click', () => {
       queryFilter = { domain: '', status: 'all', client: '' };
-      try { localStorage.removeItem(QUERY_FILTER_KEY); } catch (e) {}
+      try { sessionStorage.removeItem(QUERY_FILTER_KEY); } catch (e) {}
       syncFilterControls();
       renderFilterBar();
       refreshQueries();

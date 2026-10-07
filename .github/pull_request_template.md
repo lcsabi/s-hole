@@ -19,6 +19,9 @@
 
 - [ ] `make check` passes locally (fmt, vet, lint, tests)
 - [ ] `go test -race -count=1 ./...` clean
+- [ ] Privacy impact stated in the CL (what query data the change collects,
+      where it goes, how long it stays, who can read it), and `PRIVACY.md`
+      updated if that changed, or "n/a"
 - [ ] Manual verification (steps below or "n/a"):
 
   <!-- e.g. ran the binary on Linux and verified `kill -HUP $pid` triggers a refresh -->

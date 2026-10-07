@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/eventlog"
 	"golang.org/x/sys/windows/svc/mgr"
@@ -22,6 +23,11 @@ import (
 const (
 	svcName = "s-hole"
 	svcDesc = "Network-level DNS sinkhole for ad blocking."
+	// svcAccount is the service's virtual account. Windows creates it with
+	// the service and gives it no rights beyond its own; without it, the
+	// service ran as LocalSystem, the most powerful account on the machine
+	// (b/086). Binding port 53 needs no special right on Windows.
+	svcAccount = `NT SERVICE\` + svcName
 )
 
 // IsWindowsService reports whether the process was launched by the Windows SCM.
@@ -118,9 +124,11 @@ func Install(configPath string) error {
 	}
 
 	s, err := m.CreateService(svcName, exePath, mgr.Config{
-		DisplayName: "s-hole DNS Sinkhole",
-		Description: svcDesc,
-		StartType:   mgr.StartAutomatic,
+		DisplayName:      "s-hole DNS Sinkhole",
+		Description:      svcDesc,
+		StartType:        mgr.StartAutomatic,
+		ServiceStartName: svcAccount,
+		SidType:          windows.SERVICE_SID_TYPE_UNRESTRICTED,
 	}, "-config", configPath)
 	if err != nil {
 		return fmt.Errorf("create service: %w", err)
@@ -136,6 +144,16 @@ func Install(configPath string) error {
 	}
 	s.Close()
 
+	// The service runs in the config file's directory (b/066), so its data
+	// files land there. Make that directory owner-only, or the query history
+	// inherits the access list of the parent: under C:\ every signed-in user
+	// could read and change it (b/076). The service still runs without this,
+	// so a failure is a warning.
+	configDir := filepath.Dir(configPath)
+	if err := restrictDir(configDir); err != nil {
+		fmt.Printf("warning: could not make %s readable by SYSTEM, Administrators, and the s-hole service only: %v\n", configDir, err)
+	}
+
 	// Register an event-log source so Event Viewer renders s-hole's messages
 	// without the "description cannot be found" preamble. The service still
 	// runs and logs without this (against the default application source), so
@@ -146,8 +164,34 @@ func Install(configPath string) error {
 		fmt.Printf("warning: could not register event-log source %q: %v\n", svcName, err)
 	}
 
-	fmt.Printf("service %q installed (auto-start)\n  binary: %s\n  config: %s\n", svcName, exePath, configPath)
+	fmt.Printf("service %q installed (auto-start, runs as %s)\n  binary: %s\n  config: %s (folder is owner-only: edit config.yaml as an administrator)\n",
+		svcName, svcAccount, exePath, configPath)
 	return nil
+}
+
+// restrictDir replaces the access list of dir with one that allows only
+// SYSTEM, the Administrators group (full control), and the service's virtual
+// account (read, write, and delete), and blocks inheritance from the parent.
+// The entries are inherited by the files and folders inside dir, existing
+// ones included: SetNamedSecurityInfo propagates them.
+func restrictDir(dir string) error {
+	sid, _, _, err := windows.LookupSID("", svcAccount)
+	if err != nil {
+		return fmt.Errorf("look up %s: %w", svcAccount, err)
+	}
+	// FA is full access; 0x1301bf is "modify": read, write, execute, and
+	// delete, without the right to change permissions or ownership.
+	sd, err := windows.SecurityDescriptorFromString(
+		"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;" + sid.String() + ")")
+	if err != nil {
+		return err
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	return windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
 }
 
 // recoveryResetSeconds is the time without a failure after which the SCM

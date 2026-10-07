@@ -3,13 +3,18 @@ package dnsserver
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/lcsabi/s-hole/internal/redact"
 	"github.com/miekg/dns"
 )
 
@@ -105,13 +110,15 @@ func UpstreamTransportFailures() map[string]uint64 {
 // first sweep; if all are skipped, every upstream is tried as a fallback.
 // ctx is honored both as an overall deadline and as a cancellation
 // signal; if it is canceled mid-attempt, no further upstreams are tried.
-// On total failure the caller surfaces SERVFAIL via dns.HandleFailed.
+// On total failure the caller surfaces SERVFAIL via dns.HandleFailed, and
+// the error is a *ForwardError with each upstream's cause.
 func forward(ctx context.Context, req *dns.Msg, upstreams []string) (*dns.Msg, error) {
 	return forwardWith(ctx, req, upstreams, forwardTracker)
 }
 
 func forwardWith(ctx context.Context, req *dns.Msg, upstreams []string, tracker *upstreamTracker) (*dns.Msg, error) {
 	now := time.Now()
+	fail := &ForwardError{}
 
 	// tried records the upstreams actually contacted in the first sweep, so the
 	// second sweep retries only the ones the first sweep skipped for cooldown.
@@ -134,9 +141,11 @@ func forwardWith(ctx context.Context, req *dns.Msg, upstreams []string, tracker 
 		resp, err := exchange(ctx, req, upstream)
 		if err == nil {
 			tracker.recordSuccess(upstream)
+			countPlaintextFallback(upstream, upstreams)
 			return resp, nil
 		}
 		tracker.recordFailure(upstream, time.Now())
+		fail.add(upstream, err)
 	}
 
 	// Second sweep: every upstream tried in sweep 1 has failed. Retry the ones
@@ -153,12 +162,84 @@ func forwardWith(ctx context.Context, req *dns.Msg, upstreams []string, tracker 
 		resp, err := exchange(ctx, req, upstream)
 		if err == nil {
 			tracker.recordSuccess(upstream)
+			countPlaintextFallback(upstream, upstreams)
 			return resp, nil
 		}
 		tracker.recordFailure(upstream, time.Now())
+		fail.add(upstream, err)
 	}
 
-	return nil, fmt.Errorf("all upstreams failed for %s", req.Question[0].Name)
+	if len(fail.Causes) == 0 {
+		// Every upstream was in cooldown and the context ended before the
+		// second sweep contacted one.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return nil, fail
+}
+
+// plaintextFallbacks counts queries answered by a plain upstream while the
+// list also has a DoH upstream: queries that left the network unencrypted
+// because every DoH upstream had failed. A list with no DoH upstream is a
+// config choice that config.Warnings reports, so its queries are not counted
+// here.
+var plaintextFallbacks atomic.Uint64
+
+// PlaintextFallbacks returns the number of queries sent to a plain upstream
+// because every DoH upstream had failed, since startup. /metrics shows it as
+// shole_upstream_plaintext_fallback_total, and main repeats it in the privacy
+// warnings.
+func PlaintextFallbacks() uint64 {
+	return plaintextFallbacks.Load()
+}
+
+func countPlaintextFallback(used string, upstreams []string) {
+	if strings.HasPrefix(used, "https://") {
+		return
+	}
+	for _, u := range upstreams {
+		if strings.HasPrefix(u, "https://") {
+			plaintextFallbacks.Add(1)
+			return
+		}
+	}
+}
+
+// ForwardError reports that every upstream failed for one query. It names
+// each upstream and its error, never the query name, so a log line built
+// from it holds no browsing data (b/078).
+type ForwardError struct {
+	Causes []UpstreamCause
+}
+
+// UpstreamCause is one upstream's failure.
+type UpstreamCause struct {
+	Upstream string
+	Err      error
+}
+
+func (e *ForwardError) add(upstream string, err error) {
+	e.Causes = append(e.Causes, UpstreamCause{Upstream: upstream, Err: err})
+}
+
+func (e *ForwardError) Error() string {
+	if len(e.Causes) == 0 {
+		return "no upstream answered"
+	}
+	parts := make([]string, len(e.Causes))
+	for i, c := range e.Causes {
+		parts[i] = c.Upstream + ": " + c.Err.Error()
+	}
+	return "every upstream failed: " + strings.Join(parts, "; ")
+}
+
+// clockSuspect reports whether err looks like a TLS failure caused by a
+// wrong system clock: a certificate that is expired or not yet valid. The
+// DoH client wraps the x509 error, so errors.As walks the chain.
+func clockSuspect(err error) bool {
+	var invalid x509.CertificateInvalidError
+	return errors.As(err, &invalid) && invalid.Reason == x509.Expired
 }
 
 // exchange dispatches an "https://" upstream to exchangeDoH (DNS-over-HTTPS).
@@ -250,25 +331,35 @@ func exchangeDoH(ctx context.Context, req *dns.Msg, upstream string) (*dns.Msg, 
 	}
 	httpReq.Header.Set("Content-Type", dohMediaType)
 	httpReq.Header.Set("Accept", dohMediaType)
+	// A fixed User-Agent with no version, as for the blocklist downloads.
+	httpReq.Header.Set("User-Agent", "s-hole")
 
+	// The errors below reach the unresolved-query summary in the log, so they
+	// name the upstream with its secrets hidden (redact.URL). The HTTP error
+	// itself prints the URL, so it is not wrapped; its kind is kept.
+	shown := redact.URL(upstream)
 	httpResp, err := dohClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("DoH request to %s: %w", upstream, err)
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
+		return nil, fmt.Errorf("DoH request to %s: %w", shown, err)
 	}
 	defer httpResp.Body.Close()
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("DoH request to %s: status %d", upstream, httpResp.StatusCode)
+		return nil, fmt.Errorf("DoH request to %s: status %d", shown, httpResp.StatusCode)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(httpResp.Body, maxDoHResponse))
 	if err != nil {
-		return nil, fmt.Errorf("reading DoH response from %s: %w", upstream, err)
+		return nil, fmt.Errorf("reading DoH response from %s: %w", shown, err)
 	}
 
 	var out dns.Msg
 	if err := out.Unpack(body); err != nil {
-		return nil, fmt.Errorf("unpacking DoH response from %s: %w", upstream, err)
+		return nil, fmt.Errorf("unpacking DoH response from %s: %w", shown, err)
 	}
 	out.Id = req.Id
 	return &out, nil

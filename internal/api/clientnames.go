@@ -8,7 +8,7 @@ import (
 // clientLabeler resolves a stored client value to a display label from the
 // config client_names map. It is read-only attribution, built once when the
 // map is injected, and it keys off the value that reached the store (already
-// masked by query_privacy), never a raw IP. So a label can never reveal more
+// masked by query_log.clients), never a raw IP. So a label can never reveal more
 // than the active privacy mode already exposes: under "subnet" the stored
 // value is a network address, so only a CIDR or network-address key resolves;
 // under "drop" the value is empty, so nothing resolves.
@@ -49,7 +49,7 @@ func newClientLabeler(m map[string]string) *clientLabeler {
 }
 
 // label returns the display label for a stored client value, or "" if none.
-// An empty value (query_privacy "drop") and an unparseable value both yield
+// An empty value (query_log.clients "drop") and an unparseable value both yield
 // "". An exact key wins over any CIDR; among CIDRs the most specific wins.
 func (l *clientLabeler) label(stored string) string {
 	if l == nil || stored == "" {

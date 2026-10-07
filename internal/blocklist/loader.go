@@ -4,15 +4,19 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/lcsabi/s-hole/internal/logging"
+	"github.com/lcsabi/s-hole/internal/redact"
 )
 
 var logger = logging.For("blocklist")
@@ -65,7 +69,7 @@ func Update(store *Store, urls []string, cacheDir string, mode Mode) error {
 		domains, meta, err := fetchList(u, cacheDir, mode)
 		if err != nil {
 			lastErr = err
-			logger.Warn("blocklist load failed", "url", u, "err", err)
+			logger.Warn("blocklist load failed", "url", redact.URL(u), "err", err)
 			// Record the failure so a down source is visible by URL, instead
 			// of hiding behind a drop in the aggregate. Zero LastRefresh
 			// distinguishes a never-loaded source from a stale-cache fallback.
@@ -80,7 +84,7 @@ func Update(store *Store, urls []string, cacheDir string, mode Mode) error {
 			LastRefresh: meta.snapshot,
 			Stale:       meta.from == fromStaleCache,
 		})
-		logger.Info("loaded", "url", u, "domains", len(domains), "from", meta.from)
+		logger.Info("loaded", "url", redact.URL(u), "domains", len(domains), "from", meta.from)
 	}
 	// Publish per-source health even when every source failed, so the
 	// dashboard shows the outage rather than the last good snapshot.
@@ -134,17 +138,36 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 	if info, err := os.Stat(cachePath); err == nil && mode == CacheFirst {
 		if time.Since(info.ModTime()) < cacheMaxAge {
 			domains, loadErr := loadFromFile(cachePath)
-			return domains, sourceMeta{from: fromCache, snapshot: info.ModTime()}, loadErr
+			if loadErr == nil {
+				return domains, sourceMeta{from: fromCache, snapshot: info.ModTime()}, nil
+			}
+			// A cache file that cannot be read must not drop the list: most
+			// often it belongs to another user, such as root after a default
+			// uninstall (b/092) or from a Docker image before s-hole 2.0.
+			// Download the list instead, as when there is no cache.
+			hint := "s-hole downloads the list instead"
+			if errors.Is(loadErr, fs.ErrPermission) {
+				hint += ". " + ownerHint
+			}
+			logger.Warn("blocklist cache could not be read", "url", redact.URL(url), "err", loadErr, "hint", hint)
 		}
 	}
 
-	resp, err := httpClient.Get(url) //nolint:gosec // URL comes from operator config
+	req, err := http.NewRequest(http.MethodGet, url, nil) //nolint:gosec // URL comes from operator config
+	if err != nil {
+		// The parse error repeats the raw URL, user name and password
+		// included; redact it like a transport error.
+		return nil, sourceMeta{}, fmt.Errorf("%q: %w", redact.URL(url), redactURLError(err))
+	}
+	// A fixed User-Agent with no version: Go's default names the Go release,
+	// which tells the list host more about this machine than it needs.
+	req.Header.Set("User-Agent", "s-hole")
+	resp, err := httpClient.Do(req)
+	err = redactURLError(err)
 	if err != nil {
 		// Fall back to stale cache if download fails.
 		if info, statErr := os.Stat(cachePath); statErr == nil {
-			logger.Warn("download failed, using stale cache", "url", url, "err", err)
-			domains, loadErr := loadFromFile(cachePath)
-			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime()}, loadErr
+			return staleFallback(cachePath, info, err, "download failed, using stale cache", "url", redact.URL(url), "err", err)
 		}
 		return nil, sourceMeta{}, err
 	}
@@ -152,27 +175,42 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		// Do not write the error-page body to the cache file.
+		statusErr := fmt.Errorf("%q: HTTP %d", redact.URL(url), resp.StatusCode)
 		if info, statErr := os.Stat(cachePath); statErr == nil {
-			logger.Warn("non-200 response, using stale cache", "url", url, "status", resp.StatusCode)
-			domains, loadErr := loadFromFile(cachePath)
-			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime()}, loadErr
+			return staleFallback(cachePath, info, statusErr, "non-200 response, using stale cache", "url", redact.URL(url), "status", resp.StatusCode)
 		}
-		return nil, sourceMeta{}, fmt.Errorf("%q: HTTP %d", url, resp.StatusCode)
+		return nil, sourceMeta{}, statusErr
 	}
 
 	// Atomic write: stream to a sibling .tmp file, then os.Rename on success.
 	// A connection drop or process kill mid-download leaves only the .tmp
 	// behind; the previous cachePath stays usable (and its mtime stays old
 	// so the next start re-attempts the download).
+	//
+	// The cache only saves a download at the next start. If the cache file
+	// cannot be created (most often a data directory that belongs to another
+	// user, such as root-owned files from an older Docker image), the list is
+	// still parsed from the download and used, with a WARN: before, the
+	// source failed and s-hole could start with no blocklist at all.
+	//
+	// A cache_dir that does not exist yet is created owner-only (b/089). If
+	// that fails, os.Create fails too and reports it.
+	_ = os.MkdirAll(cacheDir, 0o700)
 	tmpPath := cachePath + ".tmp"
+	body := io.LimitReader(resp.Body, maxBodyBytes)
 	f, err := os.Create(tmpPath)
 	if err != nil {
-		return nil, sourceMeta{}, err
+		warnCacheWrite(cacheDir, err)
+		f = nil
+	} else {
+		body = io.TeeReader(body, f)
 	}
 
-	tee := io.TeeReader(io.LimitReader(resp.Body, maxBodyBytes), f)
-	domains, parseErr := parseHostsFormat(tee)
-	closeErr := f.Close()
+	domains, parseErr := parseHostsFormat(body)
+	var closeErr error
+	if f != nil {
+		closeErr = f.Close()
+	}
 	// The .tmp removals below are best-effort cleanup on failure paths; a
 	// leftover .tmp is harmless (ignored by loads, overwritten by the next
 	// download).
@@ -191,9 +229,7 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 	if readErr != nil {
 		_ = os.Remove(tmpPath)
 		if info, statErr := os.Stat(cachePath); statErr == nil {
-			logger.Warn("download failed, using stale cache", "url", url, "err", readErr)
-			domains, loadErr := loadFromFile(cachePath)
-			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime()}, loadErr
+			return staleFallback(cachePath, info, readErr, "download failed, using stale cache", "url", redact.URL(url), "err", readErr)
 		}
 		return nil, sourceMeta{}, readErr
 	}
@@ -205,18 +241,50 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 	var probe [1]byte
 	if n, _ := io.ReadFull(resp.Body, probe[:]); n > 0 {
 		_ = os.Remove(tmpPath)
+		capErr := fmt.Errorf("%q: response exceeded %d-byte cap", redact.URL(url), maxBodyBytes)
 		if info, statErr := os.Stat(cachePath); statErr == nil {
-			logger.Warn("response truncated at cap, using stale cache", "url", url, "cap_bytes", maxBodyBytes)
-			domains, loadErr := loadFromFile(cachePath)
-			return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime()}, loadErr
+			return staleFallback(cachePath, info, capErr, "response truncated at cap, using stale cache", "url", redact.URL(url), "cap_bytes", maxBodyBytes)
 		}
-		return nil, sourceMeta{}, fmt.Errorf("%q: response exceeded %d-byte cap", url, maxBodyBytes)
+		return nil, sourceMeta{}, capErr
 	}
-	if err := os.Rename(tmpPath, cachePath); err != nil {
-		_ = os.Remove(tmpPath)
-		return nil, sourceMeta{}, err
+	if f != nil {
+		if err := os.Rename(tmpPath, cachePath); err != nil {
+			_ = os.Remove(tmpPath)
+			warnCacheWrite(cacheDir, err)
+		}
 	}
 	return domains, sourceMeta{from: fromDownload, snapshot: time.Now()}, nil
+}
+
+// staleFallback serves the cached copy of a list after its download failed.
+// It reads the copy first and logs msg (a "using stale cache" WARN with
+// attrs) only when the read works. A copy that cannot be read cannot stand
+// in for the download: the list then fails with dlErr and the read error,
+// instead of a WARN that claims s-hole uses the cache (b/095).
+func staleFallback(cachePath string, info fs.FileInfo, dlErr error, msg string, attrs ...any) ([]string, sourceMeta, error) {
+	domains, loadErr := loadFromFile(cachePath)
+	if loadErr != nil {
+		return nil, sourceMeta{}, fmt.Errorf("%w; the cached copy could not be read either: %w", dlErr, loadErr)
+	}
+	logger.Warn(msg, attrs...)
+	return domains, sourceMeta{from: fromStaleCache, snapshot: info.ModTime()}, nil
+}
+
+// ownerHint is the advice for a cache file or directory that belongs to
+// another user: root after a default uninstall, until the installer runs
+// again (b/092), or root from a Docker image before s-hole 2.0.
+const ownerHint = "The directory or its files belong to another user. " +
+	"If install-linux.sh installed s-hole, run sudo chown -R s-hole:s-hole /var/lib/s-hole, or run the installer again. " +
+	"In Docker the image runs as user 65532 since s-hole 2.0: on the host, run sudo chown -R 65532:65532 on the directory that is mounted at /app"
+
+// warnCacheWrite reports a blocklist cache file that could not be written.
+// The list is still used; only the next start has to download it again.
+func warnCacheWrite(cacheDir string, err error) {
+	hint := "the list is used, but the next start downloads it again. Check that s-hole can write to blocking.cache_dir"
+	if errors.Is(err, fs.ErrPermission) {
+		hint = "the list is used, but the next start downloads it again. " + ownerHint
+	}
+	logger.Warn("blocklist cache could not be written", "dir", cacheDir, "err", err, "hint", hint)
 }
 
 func loadFromFile(path string) ([]string, error) {
@@ -272,7 +340,7 @@ func parseHostsFormat(r io.Reader) ([]string, error) {
 // DNS label (whitespace, control chars, slashes, etc.). It is deliberately
 // lenient: IDN punycode and underscore-prefixed service labels pass.
 //
-// Exported so the api package can validate user-supplied whitelist
+// Exported so the api package can validate user-supplied allowlist
 // entries with the same rules the loader applies to blocklist files.
 func ValidDomain(s string) bool {
 	if s == "" || len(s) > 253 {
@@ -281,7 +349,7 @@ func ValidDomain(s string) bool {
 	// Require an interior dot. A bare label ("com") has none, and a bare
 	// label with a trailing root dot ("com.") would pass a plain Contains
 	// check, but normalize strips the dot and stores the bare label. A
-	// whitelist typo like "com." would then exempt an entire TLD through the
+	// allowlist typo like "com." would then exempt an entire TLD through the
 	// CL 30 suffix walk (b/040). Leading dots (".com") are rejected too. A
 	// real FQDN with a root dot ("example.com.") still has an interior dot
 	// and stays valid.
@@ -299,6 +367,47 @@ func ValidDomain(s string) bool {
 		}
 	}
 	return true
+}
+
+// PurgeCache deletes the downloaded blocklists in cacheDir: every
+// blocklist_<hash>.txt file and any .tmp file a download left behind. It
+// removes only files with that name pattern, never anything else in the
+// directory. The block set in memory is untouched; the next reload downloads
+// the lists again. It returns the number of files it removed.
+func PurgeCache(cacheDir string) (int, error) {
+	matches, err := filepath.Glob(filepath.Join(cacheDir, "blocklist_*.txt*"))
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	var firstErr error
+	for _, m := range matches {
+		base := filepath.Base(m)
+		if !strings.HasSuffix(base, ".txt") && !strings.HasSuffix(base, ".txt.tmp") {
+			continue
+		}
+		if err := os.Remove(m); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		removed++
+	}
+	return removed, firstErr
+}
+
+// redactURLError hides the secret parts of the URL inside an HTTP client
+// error: *url.Error prints the full URL, query string included, and the
+// error is logged and shown on the dashboard.
+func redactURLError(err error) error {
+	var ue *neturl.Error
+	if errors.As(err, &ue) {
+		cp := *ue
+		cp.URL = redact.URL(ue.URL)
+		return &cp
+	}
+	return err
 }
 
 // cacheFilename maps a URL to a stable, collision-free cache filename by

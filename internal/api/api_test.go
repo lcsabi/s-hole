@@ -408,15 +408,16 @@ func TestHistoryEndpoint_WithRealDB(t *testing.T) {
 	srv := httptest.NewServer(s.handler())
 	t.Cleanup(srv.Close)
 
-	resp, err := http.Get(srv.URL + "/api/history?window=24h&bucket=1h")
+	// A window over 24 hours is served from the database.
+	resp, err := http.Get(srv.URL + "/api/history?window=48h&bucket=1h")
 	if err != nil {
 		t.Fatalf("GET /api/history: %v", err)
 	}
 	defer resp.Body.Close()
 	body := decode[historyResponse](t, resp.Body)
 
-	if body.Window != 86400 {
-		t.Errorf("window = %d, want 86400", body.Window)
+	if body.Window != 172800 {
+		t.Errorf("window = %d, want 172800", body.Window)
 	}
 	if body.Bucket != 3600 {
 		t.Errorf("bucket = %d, want 3600", body.Bucket)
@@ -424,8 +425,8 @@ func TestHistoryEndpoint_WithRealDB(t *testing.T) {
 	if body.Logging != "all" {
 		t.Errorf("logging = %q, want \"all\"", body.Logging)
 	}
-	if len(body.Series) != 24 {
-		t.Fatalf("series length = %d, want 24", len(body.Series))
+	if len(body.Series) != 48 {
+		t.Fatalf("series length = %d, want 48", len(body.Series))
 	}
 	// All six rows land in the current (last) bucket: one cache hit, one
 	// unresolved, one relayed upstream error.
@@ -456,7 +457,8 @@ func TestHistoryEndpoint_BlockedModeReportsLogging(t *testing.T) {
 	srv := httptest.NewServer(s.handler())
 	t.Cleanup(srv.Close)
 
-	resp, err := http.Get(srv.URL + "/api/history?window=24h&bucket=1h")
+	// A window over 24 hours is served from the database.
+	resp, err := http.Get(srv.URL + "/api/history?window=48h&bucket=1h")
 	if err != nil {
 		t.Fatalf("GET /api/history: %v", err)
 	}
@@ -469,66 +471,6 @@ func TestHistoryEndpoint_BlockedModeReportsLogging(t *testing.T) {
 	cur := body.Series[len(body.Series)-1]
 	if cur.Total != 1 || cur.Blocked != 1 {
 		t.Errorf("current bucket = {total %d, blocked %d}, want {1, 1} (allowed not logged)", cur.Total, cur.Blocked)
-	}
-}
-
-func TestHistoryEndpoint_NoneModeReportsLogging(t *testing.T) {
-	// query_db is set but log_queries="none", so the DB exists (s.db != nil) yet
-	// holds no rows. The endpoint reports logging="none" so the UI shows an empty
-	// state rather than a flat zero line that looks like zero traffic.
-	dbPath := filepath.Join(t.TempDir(), "q.db")
-	db, err := querylog.NewDBLogger(dbPath, "none", 50*time.Millisecond, 0)
-	if err != nil {
-		t.Fatalf("NewDBLogger: %v", err)
-	}
-	defer db.Close()
-
-	store := blocklist.NewStore()
-	s := New(stats.New(), db, store, nil, func() bool { return true })
-	srv := httptest.NewServer(s.handler())
-	t.Cleanup(srv.Close)
-
-	resp, err := http.Get(srv.URL + "/api/history?window=24h&bucket=1h")
-	if err != nil {
-		t.Fatalf("GET /api/history: %v", err)
-	}
-	defer resp.Body.Close()
-	body := decode[historyResponse](t, resp.Body)
-
-	if body.Logging != "none" {
-		t.Errorf("logging = %q, want \"none\"", body.Logging)
-	}
-	if len(body.Series) != 24 {
-		t.Fatalf("series length = %d, want 24 (dense zero series)", len(body.Series))
-	}
-	for i, b := range body.Series {
-		if b.Total != 0 || b.Blocked != 0 {
-			t.Errorf("bucket %d = {total %d, blocked %d}, want zero", i, b.Total, b.Blocked)
-		}
-	}
-}
-
-func TestHistoryEndpoint_NoDBReturnsEmpty(t *testing.T) {
-	// With query logging disabled (db == nil) the endpoint must return an empty
-	// series and 200, so the dashboard graph shows an empty panel, not a failure.
-	_, srv := newTestServer(t, nil) // newTestServer passes db == nil
-	resp, err := http.Get(srv.URL + "/api/history")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
-	body := decode[historyResponse](t, resp.Body)
-	if body.Logging != "off" {
-		t.Errorf("logging = %q, want \"off\" (query_db unset)", body.Logging)
-	}
-	if body.Series == nil {
-		t.Error("Series is null, want [] (empty non-nil slice)")
-	}
-	if len(body.Series) != 0 {
-		t.Errorf("got %d buckets, want 0", len(body.Series))
 	}
 }
 
@@ -741,6 +683,7 @@ func exportTestDB(t *testing.T) (*Server, *httptest.Server, *querylog.DBLogger) 
 
 func TestQueriesExport_CSV(t *testing.T) {
 	s, srv, _ := exportTestDB(t)
+	s.SetPrivacy(PrivacyInfo{Clients: "full"})
 	s.SetClientNames(map[string]string{"192.168.1.42": "kids-ipad"})
 
 	resp, err := http.Get(srv.URL + "/api/queries/export")
@@ -755,11 +698,11 @@ func TestQueriesExport_CSV(t *testing.T) {
 	if cd := resp.Header.Get("Content-Disposition"); !strings.Contains(cd, "attachment; filename=") || !strings.HasSuffix(cd, `.csv"`) {
 		t.Errorf("Content-Disposition = %q, want a .csv attachment", cd)
 	}
-	if p := resp.Header.Get("X-Shole-Query-Privacy"); p != "raw" {
-		t.Errorf("X-Shole-Query-Privacy = %q, want raw", p)
+	if p := resp.Header.Get("X-Shole-Query-Log-Clients"); p != "full" {
+		t.Errorf("X-Shole-Query-Log-Clients = %q, want full", p)
 	}
-	if l := resp.Header.Get("X-Shole-Query-Logging"); l != "all" {
-		t.Errorf("X-Shole-Query-Logging = %q, want all", l)
+	if l := resp.Header.Get("X-Shole-Query-Log-Mode"); l != "all" {
+		t.Errorf("X-Shole-Query-Log-Mode = %q, want all", l)
 	}
 
 	body, _ := io.ReadAll(resp.Body)
@@ -827,7 +770,8 @@ func TestQueriesExport_CSVFormulaInjection(t *testing.T) {
 }
 
 func TestQueriesExport_JSON(t *testing.T) {
-	_, srv, _ := exportTestDB(t)
+	s, srv, _ := exportTestDB(t)
+	s.SetPrivacy(PrivacyInfo{Clients: "full"})
 
 	resp, err := http.Get(srv.URL + "/api/queries/export?format=json")
 	if err != nil {
@@ -839,9 +783,9 @@ func TestQueriesExport_JSON(t *testing.T) {
 	}
 
 	var env struct {
-		QueryPrivacy string `json:"query_privacy"`
+		QueryPrivacy string `json:"clients"`
 		ExportedAt   string `json:"exported_at"`
-		Logging      string `json:"logging"`
+		Logging      string `json:"mode"`
 		Filter       struct {
 			Domain string `json:"domain"`
 		} `json:"filter"`
@@ -853,8 +797,8 @@ func TestQueriesExport_JSON(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
 		t.Fatalf("decode envelope: %v", err)
 	}
-	if env.QueryPrivacy != "raw" || env.Logging != "all" {
-		t.Errorf("envelope privacy=%q logging=%q, want raw/all", env.QueryPrivacy, env.Logging)
+	if env.QueryPrivacy != "full" || env.Logging != "all" {
+		t.Errorf("envelope privacy=%q logging=%q, want full/all", env.QueryPrivacy, env.Logging)
 	}
 	if env.ExportedAt == "" {
 		t.Error("envelope exported_at is empty")
@@ -927,8 +871,8 @@ func TestQueriesExport_DBDisabled(t *testing.T) {
 	if len(records) != 1 {
 		t.Errorf("db-off CSV has %d records, want 1 (header only)", len(records))
 	}
-	if l := resp.Header.Get("X-Shole-Query-Logging"); l != "off" {
-		t.Errorf("X-Shole-Query-Logging = %q, want off", l)
+	if l := resp.Header.Get("X-Shole-Query-Log-Mode"); l != "off" {
+		t.Errorf("X-Shole-Query-Log-Mode = %q, want off", l)
 	}
 
 	// JSON: a valid envelope with an empty queries array.
@@ -938,7 +882,7 @@ func TestQueriesExport_DBDisabled(t *testing.T) {
 	}
 	defer resp2.Body.Close()
 	var env struct {
-		Logging string            `json:"logging"`
+		Logging string            `json:"mode"`
 		Queries []json.RawMessage `json:"queries"`
 	}
 	if err := json.NewDecoder(resp2.Body).Decode(&env); err != nil {
@@ -951,14 +895,14 @@ func TestQueriesExport_DBDisabled(t *testing.T) {
 
 func TestQueriesExport_PrivacyEchoedInFilename(t *testing.T) {
 	s, srv, _ := exportTestDB(t)
-	s.SetQueryPrivacy("subnet")
+	s.SetPrivacy(PrivacyInfo{Clients: "subnet"})
 	resp, err := http.Get(srv.URL + "/api/queries/export")
 	if err != nil {
 		t.Fatalf("GET export: %v", err)
 	}
 	defer resp.Body.Close()
-	if p := resp.Header.Get("X-Shole-Query-Privacy"); p != "subnet" {
-		t.Errorf("X-Shole-Query-Privacy = %q, want subnet", p)
+	if p := resp.Header.Get("X-Shole-Query-Log-Clients"); p != "subnet" {
+		t.Errorf("X-Shole-Query-Log-Clients = %q, want subnet", p)
 	}
 	if cd := resp.Header.Get("Content-Disposition"); !strings.Contains(cd, "subnet") {
 		t.Errorf("Content-Disposition = %q, want the privacy mode in the filename", cd)
@@ -1037,9 +981,9 @@ func TestQueriesEndpoint_IncludesOutcomeLabel(t *testing.T) {
 	}
 }
 
-func TestWhitelistRemove_RejectsEmptyDomain(t *testing.T) {
+func TestAllowlistRemove_RejectsEmptyDomain(t *testing.T) {
 	_, srv := newTestServer(t, nil)
-	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/whitelist?domain=", nil)
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/allowlist?domain=", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("DELETE: %v", err)
@@ -1050,11 +994,11 @@ func TestWhitelistRemove_RejectsEmptyDomain(t *testing.T) {
 	}
 }
 
-func TestWhitelistAdd_RejectsInvalidDomain(t *testing.T) {
+func TestAllowlistAdd_RejectsInvalidDomain(t *testing.T) {
 	// R13: ValidDomain gate catches malformed input even when the body
 	// shape itself is valid JSON.
 	_, srv := newTestServer(t, nil)
-	resp, err := http.Post(srv.URL+"/api/whitelist", "application/json",
+	resp, err := http.Post(srv.URL+"/api/allowlist", "application/json",
 		strings.NewReader(`{"domain":"no-dot-here"}`))
 	if err != nil {
 		t.Fatalf("POST: %v", err)
@@ -1500,8 +1444,8 @@ func TestStatsEndpoint_ReturnsSummary(t *testing.T) {
 }
 
 func TestStatsEndpoint_EchoesQueryPrivacy(t *testing.T) {
-	// The stats payload echoes the active query_privacy mode so the UI can
-	// describe the client column. An unset mode reads as "raw".
+	// The stats payload echoes the active query_log.clients mode so the UI can
+	// describe the client column.
 	s, srv := newTestServer(t, nil)
 
 	get := func() string {
@@ -1511,40 +1455,39 @@ func TestStatsEndpoint_EchoesQueryPrivacy(t *testing.T) {
 		}
 		defer resp.Body.Close()
 		return decode[struct {
-			QueryPrivacy string `json:"query_privacy"`
-		}](t, resp.Body).QueryPrivacy
+			Privacy struct {
+				Clients string `json:"clients"`
+			} `json:"privacy"`
+		}](t, resp.Body).Privacy.Clients
 	}
 
-	if got := get(); got != "raw" {
-		t.Errorf("default query_privacy = %q, want raw", got)
-	}
-	s.SetQueryPrivacy("subnet")
+	s.SetPrivacy(PrivacyInfo{Clients: "subnet"})
 	if got := get(); got != "subnet" {
-		t.Errorf("query_privacy after SetQueryPrivacy = %q, want subnet", got)
+		t.Errorf("privacy.clients after SetPrivacy = %q, want subnet", got)
 	}
 }
 
-func TestWhitelistEndpoints_RoundTrip(t *testing.T) {
+func TestAllowlistEndpoints_RoundTrip(t *testing.T) {
 	_, srv := newTestServer(t, nil)
 
 	// List is initially empty.
-	resp, err := http.Get(srv.URL + "/api/whitelist")
+	resp, err := http.Get(srv.URL + "/api/allowlist")
 	if err != nil {
-		t.Fatalf("GET whitelist: %v", err)
+		t.Fatalf("GET allowlist: %v", err)
 	}
 	defer resp.Body.Close()
 	body := decode[struct {
 		Domains []string `json:"domains"`
 	}](t, resp.Body)
 	if len(body.Domains) != 0 {
-		t.Errorf("initial whitelist = %v, want empty", body.Domains)
+		t.Errorf("initial allowlist = %v, want empty", body.Domains)
 	}
 
 	// Add.
 	addBody := strings.NewReader(`{"domain":"foo.com"}`)
-	resp2, err := http.Post(srv.URL+"/api/whitelist", "application/json", addBody)
+	resp2, err := http.Post(srv.URL+"/api/allowlist", "application/json", addBody)
 	if err != nil {
-		t.Fatalf("POST whitelist: %v", err)
+		t.Fatalf("POST allowlist: %v", err)
 	}
 	resp2.Body.Close()
 	if resp2.StatusCode != 200 {
@@ -1552,43 +1495,43 @@ func TestWhitelistEndpoints_RoundTrip(t *testing.T) {
 	}
 
 	// Confirm it's there.
-	resp3, err := http.Get(srv.URL + "/api/whitelist")
+	resp3, err := http.Get(srv.URL + "/api/allowlist")
 	if err != nil {
-		t.Fatalf("GET whitelist (post-add): %v", err)
+		t.Fatalf("GET allowlist (post-add): %v", err)
 	}
 	defer resp3.Body.Close()
 	body = decode[struct {
 		Domains []string `json:"domains"`
 	}](t, resp3.Body)
 	if len(body.Domains) != 1 || body.Domains[0] != "foo.com" {
-		t.Errorf("after add: whitelist = %v, want [foo.com]", body.Domains)
+		t.Errorf("after add: allowlist = %v, want [foo.com]", body.Domains)
 	}
 
 	// Delete.
-	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/whitelist?domain=foo.com", nil)
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/allowlist?domain=foo.com", nil)
 	resp4, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("DELETE whitelist: %v", err)
+		t.Fatalf("DELETE allowlist: %v", err)
 	}
 	resp4.Body.Close()
 
-	resp5, err := http.Get(srv.URL + "/api/whitelist")
+	resp5, err := http.Get(srv.URL + "/api/allowlist")
 	if err != nil {
-		t.Fatalf("GET whitelist (post-delete): %v", err)
+		t.Fatalf("GET allowlist (post-delete): %v", err)
 	}
 	defer resp5.Body.Close()
 	body = decode[struct {
 		Domains []string `json:"domains"`
 	}](t, resp5.Body)
 	if len(body.Domains) != 0 {
-		t.Errorf("after delete: whitelist = %v, want empty", body.Domains)
+		t.Errorf("after delete: allowlist = %v, want empty", body.Domains)
 	}
 }
 
-func TestWhitelistAdd_RejectsEmptyDomain(t *testing.T) {
+func TestAllowlistAdd_RejectsEmptyDomain(t *testing.T) {
 	_, srv := newTestServer(t, nil)
 
-	resp, err := http.Post(srv.URL+"/api/whitelist", "application/json", strings.NewReader(`{"domain":""}`))
+	resp, err := http.Post(srv.URL+"/api/allowlist", "application/json", strings.NewReader(`{"domain":""}`))
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
@@ -1598,14 +1541,14 @@ func TestWhitelistAdd_RejectsEmptyDomain(t *testing.T) {
 	}
 }
 
-func TestWhitelistAdd_RejectsOversizedBody(t *testing.T) {
+func TestAllowlistAdd_RejectsOversizedBody(t *testing.T) {
 	// Regression for b/026: bodies above maxRequestBytes must be rejected
 	// rather than allocated in full.
 	_, srv := newTestServer(t, nil)
 
 	huge := bytes.Repeat([]byte("x"), maxRequestBytes+1024)
 	body := bytes.NewReader(append([]byte(`{"domain":"`), append(huge, []byte(`"}`)...)...))
-	resp, err := http.Post(srv.URL+"/api/whitelist", "application/json", body)
+	resp, err := http.Post(srv.URL+"/api/allowlist", "application/json", body)
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
@@ -1758,36 +1701,36 @@ func captureLogs(t *testing.T) *recordingHandler {
 	return h
 }
 
-func TestWhitelistAdd_LogsAuditLine(t *testing.T) {
-	// A whitelist add un-blocks a domain network-wide from an
+func TestAllowlistAdd_LogsAuditLine(t *testing.T) {
+	// An allowlist add un-blocks a domain network-wide from an
 	// unauthenticated endpoint, so it must leave an audit line.
 	rec := captureLogs(t)
 	_, srv := newTestServer(t, nil)
 
-	resp, err := http.Post(srv.URL+"/api/whitelist", "application/json",
+	resp, err := http.Post(srv.URL+"/api/allowlist", "application/json",
 		strings.NewReader(`{"domain":"foo.com"}`))
 	if err != nil {
-		t.Fatalf("POST whitelist: %v", err)
+		t.Fatalf("POST allowlist: %v", err)
 	}
 	resp.Body.Close()
 
-	if !rec.contains("whitelist entry added") || !rec.contains("domain=foo.com") {
+	if !rec.contains("allowlist entry added") || !rec.contains("domain=foo.com") {
 		t.Errorf("missing audit line for add; got %v", rec.msgs)
 	}
 }
 
-func TestWhitelistRemove_LogsAuditLine(t *testing.T) {
+func TestAllowlistRemove_LogsAuditLine(t *testing.T) {
 	rec := captureLogs(t)
 	_, srv := newTestServer(t, nil)
 
-	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/whitelist?domain=foo.com", nil)
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/allowlist?domain=foo.com", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("DELETE whitelist: %v", err)
+		t.Fatalf("DELETE allowlist: %v", err)
 	}
 	resp.Body.Close()
 
-	if !rec.contains("whitelist entry removed") || !rec.contains("domain=foo.com") {
+	if !rec.contains("allowlist entry removed") || !rec.contains("domain=foo.com") {
 		t.Errorf("missing audit line for remove; got %v", rec.msgs)
 	}
 }

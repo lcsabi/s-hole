@@ -18,7 +18,9 @@ assignees: ""
 
 ## Reproduction
 
-<!-- Smallest config + steps that reproduce the issue. -->
+<!-- Smallest config + steps that reproduce the issue. Before you paste a
+     config or logs, remove client_names labels, LAN addresses, and query
+     lines: they show who uses your network and what they look up. -->
 
 ```yaml
 # config.yaml

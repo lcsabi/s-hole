@@ -1,11 +1,12 @@
 # Example Prometheus scrape configuration for s-hole.
 #
-# s-hole serves Prometheus metrics at /metrics on its admin listener (api_listen,
+# s-hole serves Prometheus metrics at /metrics on its admin listener (admin.listen,
 # default 127.0.0.1:8080). Point Prometheus at that address.
 #
-# The default api_listen binds 127.0.0.1, which answers only the local host. To
-# scrape from another host, set api_listen: "0.0.0.0:8080" in config.yaml and use
-# the machine's LAN IP as the target below. Do not expose /metrics to the public
+# The default admin.listen binds 127.0.0.1, which answers only the local host. To
+# scrape from another host, set admin.listen: "0.0.0.0:8080" in config.yaml and use
+# the machine's LAN IP as the target below (the admin server answers only an IP
+# address, localhost, or its own hostname). Do not expose /metrics to the public
 # internet: the admin API is unauthenticated (see docs/DESIGN.md, Security).
 
 global:

@@ -113,7 +113,7 @@ func TestPrintNetworkHint_EmitsBanner(t *testing.T) {
 	t.Setenv("S_HOLE_LOG_FORMAT", "")
 	t.Setenv("S_HOLE_ASCII_BANNER", "")
 	out := captureStdout(t, func() {
-		printNetworkHint("53", "", "0.0.0.0", "8080", true)
+		printNetworkHint("", "53", "", "0.0.0.0", "8080", true)
 	})
 	if !strings.Contains(out, "Router setup") {
 		t.Skipf("no LAN interface in test env; banner skipped (got: %q)", out)
@@ -132,7 +132,7 @@ func TestPrintNetworkHint_AdminDownShowsUnavailable(t *testing.T) {
 	t.Setenv("S_HOLE_LOG_FORMAT", "")
 	t.Setenv("S_HOLE_ASCII_BANNER", "")
 	out := captureStdout(t, func() {
-		printNetworkHint("53", "", "127.0.0.1", "8080", false)
+		printNetworkHint("", "53", "", "127.0.0.1", "8080", false)
 	})
 	if !strings.Contains(out, "Router setup") {
 		t.Skipf("no LAN interface in test env; banner skipped (got: %q)", out)
@@ -152,7 +152,7 @@ func TestPrintNetworkHint_LoopbackAPIPointsAtLocalhost(t *testing.T) {
 	t.Setenv("S_HOLE_LOG_FORMAT", "")
 	t.Setenv("S_HOLE_ASCII_BANNER", "")
 	out := captureStdout(t, func() {
-		printNetworkHint("53", "", "127.0.0.1", "8080", true)
+		printNetworkHint("", "53", "", "127.0.0.1", "8080", true)
 	})
 	if !strings.Contains(out, "Router setup") {
 		t.Skipf("no LAN interface in test env; banner skipped (got: %q)", out)
@@ -190,7 +190,7 @@ func TestIsLoopbackHost(t *testing.T) {
 func TestPrintNetworkHint_ASCIIFallback(t *testing.T) {
 	t.Setenv("S_HOLE_ASCII_BANNER", "1")
 	out := captureStdout(t, func() {
-		printNetworkHint("53", "", "0.0.0.0", "8080", true)
+		printNetworkHint("", "53", "", "0.0.0.0", "8080", true)
 	})
 	if strings.Contains(out, "─") || strings.Contains(out, "│") || strings.Contains(out, "┌") {
 		t.Errorf("ASCII fallback still emitted box-drawing characters:\n%s", out)
@@ -204,7 +204,11 @@ func TestPrintNetworkHint_ASCIIFallback(t *testing.T) {
 }
 
 func TestBuildMultiLogger_NoDBReturnsFileLogger(t *testing.T) {
-	fl := querylog.NewFileLogger("", "all")
+	fl, err := querylog.NewFileLogger("stdout", "all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fl.Close()
 	got := buildMultiLogger(fl, nil)
 	if _, ok := got.(*querylog.FileLogger); !ok {
 		t.Errorf("buildMultiLogger(fl, nil) = %T, want *querylog.FileLogger", got)
@@ -212,7 +216,11 @@ func TestBuildMultiLogger_NoDBReturnsFileLogger(t *testing.T) {
 }
 
 func TestBuildMultiLogger_WithDBReturnsMulti(t *testing.T) {
-	fl := querylog.NewFileLogger("", "all")
+	fl, err := querylog.NewFileLogger("stdout", "all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fl.Close()
 	dbPath := t.TempDir() + "/q.db"
 	db, err := querylog.NewDBLogger(dbPath, "all", time.Hour, 0)
 	if err != nil {
@@ -1074,7 +1082,7 @@ func TestPrintNetworkHint_DoTLine(t *testing.T) {
 	for _, ascii := range []string{"", "1"} {
 		t.Setenv("S_HOLE_ASCII_BANNER", ascii)
 		out := captureStdout(t, func() {
-			printNetworkHint("53", "853", "127.0.0.1", "8080", true)
+			printNetworkHint("", "53", "853", "127.0.0.1", "8080", true)
 		})
 		if !strings.Contains(out, "Router setup") {
 			t.Skipf("no LAN interface in test env; banner skipped (got: %q)", out)
@@ -1084,7 +1092,7 @@ func TestPrintNetworkHint_DoTLine(t *testing.T) {
 		}
 	}
 	out := captureStdout(t, func() {
-		printNetworkHint("53", "", "127.0.0.1", "8080", true)
+		printNetworkHint("", "53", "", "127.0.0.1", "8080", true)
 	})
 	if strings.Contains(out, "DoT") {
 		t.Errorf("banner shows a DoT line with DoT off; got: %q", out)
@@ -1143,9 +1151,9 @@ func TestRunCheckConfig(t *testing.T) {
 		wantLog  []string
 	}{
 		{"plain config", "", 0, []string{"config OK"}},
-		{"invalid config", "block_mode: bogus\n", 1, []string{"level=ERROR"}},
+		{"invalid config", "blocking:\n  reply: bogus\n", 1, []string{"level=ERROR"}},
 		{"expired DoT certificate warns but passes",
-			"dot_listen: \":853\"\ntls_cert: \"" + certFile + "\"\ntls_key: \"" + keyFile + "\"\n",
+			"dns:\n  dot_listen: \":853\"\n  dot_cert: \"" + certFile + "\"\n  dot_key: \"" + keyFile + "\"\n",
 			0, []string{"DoT certificate expired", "level=WARN", "config OK"}},
 	}
 	for i, tc := range cases {
@@ -1302,9 +1310,9 @@ func TestChdirToConfigDir_NestedRelativeLoadsConfig(t *testing.T) {
 	if err := os.Mkdir(cfgDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("S_HOLE_QUERY_DB", "queries.db")
+	t.Setenv("S_HOLE_QUERY_LOG_DATABASE", "queries.db")
 	rel := filepath.Join("conf", "s-hole.yaml")
-	if err := os.WriteFile(rel, []byte("upstreams:\n  - 1.1.1.1:53\nquery_db: \"queries.db\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(rel, []byte("dns:\n  upstreams:\n    - 1.1.1.1:53\nquery_log:\n  database: \"queries.db\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1315,11 +1323,11 @@ func TestChdirToConfigDir_NestedRelativeLoadsConfig(t *testing.T) {
 	if _, err := os.Stat(rel); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("original relative path still names a file after chdir (stat err = %v); the test setup is wrong", err)
 	}
-	cfg, _, _, _, err := config.LoadAndValidate(got)
+	cfg, _, err := config.Load(got)
 	if err != nil {
-		t.Fatalf("LoadAndValidate(%q) = %v, want nil", got, err)
+		t.Fatalf("Load(%q) = %v, want nil", got, err)
 	}
-	if err := os.WriteFile(cfg.QueryDB, nil, 0o600); err != nil {
+	if err := os.WriteFile(cfg.QueryLog.Database, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(cfgDir, "queries.db")); err != nil {

@@ -22,7 +22,7 @@ const (
 // Server wraps the miekg/dns servers: UDP and TCP on the plain listen
 // address, plus an optional DNS-over-TLS server. Every listener dispatches to
 // the same handler, so blocking, caching, stats, the query log, and the
-// query_privacy mask apply the same way on every transport.
+// query_log.clients mask apply the same way on every transport.
 type Server struct {
 	udp     *dns.Server
 	tcp     *dns.Server

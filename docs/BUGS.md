@@ -2820,3 +2820,25 @@ and nothing blocked. Found in the pre-merge test on the Debian VM.
 The installer checks the config with the new binary before it installs
 anything, and on a failure says that nothing was installed or changed. A
 1.x config also gets a pointer to "Upgrade to 2.0" in CHANGELOG.md.
+
+## b/094: main: an offline purge failed on Windows
+
+**Priority:** P2
+**Component:** main
+**Status:** Fixed in CL 93
+**Filed:** 2026-10-07
+
+### Description
+
+`s-hole -purge` decides that no s-hole runs when the connection to the admin
+address is refused, and then deletes the files itself. It checked for
+`syscall.ECONNREFUSED`, but Windows reports a refused connection as
+`WSAECONNREFUSED` (10061). With the service stopped, the purge on Windows
+failed with "purge failed ... actively refused it" and deleted nothing.
+Found in the pre-merge test on Windows 10.
+
+### Fix
+
+A platform helper, `connRefused`, also matches `WSAECONNREFUSED` on Windows.
+Checked live: an offline purge from `C:\Windows\System32` deletes the files
+next to `config.yaml`.

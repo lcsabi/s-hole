@@ -286,6 +286,9 @@ layout, so a 1.x config needs an edit. (CL 93)
   be read is downloaded again instead of dropping the list (b/092). (CL 93)
 - **A failed upgrade left the new binary installed**: `install-linux.sh` now
   checks the config before it changes anything (b/093). (CL 93)
+- **An offline purge failed on Windows**: s-hole did not recognize a refused
+  connection there, so `s-hole -purge` with the service stopped deleted
+  nothing (b/094). (CL 93)
 - **The graph's last time label was cut off** at the right edge. (CL 93)
 - **A `blocking.cache_dir` that did not exist was never created**, so every
   start downloaded every list again; s-hole now creates it, mode `700`

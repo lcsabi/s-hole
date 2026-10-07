@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"syscall"
 	"time"
 
 	"github.com/lcsabi/s-hole/internal/api"
@@ -159,7 +158,7 @@ func purgeViaAPI(adminListen string) (api.PurgeReport, error) {
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Post(url, "application/json", bytes.NewReader([]byte(`{"confirm": true}`)))
 	if err != nil {
-		if errors.Is(err, syscall.ECONNREFUSED) {
+		if connRefused(err) {
 			return api.PurgeReport{}, errNotRunning
 		}
 		return api.PurgeReport{}, err

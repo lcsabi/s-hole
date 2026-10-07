@@ -2047,6 +2047,10 @@ The planned change:
   setting is needed: a router upstream keeps resolving `nas.lan`.
 - **EDNS padding (RFC 8467)** on DoH queries and on DoT replies, so the message
   size does not reveal the name.
+- **Localhost names are never blocked.** Hosts lists start with lines such as
+  `127.0.0.1 localhost.localdomain`, and the parser skips only `localhost`, so
+  today `localhost.localdomain` lands in the block set. The parser should skip
+  every RFC 6761 localhost name (found by the CL 95 tests).
 
 Rated High: it closes the last two places where LAN data leaves the network.
 

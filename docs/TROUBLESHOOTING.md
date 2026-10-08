@@ -125,6 +125,7 @@ journalctl -u s-hole -b -p err
 | `msg="dns listen failed"` with `address already in use` (on Windows: `Only one usage of each socket address`) | Another program uses port 53. On many Linux systems, this is the `systemd-resolved` stub. | To find the program, run `sudo ss -lunp 'sport = :53'`. If the program is `systemd-resolved`, run the installer with `--free-port-53` to free the port. |
 | `msg="dns listen failed"` with `permission denied` | s-hole cannot open a port below 1024 without root or the `CAP_NET_BIND_SERVICE` capability. | Run s-hole through the systemd unit that the installer writes, or set `dns.listen` to a port above 1024. |
 | `msg="DoT listener failed"` | `dns.dot_listen` is set, but s-hole cannot open the DoT port. | Read `err` and `hint`. Look for another program on port 853, or correct `dns.dot_listen`. |
+| `exec /usr/local/bin/s-hole: operation not permitted` (Docker, in `docker logs s-hole`) | The container runs with `--cap-drop ALL` but without `--cap-add NET_BIND_SERVICE`. The s-hole binary has `NET_BIND_SERVICE` as a file capability. Linux does not start the binary when the container does not have that capability. | Add `--cap-add NET_BIND_SERVICE` to `docker run`, as the README examples do. |
 
 If the start fails, systemd tries again every 5 seconds. `systemctl status
 s-hole` then shows `activating (auto-restart)`.
@@ -381,15 +382,51 @@ level=WARN msg="interface address read failed" pkg=dns err="..." hint="s-hole ca
 s-hole keeps the last list that it read. If no read has worked since
 startup, s-hole refuses devices that use a public IPv6 address, and reverse
 lookups for the LAN's own IPv6 prefix go upstream. Under systemd, the usual
-cause is a unit or drop-in with a `RestrictAddressFamilies=` line that does
-not list `AF_NETLINK`. The unit that s-hole installs has no such line. If
-your unit has one, add `AF_NETLINK` to it, then run
-`sudo systemctl daemon-reload` and `sudo systemctl restart s-hole`.
+cause is a `RestrictAddressFamilies=` line that does not list `AF_NETLINK`,
+in the unit or in a drop-in. The unit that s-hole installs lists
+`AF_NETLINK`. To see the value that systemd uses, run:
+
+```bash
+systemctl show -p RestrictAddressFamilies s-hole
+```
+
+If `AF_NETLINK` is not in the list, run `systemctl cat s-hole` to find the
+`RestrictAddressFamilies=` lines in the unit and its drop-ins. Add
+`AF_NETLINK` to the last one, then run `sudo systemctl daemon-reload` and
+`sudo systemctl restart s-hole`.
 
 If a test query from a LAN device gets REFUSED, make sure that the query asks
 for recursion. s-hole refuses a query with the RD bit clear, such as
 `dig +norec`, because such a query reads only the cache. A device's own
 resolver always sets the RD bit.
+
+## Every client shows as 172.17.0.1
+
+This applies to s-hole in Docker with bridge networking. If the Top Clients
+panel or the query history shows one address, such as `172.17.0.1`, for
+many devices, s-hole sees the queries from the Docker bridge gateway, not
+from the devices.
+
+The usual cause is a port 53 mapping without a host address, such as
+`-p 53:53/udp`. Docker then also listens on the host's IPv6 addresses and
+relays IPv6 queries into the container's IPv4-only network, with the
+gateway as the source. The LAN check sees a private address. If the router
+lets IPv6 traffic from the internet reach the host, the LAN check cannot
+refuse those queries. With Docker Engine on Linux, IPv4 queries keep their
+real source. Docker Desktop on Mac or Windows relays every query, so s-hole
+can show one address for all clients there, and a host address in `-p`
+does not change this.
+
+To correct this, publish port 53 on the host's IPv4 address, as the README
+example does (`-p 192.168.1.10:53:53/udp -p 192.168.1.10:53:53/tcp`). Then
+remove the container (`docker rm -f s-hole`) and run it again with the new
+`-p` options. On Linux, to serve IPv6 clients, use host networking
+(`--network host`) instead: s-hole then sees the real address of every
+client.
+
+With bridge networking, requests to the dashboard from the Docker host also
+come from the gateway. This is expected. It is why the **Delete history**
+button does not work there (see the README Docker section).
 
 ## A domain is blocked, but you want to allow it
 

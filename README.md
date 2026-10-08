@@ -582,7 +582,7 @@ sudo kill -HUP "$(pidof s-hole)"        # or directly
 
 SIGHUP is honored on every non-Windows platform. It runs the same single-flight reload as `POST /api/reload`. The reload re-reads the DoT certificate and key when DoT is on, then re-downloads the blocklists from the URLs that s-hole read at startup. It does not re-read `config.yaml`. To apply a change to any config value, restart the service.
 
-The systemd unit runs with `CAP_NET_BIND_SERVICE` so it can bind port 53 (and 853 for DNS over TLS) without running as root. `ProtectSystem=strict` and `NoNewPrivileges` are set for defence in depth, and `UMask=0077` makes every file s-hole creates readable by the `s-hole` user only.
+The systemd unit runs with `CAP_NET_BIND_SERVICE` so it can bind port 53 (and 853 for DNS over TLS) without running as root. `ProtectSystem=strict` and `NoNewPrivileges` are set for defence in depth, and `UMask=0077` makes every file s-hole creates readable by the `s-hole` user only. The unit also puts s-hole in a sandbox: s-hole cannot see other processes, cannot reach hardware devices or change kernel settings, and can use only the system calls of a normal network service. It can open only Unix, IPv4, IPv6, and netlink sockets. s-hole needs netlink (`AF_NETLINK`) to read the subnets of the host's interfaces for the LAN check. To see each setting and its rating, run `systemd-analyze security s-hole`.
 
 #### Operating an installed service
 
@@ -590,7 +590,7 @@ A few things to know once s-hole runs as a systemd service:
 
 - **Config is *copied*, not live-linked.** The installer copies your config to `/etc/s-hole/config.yaml` on the **first** install only. It never overwrites an existing one (it prints `config already exists, skipping`), and re-running the installer or `scp`-ing a new file to your home directory does **not** update it. To apply a config change on an installed host, edit `/etc/s-hole/config.yaml` directly (or `sudo cp your-config.yaml /etc/s-hole/config.yaml`), then `sudo systemctl restart s-hole`. To catch a mistake before the restart, validate the file first with `sudo -u s-hole s-hole -check-config -config /etc/s-hole/config.yaml`, which loads and validates it exactly the way startup does and exits non-zero on any error. A reload (`POST /api/reload` or SIGHUP) does not apply a config edit. It re-downloads from the URLs read at startup and re-reads the certificate files at the `dns.dot_cert` and `dns.dot_key` paths read at startup, so a changed blocklist URL or a changed certificate path also needs a restart to take effect.
 - **`S_HOLE_*` environment overrides do not reach the service.** The systemd unit runs with a clean environment, so shell env vars only take effect when you run the binary directly. On the service, put values in `/etc/s-hole/config.yaml` (or add `Environment=` lines to the unit).
-- **`query_log.database`, `query_log.file`, and `blocking.cache_dir` are relative to `/var/lib/s-hole`.** Relative paths resolve against the service's working directory. Because the unit sets `ProtectSystem=strict` with `ReadWritePaths=/var/lib/s-hole`, the rest of the filesystem is read-only to the service. Keep these paths under `/var/lib/s-hole` (a relative path such as `queries.db` does). Pointing them at `/tmp` or a home directory fails to write.
+- **`query_log.database`, `query_log.file`, and `blocking.cache_dir` are relative to `/var/lib/s-hole`.** Relative paths resolve against the service's working directory. Because the unit sets `ProtectSystem=strict` with `ReadWritePaths=/var/lib/s-hole`, the rest of the filesystem is read-only to the service. Keep these paths under `/var/lib/s-hole` (a relative path such as `queries.db` does). Pointing them at `/tmp` or a home directory fails to write. The service gets its own private `/tmp`, which is read-only too, so a path under `/tmp` keeps no data there.
 - **The query history flushes on an interval.** With `query_log.database` on, newly recorded queries appear in `/api/queries` and the dashboard's Recent Queries panel and Stored list only after the next SQLite flush (`query_log.flush_interval`, default `30s`), not instantly. Lower it for a more responsive view.
 
 To remove s-hole, run the bundled uninstaller as root (from the `deploy/`
@@ -664,6 +664,9 @@ docker run -d \
   --name s-hole \
   --restart unless-stopped \
   --network host \
+  --read-only \
+  --security-opt no-new-privileges:true \
+  --cap-drop ALL --cap-add NET_BIND_SERVICE \
   --log-opt max-size=10m --log-opt max-file=3 \
   -v "$(pwd)/data:/app" \
   s-hole
@@ -678,6 +681,8 @@ With host networking:
 
 `--log-opt` limits the container log, which Docker does not rotate by default. With the default `query_log.file: "off"` the log holds no query data.
 
+The other flags harden the container. `--read-only` makes the container's own files read-only; s-hole writes only to `/app`, the data directory. `no-new-privileges` stops a process in the container from getting more privileges than it starts with. `--cap-drop ALL` removes every Linux capability, and `--cap-add NET_BIND_SERVICE` gives back the one that s-hole needs to bind port 53 (and 853 for DNS over TLS). Do not use `--cap-drop ALL` without `--cap-add NET_BIND_SERVICE`. The binary has `NET_BIND_SERVICE` as a file capability, and Linux does not start a binary whose file capability the container does not have. The container then stops at start with `exec /usr/local/bin/s-hole: operation not permitted`.
+
 Point your router's DHCP **DNS Server** field at the LAN IP. Ignore the "Router setup" box that s-hole prints at startup if it shows a different address.
 
 **Bridge networking** (Docker Desktop on Mac or Windows, where host networking does not reach the LAN):
@@ -687,12 +692,17 @@ HOST_IP=192.168.1.10          # the LAN IP from step 2
 docker run -d \
   --name s-hole \
   --restart unless-stopped \
+  --read-only \
+  --security-opt no-new-privileges:true \
+  --cap-drop ALL --cap-add NET_BIND_SERVICE \
   --log-opt max-size=10m --log-opt max-file=3 \
   -p ${HOST_IP}:53:53/udp -p ${HOST_IP}:53:53/tcp \
   -p 127.0.0.1:8080:8080 \
   -v "$(pwd)/data:/app" \
   s-hole
 ```
+
+Publish port 53 on the host's IPv4 address, as the example does. Do not publish it without an address (`-p 53:53/udp`). Without an address, Docker also listens on the host's IPv6 addresses and relays IPv6 queries into the container's IPv4-only network. s-hole then sees every IPv6 client as the bridge gateway (for example `172.17.0.1`), a private address. The Top Clients panel and the query history show the gateway for every IPv6 client. If the router lets IPv6 traffic from the internet reach the host, the LAN check cannot refuse those queries either. With Docker Engine on Linux, IPv4 queries keep their real source; to serve IPv6 clients on Linux, use host networking. Docker Desktop on Mac or Windows relays every published port, so s-hole can see one internal address for every client there. See [Every client shows as 172.17.0.1](docs/TROUBLESHOOTING.md#every-client-shows-as-1721701).
 
 In this variant, set `admin.listen: "0.0.0.0:8080"` in `data/config.yaml`: inside the container, `127.0.0.1` answers only the container itself. The `-p 127.0.0.1:8080:8080` mapping keeps the dashboard on the host only; to open it to the LAN, publish it on `${HOST_IP}` instead. Inside a bridge network s-hole sees host-local requests as coming from the bridge gateway (for example `172.17.0.1`), so the dashboard's **Delete history** button does not work there: run `docker exec s-hole s-hole -purge -config /app/config.yaml` instead. On Windows, use a backtick for line continuation and `${PWD}\data:/app` for the volume.
 
@@ -1004,7 +1014,7 @@ A full end-to-end integration test (`internal/dnsserver/integration_test.go`) wi
 
 ## Security Notes
 
-- s-hole is designed for **LAN deployment only**. It answers queries from the local network only and refuses every other source, but do not expose port 53 to the public internet anyway. There is no rate limit for each client. Global limits apply: at most 512 queries wait for an upstream at the same time (a query over the limit gets SERVFAIL), and at most 256 plain-TCP and 256 DoT connections can be open.
+- s-hole is designed for **LAN deployment only**. It answers queries from the local network only and refuses every other source, but do not expose port 53 to the public internet anyway. In Docker with bridge networking, publish port 53 on an IPv4 address (see [Docker](#docker)); otherwise IPv6 queries arrive from the bridge gateway, and the LAN check cannot refuse them. There is no rate limit for each client. Global limits apply: at most 512 queries wait for an upstream at the same time (a query over the limit gets SERVFAIL), and at most 256 plain-TCP and 256 DoT connections can be open.
 - The query history (`query_log.database`) and a query log file hold the browsing history of the devices on your network. They are off by default. When you turn them on, treat them as sensitive data, and see [`PRIVACY.md`](PRIVACY.md) for where they live and how long they stay.
 - The admin UI has no authentication. The default `admin.listen` (`127.0.0.1:8080`) restricts it to localhost; s-hole warns while it listens on another address. The server refuses requests addressed to a foreign hostname (DNS rebinding) and requests from another web site (a link that opens the dashboard still works; browsers mark such requests only to `localhost`, a loopback address, or HTTPS, so this covers the default bind only), and it enforces read/write/idle timeouts and a 64 KiB request body limit. These are no substitute for proper access control on a multi-user network.
 - Blocklist URLs are operator-controlled. Use HTTPS URLs from sources you trust; s-hole warns about an `http://` URL. s-hole does not follow a redirect from an HTTPS list URL to a plain HTTP URL.

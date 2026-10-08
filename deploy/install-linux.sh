@@ -207,6 +207,36 @@ ReadWritePaths=/var/lib/s-hole
 # readable by the s-hole user only.
 UMask=0077
 
+# Sandbox: s-hole needs no devices, kernel settings, other processes, or
+# privileged system calls. `systemd-analyze security s-hole` shows the result.
+# The private /tmp stays read-only: s-hole writes only to /var/lib/s-hole, so
+# a query path under /tmp fails to write and keeps no data there.
+PrivateTmp=true
+ReadOnlyPaths=/tmp /var/tmp
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+# AF_NETLINK is necessary: s-hole reads the subnets of the host's interfaces
+# through it for the LAN check. Without it, s-hole refuses the LAN devices
+# that have a public IPv6 address.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
 [Install]
 WantedBy=multi-user.target
 EOF

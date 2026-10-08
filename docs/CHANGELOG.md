@@ -126,6 +126,20 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   stopped, it keeps that file; when s-hole runs, it still empties the log
   file. In both cases it reports the step as failed. The overwrite is best
   effort (see `PRIVACY.md`). (CL 105)
+- **The systemd unit puts s-hole in a sandbox.** s-hole cannot see other
+  processes, cannot reach hardware devices or change kernel settings, and
+  can use only the system calls of a normal network service. It can open
+  only Unix, IPv4, IPv6, and netlink sockets. `systemd-analyze security
+  s-hole` now rates the unit "OK", not "MEDIUM". To get the new unit, run
+  `install-linux.sh` again. (CL 106)
+- **Hardened `docker run` examples.** The README examples now use
+  `--read-only`, `--security-opt no-new-privileges:true`, and
+  `--cap-drop ALL --cap-add NET_BIND_SERVICE`. With `--cap-drop ALL` alone,
+  the container stops at start with `operation not permitted`. The bridge
+  example explains why port 53 is published on the host's IPv4 address:
+  without an address, Docker relays IPv6 queries with the bridge gateway
+  (for example `172.17.0.1`) as the source, so the LAN check cannot refuse
+  an IPv6 source from the internet. (CL 106)
 
 ## [2.0.1] - 2026-10-08
 

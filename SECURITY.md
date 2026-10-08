@@ -151,7 +151,24 @@ Out of scope:
   stats line. Keep them off in normal operation.
 - **systemd unit** ships with `NoNewPrivileges`, `ProtectSystem=strict`,
   `ProtectHome=true`, `CapabilityBoundingSet=CAP_NET_BIND_SERVICE`, and
-  `UMask=0077`.
+  `UMask=0077`. It also sets a sandbox: `PrivateTmp` with
+  `ReadOnlyPaths=/tmp /var/tmp` (a query path under `/tmp` fails to write),
+  `PrivateDevices`,
+  `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectKernelLogs`,
+  `ProtectControlGroups`, `ProtectClock`, `ProtectHostname`,
+  `ProtectProc=invisible`, `ProcSubset=pid`, `RestrictNamespaces`,
+  `RestrictSUIDSGID`, `RestrictRealtime`, `LockPersonality`,
+  `MemoryDenyWriteExecute`, `RemoveIPC`, `SystemCallArchitectures=native`,
+  and a system-call filter (`@system-service` without `@privileged` and
+  `@resources`). `RestrictAddressFamilies` allows `AF_UNIX`, `AF_INET`,
+  `AF_INET6`, and `AF_NETLINK`. s-hole needs `AF_NETLINK` to read the
+  subnets of the host's interfaces for the LAN check.
+- **Docker.** The README's `docker run` examples use `--read-only`,
+  `--security-opt no-new-privileges:true`, and `--cap-drop ALL` with
+  `--cap-add NET_BIND_SERVICE`. In the bridge example, port 53 is published
+  on the host's IPv4 address only. If it is published without an address,
+  Docker relays IPv6 queries with the bridge gateway as the source, and the
+  LAN check cannot refuse an IPv6 source from the internet.
 - **DNS over TLS** is off by default. When `dns.dot_listen` is set, the listener
   caps open connections at 256, accepts TLS 1.3 only, and bounds the TLS
   handshake with the 2-second per-connection read timeout. In TLS 1.2, a

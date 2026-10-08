@@ -112,11 +112,19 @@ Out of scope:
   log file with zeros before it empties or deletes it, and a purge while
   s-hole is stopped overwrites the database files with zeros before it
   deletes them. The overwrite refuses a symbolic link, a file that is not a
-  regular file, and (on Unix) a file with more than one hard link: the
+  regular file, and a file with more than one hard link: the
   uninstaller runs the purge as root in a directory that the `s-hole` user
-  owns. On Windows the service runs as a virtual account
-  (`NT SERVICE\s-hole`), and install gives the config folder an owner-only
-  access list. The Docker image runs as UID 65532.
+  owns, and on Windows an administrator runs it in the config folder, where
+  the service can create files. On Windows the service runs as a virtual
+  account (`NT SERVICE\s-hole`). Install gives the config folder an access
+  list for SYSTEM, the Administrators group, and the service only: the
+  service can read `config.yaml` and change only the files that it creates.
+  Install refuses a binary that the service account could change or
+  replace, so the binary goes in `C:\Program Files\s-hole`. It also
+  refuses a config folder that holds a link or an item that another
+  account owns (b/104). On Windows the dashboard purge empties the query
+  log file through a new handle (b/105). The Docker image runs as UID
+  65532.
 - **The application log** carries no query name, no client address, and no
   total query count (the failure summaries count failed queries only). The
   one exception is the allowlist audit line: it names the domain, and the

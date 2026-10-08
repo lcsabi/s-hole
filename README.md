@@ -739,23 +739,61 @@ docker restart s-hole
 
 ### Windows (system service)
 
-Run once as Administrator to register s-hole as an auto-start Windows Service. Put the binary and the config in a folder of their own, such as `C:\s-hole`:
+s-hole installs as an auto-start Windows Service in the standard Windows layout: the binary in `C:\Program Files\s-hole`, the config and the data in `C:\ProgramData\s-hole`. Run these commands once in PowerShell as Administrator, in the folder of the unpacked archive:
 
 ```powershell
+# Make the two folders, then copy the binary and the sample config
+New-Item -ItemType Directory -Force "C:\Program Files\s-hole", "C:\ProgramData\s-hole"
+Copy-Item .\s-hole.exe "C:\Program Files\s-hole\"
+Copy-Item .\config.yaml "C:\ProgramData\s-hole\"
+
 # Install (s-hole stores the config path as an absolute path)
-.\s-hole.exe -service install -config C:\s-hole\config.yaml
+& "C:\Program Files\s-hole\s-hole.exe" -service install -config C:\ProgramData\s-hole\config.yaml
 
 # Start / stop
-.\s-hole.exe -service start
-.\s-hole.exe -service stop
+& "C:\Program Files\s-hole\s-hole.exe" -service start
+& "C:\Program Files\s-hole\s-hole.exe" -service stop
 
 # Remove
-.\s-hole.exe -service uninstall
+& "C:\Program Files\s-hole\s-hole.exe" -service uninstall
 ```
 
 The service can also be managed through the standard Windows Services panel (`services.msc`) or `sc.exe`.
 
-The service runs as its own virtual account, `NT SERVICE\s-hole`, not as LocalSystem. `-service install` gives the config folder an access list that allows only SYSTEM, the Administrators group, and that account. s-hole writes its data files in that folder, so other users on the PC cannot read the query history. Because of that list, edit `config.yaml` from an editor that runs as Administrator. A service installed with an older version runs as LocalSystem: uninstall and install it again to change that.
+The service runs as its own virtual account, `NT SERVICE\s-hole`, not as LocalSystem. `-service install` gives the config folder an access list that allows only SYSTEM, the Administrators group, and that account. The service account can read the folder. It can change only the files that it creates there: the query database, the query log file, and the downloaded blocklists. It cannot change `config.yaml` or another file that an administrator puts in the folder. Other users on the PC cannot read the query history. Because of that list, edit `config.yaml` from an editor that runs as Administrator.
+
+`-service install` refuses to install when the service account can change or replace `s-hole.exe`. If it could, a program that takes control of s-hole could change the binary. An administrator who runs that binary later (for example, with `-purge`) would then run the program as Administrator. In `C:\Program Files`, only administrators can change files. Install also refuses in these cases:
+
+- `s-hole.exe` is in the config folder, where the service can add files.
+- `config.yaml` does not exist, or is not a file.
+- The config folder is a drive root, the Windows folder or a folder in it, `C:\Program Files`, `C:\ProgramData`, your user profile folder, or `C:\Users`. The new access list also applies to every file in the folder, so other programs would lose access.
+- After install sets the access list, the config folder holds a link or a junction, or a file or folder whose owner is not SYSTEM, the Administrators group, the service, or your account. Before the install, every user can add files to a new folder in `C:\ProgramData`, and the owner of such a file could still change it after the install. A link could point the service and the purge at a file outside the folder. After this refusal, the folder keeps its new access list.
+
+Run s-hole commands with the full path of the binary, `C:\Program Files\s-hole\s-hole.exe`. Do not run an `s-hole.exe` from the config folder: the service can create files there. For example, to delete the stored data, run `& "C:\Program Files\s-hole\s-hole.exe" -purge -config C:\ProgramData\s-hole\config.yaml`. A service installed with a version before 2.0.0 runs as LocalSystem. To change that, follow the upgrade steps below.
+
+#### Upgrade from an install in `C:\s-hole`
+
+Older versions of this README put the binary and the config in one folder, such as `C:\s-hole`, where the service account could change both. `-service install` now refuses that layout. To move an install, run these steps in PowerShell as Administrator. Use only the new binary for every step, because the old service account could change the old one.
+
+1. Download and verify the new release. Run the first two commands above: they make the two folders and copy the new `s-hole.exe` to `C:\Program Files\s-hole`. Do not copy the sample `config.yaml`.
+2. Stop and remove the old service. These commands find the service by its name, so they also remove the old one:
+
+   ```powershell
+   & "C:\Program Files\s-hole\s-hole.exe" -service stop
+   & "C:\Program Files\s-hole\s-hole.exe" -service uninstall
+   ```
+
+3. Open `C:\s-hole\config.yaml` and make sure that it holds only your settings. The old service account could change it, for example to point `query_log.database` at a system file. Then copy it to `C:\ProgramData\s-hole`. If you use DNS over TLS, also copy the certificate and the key. If a path in the config is an absolute path in `C:\s-hole`, make it relative.
+4. Delete the old query history and blocklists, then the old folder:
+
+   ```powershell
+   & "C:\Program Files\s-hole\s-hole.exe" -purge -config C:\s-hole\config.yaml
+   Remove-Item -Recurse C:\s-hole
+   ```
+
+5. Install and start the service with the `-service install` and `-service start` commands above.
+
+s-hole starts a new query history and downloads the blocklists again. Do not copy `queries.db` or the downloaded blocklists to the new folder: the service can write only the files that it creates, so it cannot use copied files.
 
 `-service install` sets the service to restart 5 seconds after a failure, like `Restart=on-failure` in the systemd unit. A failure is a crash, or a DNS listener that stops with an error while s-hole runs. If you installed the service with an older version, it does not have these restart actions. To add them without a reinstall, run these two commands as Administrator:
 
@@ -780,7 +818,7 @@ you turn query lines on.
 The service starts in the directory of its config file. If a path in the
 config is relative (for example `query_log.database`, `blocking.cache_dir`,
 `query_log.file`, or `dns.dot_cert`), s-hole looks for the file next to
-`config.yaml`. For example, `queries.db` becomes `C:\s-hole\queries.db`.
+`config.yaml`. For example, `queries.db` becomes `C:\ProgramData\s-hole\queries.db`.
 
 ### Monitoring (Prometheus + Grafana)
 
@@ -939,7 +977,7 @@ All implementation packages live under `internal/` so they cannot be imported by
 | `internal/api` | HTTP handlers and embedded web UI |
 | `internal/config` | YAML loading with defaults, config problems, and the privacy and security warnings |
 | `internal/redact` | Hides secrets (user info, query strings) in URLs that s-hole shows |
-| `internal/service` | Windows Service integration (build-tagged) |
+| `internal/service` | Windows Service integration (the SCM calls are build-tagged; the access-list rules and the event-log handler are not) |
 
 ### Dependencies
 
@@ -985,7 +1023,7 @@ Coverage targets (checked in review, not a strict CI gate; run
 
 The `cmd/s-hole` bootstrap and the platform-specific `internal/service` glue sit
 below these targets: the uncovered region is the `main()` wiring and the
-Windows-only SCM and Event Log glue, which need a running binary or Windows and
+Windows-only SCM, Event Log, and access-list glue, which need a running binary or Windows and
 are exercised by manual smoke tests, not unit tests. Run `go test -cover ./...`
 for the current numbers.
 

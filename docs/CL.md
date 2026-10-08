@@ -120,6 +120,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 104](cls/CL-104.md) | Admin API hardening: a Fetch Metadata check refuses requests from another site, the allowlist API refuses public suffixes and adds at most 1,000 runtime entries, the dashboard script moves to `app.js` so the CSP allows no inline script, and net/http's own error lines name no client (b/103) |
 | [CL 105](cls/CL-105.md) | Purge overwrites the query files with zeros: the query log file before it is emptied or deleted, and, when s-hole is stopped, the database, `-wal`, and `-shm` files before they are deleted; links are refused |
 | [CL 106](cls/CL-106.md) | Linux and Docker deploy hardening: a systemd sandbox in the unit (`AF_NETLINK` kept for the LAN check), hardened `docker run` examples, and why the bridge example publishes port 53 on an IPv4 address |
+| [CL 107](cls/CL-107.md) | Windows service access list: the binary in `C:\Program Files\s-hole`, the config and data in `C:\ProgramData\s-hole`; the service writes only the files that it creates; `-service install` refuses a binary that the service can change and a config folder item that another account owns; the Windows purge counts hard links (b/104) and empties the query log file (b/105) |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

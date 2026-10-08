@@ -3087,3 +3087,72 @@ writer replaces every IP address in the line (IPv4 and IPv6, with or without
 a port) with `client` and logs the line through the `api` logger at ERROR as
 `admin HTTP server error`, with the first line in `detail` and the stack
 trace in `stack`. `http.ErrAbortHandler` still writes no line.
+
+## b/104: service: the Windows service account could change its own binary and config
+
+**Priority:** P2
+**Component:** service
+**Status:** Fixed in CL 107
+**Filed:** 2026-10-09
+
+### Description
+
+`-service install` gave the config folder an access list in which the
+service account `NT SERVICE\s-hole` had "modify" (`0x1301bf`), inherited by
+everything in the folder. The README put the binary and the config in that
+folder (`C:\s-hole`), so the service account could change or replace
+`s-hole.exe` and `config.yaml`. A program that took control of the s-hole
+process could replace the binary. An administrator who later ran
+`s-hole.exe -purge`, `-check-config`, or `-service uninstall` from that
+folder then ran the program as Administrator. A changed config could also
+point `query_log.database` at a system file, which an offline `-purge` run as
+Administrator then overwrote with zeros and deleted. On Windows, the purge
+also did not count hard links (`linkCount` returned 1), so a hard link that
+the service made in the folder could point the purge at another file. On
+Linux the binary belongs to root and the config is `640 root:s-hole`, so
+Linux did not have this path.
+
+### Fix
+
+The layout is the binary in `C:\Program Files\s-hole` and the config and the
+data in `C:\ProgramData\s-hole`. The config folder's access list gives the
+service account read and execute on everything, "add file" and "add
+subfolder" on the folder itself, and full control only of the files and
+folders that it creates (CREATOR OWNER). `-service install` refuses when the
+service account could change or replace the binary (the binary, its folder,
+and every folder above it), when the binary is in the config folder, when
+`config.yaml` does not exist, and when the config folder is a drive root, the
+Windows folder or a folder in it, Program Files, ProgramData, the user's
+profile folder, or the folder that holds the profiles. After it sets the
+access list, it also refuses when the config folder holds a link, or a file
+or folder that an account other than SYSTEM, the Administrators group, the
+service, or the installing account owns: before the install, every user can
+add files to a new folder in ProgramData, and the owner of a file can change
+its access list. A failure to set the access list now stops the install. On
+Windows, `linkCount` reads the link count through the file handle, so
+`ZeroFile` refuses a file with more than one hard link there too.
+
+## b/105: querylog: the Windows dashboard purge could not empty the query log file
+
+**Priority:** P3
+**Component:** querylog
+**Status:** Fixed in CL 107
+**Filed:** 2026-10-09
+
+### Description
+
+`FileLogger.Purge` overwrote the query log file with zeros through a second
+handle, then emptied it with `Truncate(0)` on the handle that the logger
+writes through. That handle is opened with `os.O_APPEND`. On Windows, Go
+opens an append handle without the right to write data (`FILE_WRITE_DATA`),
+so `Truncate` failed with `Access is denied`. The dashboard purge reported
+`query log file: empty failed`, and the file kept its size. The zeros were
+written, so no query line stayed in the file. Found in the CL 107 live test
+on Windows 11; `master` had the same result.
+
+### Fix
+
+When `Truncate` on the append handle fails, `truncate` empties the file
+through a new handle (`truncateFile`). It does so only when the path still
+names the open log file (`os.SameFile`), so a purge after a log rotation does
+not empty another file.

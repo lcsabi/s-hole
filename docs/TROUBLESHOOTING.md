@@ -144,6 +144,27 @@ s-hole keeps running as it was.
 | `msg="config problem"` | A key is unknown or set twice, or s-hole does not accept its value. | Correct the setting that `key` names. `problem` tells what is wrong. To check a file without the installer, run `s-hole -check-config -config <file>`. |
 | `msg="config load failed"` | s-hole cannot use the file at all. | Read [s-hole does not start](#s-hole-does-not-start). |
 
+## The Windows service install fails
+
+`-service install` checks the binary and the config folder before it changes
+anything. After it sets the folder's access list, it checks the owners of
+the files and folders in the config folder and looks for links. If a check
+fails, it logs `msg="service install failed"` and installs no service. Run
+every command in PowerShell as Administrator. The README section
+[Windows (system service)](../README.md#windows-system-service) shows the
+layout that install accepts.
+
+| You see in `err` | What it means | What to do |
+|---|---|---|
+| `the service account NT SERVICE\s-hole could change or replace <binary> through: <path> (<rights>)` | The service account can change the binary, its folder, or a folder above it. For example, in a new folder under `C:\`, such as `C:\s-hole`, every signed-in user can change files. | Copy `s-hole.exe` to `C:\Program Files\s-hole` and run the install from there. To move an install from `C:\s-hole`, follow the [upgrade steps](../README.md#upgrade-from-an-install-in-cs-hole). |
+| `s-hole.exe is in the config folder` | The binary and `config.yaml` are in the same folder. The service can add files to the config folder, for example a DLL next to the binary. | Put the binary in `C:\Program Files\s-hole` and the config in `C:\ProgramData\s-hole`. |
+| `config folder <folder> cannot get the service access list` | The config folder is a drive root, the Windows folder or a folder in it, `C:\Program Files`, `C:\ProgramData`, your user profile folder, or `C:\Users`. The new access list would also apply to every file in it, so other programs would lose access. | Put `config.yaml` in a folder of its own, such as `C:\ProgramData\s-hole`. |
+| `config file:` and `The system cannot find the file specified` (or `the path specified`) | No file is at the `-config` path. Without `-config`, the path is `config.yaml` in the current folder. | Give the full path of the config file, for example `-config C:\ProgramData\s-hole\config.yaml`. |
+| `config file <path> is not a regular file` | The `-config` path names a folder or another item that is not a file. | Give the full path of `config.yaml`, for example `-config C:\ProgramData\s-hole\config.yaml`. |
+| `the config folder <folder> holds items that another account owns, or links: <paths>` | The owner of each item is not SYSTEM, the Administrators group, the service, or your account, or the item is a link or a junction. Before the install, every user could add files to the folder, and the owner of a file could still change it. The folder already has its new access list. | Check where the items come from. Delete them, then run the install again. |
+| `connect to SCM: Access is denied` | PowerShell does not run as Administrator. | Open PowerShell with **Run as administrator** and run the command again. |
+| `set the access list of <folder>`, `read the access list of <path>`, or `read the owner of <path>` | s-hole cannot read or change an access list. Usually the folder is on a drive without access lists (FAT32, exFAT, or a network share). | Keep the binary and the config on an NTFS drive. |
+
 ## s-hole stopped while it ran
 
 ```bash
@@ -480,7 +501,7 @@ Under `"blocked"` it shows the blocked queries only.
 
 | You see | What it means | What to do |
 |---|---|---|
-| `msg="query log database open failed"` | s-hole cannot open `query_log.database`. The dashboard history and the recent queries stay empty. | Read `err` and `hint`. Under systemd, keep the file in `/var/lib/s-hole`. Under a Windows service, a relative path is next to `config.yaml`. With `permission denied`, the file or its directory belongs to another user. If `install-linux.sh` installed s-hole, run `sudo chown -R s-hole:s-hole /var/lib/s-hole`, or run the installer again. In Docker, run `sudo chown -R 65532:65532` on the host directory mounted at `/app`. |
+| `msg="query log database open failed"` | s-hole cannot open `query_log.database`. The dashboard history and the recent queries stay empty. | Read `err` and `hint`. Under systemd, keep the file in `/var/lib/s-hole`. Under a Windows service, a relative path is next to `config.yaml`. With `Access is denied` on Windows, an administrator copied the file into the config folder: the service can change only the files that it creates. Stop the service, move the file out of the folder, and start the service. With `permission denied`, the file or its directory belongs to another user. If `install-linux.sh` installed s-hole, run `sudo chown -R s-hole:s-hole /var/lib/s-hole`, or run the installer again. In Docker, run `sudo chown -R 65532:65532` on the host directory mounted at `/app`. |
 | `msg="query log commit failed, dropping batch"` | s-hole cannot write some queries to the database. | Read `err`. Check the free disk space. |
 | `msg="query log file open failed; query lines are not written"` | s-hole cannot open `query_log.file`. It does not write the lines to standard output instead. | Read `err`. Check that the directory exists and s-hole can write to it. |
 
@@ -499,7 +520,7 @@ purge overwrites the query log file with zeros and then empties it.
 | You see | What it means | What to do |
 |---|---|---|
 | `query database ... not found at <path>` or `query log file ... not found at <path>`, then a note | No file is at that path, so the purge deleted nothing there. Usually, the command ran in a directory other than s-hole's working directory. | If an earlier purge deleted the file, do nothing. Otherwise, run the purge again in s-hole's working directory. For an install by `install-linux.sh`, run `sudo sh -c 'cd /var/lib/s-hole && s-hole -purge -config /etc/s-hole/config.yaml'`. On Windows, the purge already starts relative paths in the folder of `config.yaml`, so the file is not there. |
-| `query database ... FAILED delete failed: ... not overwritten`, or the same for `query log file` | s-hole is stopped. The file is a symbolic link, is not a regular file, or (on Linux and macOS) has more than one hard link. The purge does not overwrite such a file, so it keeps it. | Find out why. If you made the link, overwrite and delete the file yourself, and delete each of its other names (on Linux, for example, `shred -u <file>`). If you did not make it, treat it as a sign that someone changed the data directory. |
+| `query database ... FAILED delete failed: ... not overwritten`, or the same for `query log file` | s-hole is stopped. The file is a symbolic link, is not a regular file, or has more than one hard link. The purge does not overwrite such a file, so it keeps it. | Find out why. If you made the link, overwrite and delete the file yourself, and delete each of its other names (on Linux, for example, `shred -u <file>`). If you did not make it, treat it as a sign that someone changed the data directory. |
 | `query log file ... FAILED emptied, but not overwritten with zeros: ...` | s-hole runs. The purge emptied the open log file but did not overwrite it with zeros first. The path is a link, another file now has the path (for example, after a log rotation), or the overwrite failed; the text after the colon says which. | If a tool rotates the log, overwrite or delete the rotated files yourself. If the path is a link, see the row above. |
 | `downloaded blocklists ... none found in <dir>` | No downloaded list is in that directory: s-hole has not downloaded one there, or a purge deleted them. The lists hold no personal data, so this line gives no note. | No action is necessary. When s-hole starts, it downloads each list that it does not find. |
 

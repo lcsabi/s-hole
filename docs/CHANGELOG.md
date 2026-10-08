@@ -47,6 +47,12 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 
 ### Fixed
 
+- **The Windows dashboard purge empties the query log file.** On Windows,
+  the **Delete history** button overwrote the query log file with zeros but
+  could not empty it: the step failed with `empty failed: ... Access is
+  denied`, and the file kept its size. Now s-hole empties the file through a
+  second handle, after it checks that the path still names the open log
+  file. (CL 107, b/105)
 - **Subnet masking fails closed.** Under `query_log.clients: "subnet"`, a
   client value that s-hole cannot parse is now stored or logged empty, not
   unchanged. The allowlist audit line was affected: for a requester with a
@@ -121,8 +127,8 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   database and its `-wal` and `-shm` files with zeros before it deletes
   them. Before, a stopped purge only deleted the files, and a purge of a
   running s-hole only emptied the log file, so the history stayed in free
-  disk blocks. The purge does not overwrite through a symbolic link or (on
-  Linux and macOS) a file with more than one hard link. When s-hole is
+  disk blocks. The purge does not overwrite through a symbolic link or a file
+  with more than one hard link. When s-hole is
   stopped, it keeps that file; when s-hole runs, it still empties the log
   file. In both cases it reports the step as failed. The overwrite is best
   effort (see `PRIVACY.md`). (CL 105)
@@ -140,6 +146,22 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   without an address, Docker relays IPv6 queries with the bridge gateway
   (for example `172.17.0.1`) as the source, so the LAN check cannot refuse
   an IPv6 source from the internet. (CL 106)
+- **The Windows service can no longer change its binary or its config.**
+  `-service install` gave the service account "modify" on the config
+  folder, and the README put the binary there too. A program that took
+  control of s-hole could replace `s-hole.exe` or `config.yaml`. An
+  administrator who ran that binary later (for example, with `-purge`) then
+  ran the program as Administrator. Now the service can read the config
+  folder and change only the files that it creates. `-service install`
+  refuses a binary that the service account can change or replace, a binary
+  in the config folder, a missing `config.yaml`, a shared config folder such
+  as a drive root, and a config folder that holds a link or a file that
+  another account owns. Put the binary in `C:\Program Files\s-hole` and
+  the config in `C:\ProgramData\s-hole`. An installed service keeps the
+  old access list until you move it. To move an install from `C:\s-hole`,
+  follow "Upgrade from an install in `C:\s-hole`" in the README. On
+  Windows, the purge now also refuses a file with more than one hard link.
+  (CL 107, b/104)
 
 ## [2.0.1] - 2026-10-08
 

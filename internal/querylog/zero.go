@@ -32,10 +32,11 @@ const zeroChunk = 64 << 10
 // new blocks, so it is best effort (see PRIVACY.md).
 //
 // The offline purge can run as root in the data directory, which the s-hole
-// user owns. So ZeroFile refuses a symbolic link, a file that is not a
-// regular file, and (on Unix) a file with more than one hard link: the
-// overwrite would otherwise reach a file that another name points to. A missing file returns
-// an error that matches fs.ErrNotExist.
+// user owns, or on Windows as an administrator in the config folder, where
+// the service account can create files. So ZeroFile refuses a symbolic link,
+// a file that is not a regular file, and a file with more than one hard
+// link: the overwrite would otherwise reach a file that another name points
+// to. A missing file returns an error that matches fs.ErrNotExist.
 func ZeroFile(path string) error {
 	return zeroFile(path, nil)
 }
@@ -72,8 +73,13 @@ func writeZeros(f *os.File, path string, lfi, want os.FileInfo) error {
 		return refused(path, "changed while it was opened; not overwritten")
 	case want != nil && !os.SameFile(fi, want):
 		return refused(path, "is not the open query log file; not overwritten")
-	case linkCount(fi) > 1:
-		return refused(path, fmt.Sprintf("has %d hard links; not overwritten", linkCount(fi)))
+	}
+	links, err := linkCount(f, fi)
+	if err != nil {
+		return err
+	}
+	if links > 1 {
+		return refused(path, fmt.Sprintf("has %d hard links; not overwritten", links))
 	}
 	zeros := make([]byte, zeroChunk)
 	for off := int64(0); off < fi.Size(); off += zeroChunk {
@@ -83,4 +89,23 @@ func writeZeros(f *os.File, path string, lfi, want os.FileInfo) error {
 		}
 	}
 	return f.Sync()
+}
+
+// truncateFile empties the file at path through a new handle, but only when
+// it is still the file want: the query log path can name another file after
+// a log rotation.
+func truncateFile(path string, want os.FileInfo) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|openFlags, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(fi, want) {
+		return refused(path, "is not the open query log file; not emptied")
+	}
+	return f.Truncate(0)
 }

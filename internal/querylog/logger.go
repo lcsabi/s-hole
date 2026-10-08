@@ -206,14 +206,17 @@ func (l *FileLogger) truncate() error {
 	// The file is open for append, which writes only at the end, so the
 	// zeros go through a second handle on the same file. A failed overwrite
 	// still empties the file, and Purge reports the failure.
-	var zerr error
-	if fi, err := f.Stat(); err != nil {
-		zerr = err
-	} else {
+	fi, zerr := f.Stat()
+	if zerr == nil {
 		zerr = zeroFile(l.path, fi)
 	}
 	if err := f.Truncate(0); err != nil {
-		return err
+		// On Windows a handle opened for append has no right to write
+		// data, so Truncate fails (b/105). Empty the file through a second
+		// handle, as for the zeros.
+		if fi == nil || truncateFile(l.path, fi) != nil {
+			return err
+		}
 	}
 	if zerr != nil {
 		return fmt.Errorf("%w: %w", ErrNotOverwritten, zerr)

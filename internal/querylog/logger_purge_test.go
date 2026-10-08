@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -57,6 +58,11 @@ func TestFileLogger_PurgeDoesNotOverwriteAnotherFileAtThePath(t *testing.T) {
 	defer closeFileLogger(t, l)
 	moved := filepath.Join(dir, "q.log.1")
 	if err := os.Rename(path, moved); err != nil {
+		if runtime.GOOS == "windows" {
+			// Windows refuses to rename a file that s-hole holds open, so a
+			// log rotation cannot move the open log there.
+			t.Skipf("Windows refuses to rename the open log file, so a rotation cannot happen while s-hole runs: %v", err)
+		}
 		t.Fatal(err)
 	}
 	other := []byte("another file " + purgeMarker + "\n")

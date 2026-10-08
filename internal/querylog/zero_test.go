@@ -138,3 +138,80 @@ func TestZeroFile_RefusesDirectory(t *testing.T) {
 		t.Errorf("a file in the directory changed: %q", got)
 	}
 }
+
+func TestTruncateFile_EmptiesTheSameFile(t *testing.T) {
+	// b/105: truncateFile empties the file at path through a new handle when
+	// it is the file that the caller has open, also while a handle opened
+	// for append is open. Writes through that handle then start at 0.
+	path := filepath.Join(t.TempDir(), "q.log")
+	if err := os.WriteFile(path, markerContent(zeroChunk+5), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := OpenPrivateFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := truncateFile(path, fi); err != nil {
+		t.Fatalf("truncateFile = %v, want nil", err)
+	}
+	if got := fileBytes(t, path); len(got) != 0 {
+		t.Errorf("the file holds %d bytes after truncateFile, want 0", len(got))
+	}
+	if _, err := f.WriteString("after\n"); err != nil {
+		t.Fatal(err)
+	}
+	if got := fileBytes(t, path); string(got) != "after\n" {
+		t.Errorf("file = %q, want only the line written after truncateFile", got)
+	}
+}
+
+func TestTruncateFile_RefusesAnotherFile(t *testing.T) {
+	// b/105: when the path names another file (after a log rotation),
+	// truncateFile does not empty it.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "q.log")
+	content := markerContent(1000)
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(dir, "q.log.1")
+	if err := os.WriteFile(moved, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.Stat(moved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := truncateFile(path, want); !errors.Is(err, ErrRefused) {
+		t.Errorf("truncateFile(another file) = %v, want an error that matches ErrRefused", err)
+	}
+	if got := fileBytes(t, path); !bytes.Equal(got, content) {
+		t.Errorf("the other file at the path changed: %d bytes", len(got))
+	}
+}
+
+func TestTruncateFile_MissingFileIsNotCreated(t *testing.T) {
+	// b/105: a path with no file gives an error, and truncateFile does not
+	// create a file there.
+	dir := t.TempDir()
+	keep := filepath.Join(dir, "keep.log")
+	if err := os.WriteFile(keep, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(keep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "missing.log")
+	if err := truncateFile(path, fi); err == nil {
+		t.Error("truncateFile(missing) = nil, want an error")
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("truncateFile created %s (Lstat = %v)", path, err)
+	}
+}

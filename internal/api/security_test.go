@@ -159,8 +159,8 @@ func TestLocalHostnames(t *testing.T) {
 func TestCrossOriginProtection(t *testing.T) {
 	// A2 (b/074): a state-changing request that the browser marks as
 	// cross-site or same-site, or whose Origin host differs from Host, gets
-	// 403 and does nothing. GET and HEAD always pass, and a request without
-	// these headers (curl) passes.
+	// 403 and does nothing, and a request without these headers (curl)
+	// passes.
 	const host = "127.0.0.1:8080"
 	cases := []struct {
 		name string
@@ -208,12 +208,6 @@ func TestCrossOriginProtection(t *testing.T) {
 			rec = serve(h, http.MethodPost, "/api/purge", host, hdr, `{"confirm": true}`)
 			if tc.want == http.StatusForbidden && rec.Code != http.StatusForbidden {
 				t.Errorf("POST /api/purge = %d, want 403", rec.Code)
-			}
-
-			for _, m := range []string{http.MethodGet, http.MethodHead} {
-				if rec := serve(h, m, "/api/stats", host, tc.hdr, ""); rec.Code != http.StatusOK {
-					t.Errorf("%s /api/stats = %d, want 200", m, rec.Code)
-				}
 			}
 		})
 	}

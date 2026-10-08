@@ -117,6 +117,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 101](cls/CL-101.md) | LAN scope and local names: more local reverse zones, built-in `fritz.box`, public and CGNAT IPv4 interface subnets not LAN, fail-closed source check and subnet masking (b/100, b/101) |
 | [CL 102](cls/CL-102.md) | DNS server limits and DoT TLS 1.3: a cap on in-flight forwards (`shole_forward_limited_total`), a plain-TCP connection cap, DoT TLS 1.3 only, no DoH redirects (b/102) |
 | [CL 103](cls/CL-103.md) | Smaller Docker image (the file capability is set in the build stage, so the binary is stored once) and a privacy-first README intro |
+| [CL 104](cls/CL-104.md) | Admin API hardening: a Fetch Metadata check refuses requests from another site, the allowlist API refuses public suffixes and adds at most 1,000 runtime entries, the dashboard script moves to `app.js` so the CSP allows no inline script, and net/http's own error lines name no client (b/103) |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

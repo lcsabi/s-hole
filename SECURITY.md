@@ -87,11 +87,21 @@ Out of scope:
   `ReadTimeout=15s`, `WriteTimeout=30s`, `IdleTimeout=60s`, and a 64 KiB body
   cap on POST endpoints. Every route answers only a request addressed to an IP
   address, `localhost`, or the machine's own hostname (421 otherwise), which
-  stops DNS rebinding. `http.CrossOriginProtection` refuses cross-site
-  state-changing requests, and JSON endpoints require `application/json`.
-  Every response carries `Cache-Control: no-store`, a Content-Security-Policy,
-  `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`, and
-  `Cross-Origin-Resource-Policy: same-origin`.
+  stops DNS rebinding. A request that the browser marks as sent from another
+  site (`Sec-Fetch-Site: cross-site` or `same-site`) gets 403 on every route,
+  so a web page cannot time a GET reply or start an export through the
+  operator's browser. The one exception is a link that opens the dashboard
+  page (a top-level navigation to `/`). A request without this header
+  (`curl`, Prometheus, the healthcheck) passes. Browsers send this header
+  only to `localhost`, a loopback address, or HTTPS, so the check protects
+  the default `127.0.0.1:8080` bind. It does not protect a dashboard opened
+  by its LAN address over plain HTTP. `http.CrossOriginProtection`
+  also refuses cross-site state-changing requests, and JSON endpoints require
+  `application/json`. Every response carries `Cache-Control: no-store`, a
+  Content-Security-Policy that allows no inline script (the dashboard script
+  is a separate file), `X-Frame-Options: DENY`, `nosniff`,
+  `Referrer-Policy: no-referrer`, and `Cross-Origin-Resource-Policy:
+  same-origin`.
   None of this is authentication: the dashboard has no login (see
   `docs/ROADMAP.md` for the planned device pairing). A purge
   (`POST /api/purge`) is accepted only from the s-hole host itself.
@@ -107,7 +117,9 @@ Out of scope:
   requester's address only while `query_log.mode` records queries, masked by
   `query_log.clients` (no address under the defaults). An error from a client connection (a
   DNS reply or an admin API response that could not be sent) is logged
-  without socket addresses.
+  without socket addresses. The admin web server's own error lines (for
+  example, after a handler panic) go to the `api` logger at ERROR, with each
+  IP address replaced by `client` (b/103).
 - **URLs that s-hole shows** (logs, `/metrics` labels, `/api/stats`) hide
   user info and the query string, where a private list or DoH endpoint can
   keep a token.
@@ -122,7 +134,11 @@ Out of scope:
 - **Domain inputs** (blocklist lines, `blocking.allowlist` entries, and the
   allowlist API) are validated by `blocklist.ValidDomain`: length ≤ 253, an
   interior dot, letters, digits, and `.-_` only, no empty label, and no label
-  that starts or ends with `-`.
+  that starts or ends with `-`. The allowlist API also refuses a two-label
+  entry that starts with `co`, `com`, `org`, `net`, `gov`, `ac`, or `edu`
+  (such as `co.uk`), because it would unblock every site under that public
+  suffix. It keeps at most 1,000 entries that it added (a removal frees a
+  place); the entries in `blocking.allowlist` do not count.
 - **Profiling endpoints** (`/debug/pprof/*`) are off by default. They
   register only when `admin.pprof: true` is set (which also turns on
   mutex and block profiling), and s-hole then warns at startup and with every

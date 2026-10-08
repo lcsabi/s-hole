@@ -459,12 +459,16 @@ one until it is removed (the uninstaller now removes `/etc/s-hole` for you).
 The allowlist is two-tier today: declarative entries in `config.yaml` (re-read
 on every startup) and runtime entries added via the dashboard or
 `POST /api/allowlist` (in-memory only, lost on restart; see
-`store.AddToAllowlist`). An operator who allowlists a domain from the UI and
+`store.AddToAllowlistLimited`). An operator who allowlists a domain from the UI and
 later restarts the service is surprised when it re-blocks. Persist runtime
 additions so they survive a restart.
 
 Design decisions to settle in the CL:
 
+- **The cap (CL 104) must count persisted entries.** The API keeps at most
+  1,000 runtime entries, counted in the store's `runtime` set. Today a
+  restart clears that set, so it also resets the cap. Persisted entries must
+  load into the `runtime` set, so a restart does not reset the cap.
 - **A separate store, not a `config.yaml` rewrite.** The API must not edit
   `config.yaml`, since it carries comments, formatting, and is frequently managed by
   version control or config management. Persist runtime entries to a dedicated
@@ -1645,8 +1649,9 @@ complexity in the cache and the DNS write path.
 
 The admin API has no login (authentication is planned as device pairing, #42).
 Today its abuse defenses are the localhost-default bind, the Host check, the
-cross-origin check, the JSON content-type rule, the slowloris timeouts, the
-64 KiB body cap, and the `?limit=` clamp; there is no request-rate throttle. CL 81 added an export-only concurrency guard for the one endpoint whose
+Fetch Metadata check, the cross-origin check, the JSON content-type rule, the
+slowloris timeouts, the 64 KiB body cap, the `?limit=` clamp, and the
+1,000-entry cap on allowlist entries added through the API (CL 104); there is no request-rate throttle. CL 81 added an export-only concurrency guard for the one endpoint whose
 cost is unbounded, but a broad limiter across every route is a separate decision.
 It would touch every handler and would add a dependency (`golang.org/x/time/rate`)
 or a hand-rolled token bucket, which cuts against the dependency-minimalism and the
@@ -2092,7 +2097,9 @@ in its own console or log, which only someone with access to the host can see);
 scanning it on a phone gives that browser a signed device pass, and the
 dashboard admits only paired devices. Points to settle: where the pass lives
 (cookie), how to revoke a device, how a script authenticates, and how the
-Host and cross-origin checks fit. It needs its own CL.
+Host, Fetch Metadata, and cross-origin checks fit. Fetch Metadata does not
+cover a dashboard opened over plain HTTP by a LAN address, because browsers
+send the headers only to a trustworthy origin. It needs its own CL.
 
 ## 43. Adblock-format blocklists, with exceptions
 

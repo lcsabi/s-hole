@@ -41,6 +41,10 @@ type Store struct {
 	mu        sync.RWMutex
 	blocked   map[string]struct{}
 	allowlist map[string]struct{}
+	// runtime holds the allowlist entries that AddToAllowlistLimited added
+	// and that the config allowlist does not hold. Only these count toward
+	// the limit; the config allowlist has none.
+	runtime map[string]struct{}
 
 	// sources holds the last refresh's per-source health. It is kept in an
 	// atomic pointer rather than under mu so the /api/stats poll never
@@ -56,6 +60,7 @@ func NewStore() *Store {
 	return &Store{
 		blocked:   make(map[string]struct{}),
 		allowlist: make(map[string]struct{}),
+		runtime:   make(map[string]struct{}),
 	}
 }
 
@@ -65,6 +70,7 @@ func (s *Store) SetAllowlist(domains []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.allowlist = make(map[string]struct{}, len(domains))
+	s.runtime = make(map[string]struct{})
 	for _, d := range domains {
 		s.allowlist[normalize(d)] = struct{}{}
 	}
@@ -207,8 +213,10 @@ func (s *Store) Explain(domain string) Explanation {
 	return exp
 }
 
-// AddToAllowlist adds domain to the runtime allowlist. Effective
-// immediately; not persisted across restarts.
+// AddToAllowlist adds domain to the allowlist with no limit and does not
+// count it as a runtime entry. Effective immediately; not persisted across
+// restarts. The API uses AddToAllowlistLimited; tests use this method to
+// seed the store.
 func (s *Store) AddToAllowlist(domain string) {
 	d := normalize(domain)
 	s.mu.Lock()
@@ -216,12 +224,36 @@ func (s *Store) AddToAllowlist(domain string) {
 	s.mu.Unlock()
 }
 
-// RemoveFromAllowlist removes domain from the runtime allowlist. A no-op
-// if the domain is not currently allowlisted.
+// AddToAllowlistLimited adds domain to the runtime allowlist, like
+// AddToAllowlist, unless limit runtime entries are already there. Only
+// entries that this method added count; the config allowlist (SetAllowlist)
+// has no limit. It reports false when it refused the domain. A domain that
+// is already in the allowlist is always accepted and takes no new place, so
+// a repeated add stays idempotent at the limit. The check and the add share
+// one lock, so concurrent adds cannot pass the limit together.
+func (s *Store) AddToAllowlistLimited(domain string, limit int) bool {
+	d := normalize(domain)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.allowlist[d]; ok {
+		return true
+	}
+	if len(s.runtime) >= limit {
+		return false
+	}
+	s.allowlist[d] = struct{}{}
+	s.runtime[d] = struct{}{}
+	return true
+}
+
+// RemoveFromAllowlist removes domain from the allowlist (a config or a
+// runtime entry) and frees its runtime place. A no-op if the domain is not
+// currently allowlisted.
 func (s *Store) RemoveFromAllowlist(domain string) {
 	d := normalize(domain)
 	s.mu.Lock()
 	delete(s.allowlist, d)
+	delete(s.runtime, d)
 	s.mu.Unlock()
 }
 
@@ -245,7 +277,8 @@ func (s *Store) Len() int {
 	return len(s.blocked)
 }
 
-// AllowlistLen returns the number of domains in the runtime allowlist.
+// AllowlistLen returns the number of domains in the allowlist (config and
+// runtime entries).
 // Cheap counterpart to GetAllowlist for the /metrics scrape path; see
 // R34. Lock-held read; runs in O(1).
 func (s *Store) AllowlistLen() int {

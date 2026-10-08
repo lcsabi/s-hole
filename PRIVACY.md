@@ -35,7 +35,9 @@ as an audit line. The line has the address of the device that made the
 change only while `query_log.mode` records queries (`"blocked"` or `"all"`),
 masked by `query_log.clients`: no address under `"drop"`, the subnet under
 `"subnet"`, and the address under `"full"`. Under the defaults the line holds
-no address.
+no address. The lines that the admin web server writes on its own (for
+example, when a dashboard request fails with a program error) hold no address
+either: s-hole writes `client` in its place.
 
 ## What leaves the network
 
@@ -90,8 +92,13 @@ The dashboard and the REST API have no login. By default they listen on
 `127.0.0.1:8080`, this machine only. If you set `admin.listen` to a LAN
 address, every device on the LAN can read the stored history and change the
 allowlist, and s-hole warns. The server refuses requests addressed to a
-foreign hostname and cross-site requests that change something, so a web page
-cannot use your browser to read or change it. Every response carries
+foreign hostname and requests from another web site, so a web page cannot use
+your browser to reach it. A link from another page can still open the
+dashboard. Browsers mark a request from another site only when it goes to
+`localhost`, a loopback address, or HTTPS, so this protects the default
+`127.0.0.1:8080`. A web page can still send requests (but not read the
+replies) to a dashboard that you open by its LAN address over plain HTTP.
+Every response carries
 `Cache-Control: no-store`, so the browser does not keep query data on disk.
 The query filter you type is kept for the browser tab only (sessionStorage).
 

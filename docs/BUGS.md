@@ -3058,3 +3058,32 @@ redirect with an error. The redirected request is not sent, and the attempt
 fails like a transport error: the forwarder records the failure and tries the
 next upstream. The failure summary shows `redirect refused` with the
 configured URL through `redact.URL`, never the query or the redirect target.
+
+## b/103: api: a panic in an admin handler logged the client address through net/http
+
+**Priority:** P4
+**Component:** api
+**Status:** Fixed in CL 104
+**Filed:** 2026-10-08
+
+### Description
+
+The admin `http.Server` set no `ErrorLog`. When a handler panics, net/http
+recovers the panic and writes `http: panic serving <ip:port>: <value>` with
+up to 64 KiB of stack. Without an `ErrorLog` the line went through the `log`
+package to slog's default handler: stdout (the system journal under
+systemd) at INFO, with no `pkg` attribute, and with the client's address and
+port. The rule that the application log names no client did not reach this
+line, because the standard library writes it, not s-hole, so
+`redact.NetError` cannot cover it. At INFO, `journalctl -p warning` also
+missed it. The TLS handshake error line (`http: TLS handshake error from
+<ip:port>`) has the same form; it cannot fire while the admin server uses
+plain HTTP. No handler is known to panic, so the defect was latent.
+
+### Fix
+
+`Serve` sets `ErrorLog` to `newErrorLog()` (`internal/api/errorlog.go`). Its
+writer replaces every IP address in the line (IPv4 and IPv6, with or without
+a port) with `client` and logs the line through the `api` logger at ERROR as
+`admin HTTP server error`, with the first line in `detail` and the stack
+trace in `stack`. `http.ErrAbortHandler` still writes no line.

@@ -20,7 +20,7 @@ dashboard. You cannot turn these warnings off.
 | Per-minute graph: counts of queries, blocked, cached, and failed, with no domain or client. The counts over time show when the household is active | memory | off (follows `query_log.mode`: empty under `"none"`, blocked queries only under `"blocked"`) | 24 hours, and until a restart or a purge | anyone who can reach the dashboard | restart, or purge |
 | Since-start counters (total, blocked, local answers, cache hits, failures) | memory | on | until a restart | anyone who can reach the dashboard or `/metrics` | restart |
 | DNS response cache: recent answers, by name, type, and DNSSEC bits | memory | on (`dns.cache_entries`) | each answer's TTL, one day at most | nobody directly. A LAN device can query a name and tell from the response time whether another device queried it recently. The remaining TTL in the answer tells when. s-hole refuses a query that reads only the cache (RD=0), so each check also puts the name in the cache | restart, or purge |
-| Application log: startup, reloads, errors, failure summaries, uptime, and allowlist changes. No queried domain or client address (one exception below), and no total query count | the system journal, standard output, or the Windows Event Log | on | the log's own rules | root and the log groups; on Windows, every interactive user | outside s-hole |
+| Application log: startup (including the host's search domains that are not local and its interface subnets that are not LAN), reloads, errors, failure summaries, uptime, and allowlist changes. No queried domain or client address (one exception below), and no total query count | the system journal, standard output, or the Windows Event Log | on | the log's own rules | root and the log groups; on Windows, every interactive user | outside s-hole |
 | Downloaded blocklists (public lists) | `blocking.cache_dir` | on | replaced on each download | the s-hole user only | `s-hole -purge` |
 | Client labels (`query_log.client_names`): a name for each device or subnet address | `config.yaml` | none | until you edit the config | anyone who can reach the dashboard; the labels show on the dashboard, in the API, and in the query export | edit the config |
 | Allowlist | `config.yaml`, and memory for runtime additions | as configured | config: until you edit it; runtime: until a restart | anyone who can reach the dashboard | edit the config; remove an entry in the dashboard |
@@ -47,24 +47,42 @@ no address.
 s-hole sends nothing else: no telemetry, no update check, no crash report. The
 dashboard loads nothing from another site.
 
-Reverse lookups for private addresses stay on the LAN (`dns.local_ptr`, on by
-default).
+Reverse lookups for LAN addresses stay on the LAN (`dns.local_ptr`, on by
+default). s-hole answers "no such name" itself for the private and special
+ranges (RFC 6303 and RFC 6598: `10/8`, `172.16/12`, `192.168/16`,
+`100.64/10`, `127/8`, `169.254/16`, IPv6 unique-local and link-local, and
+others) and for the public IPv6 prefix of its own network interfaces. An
+IPv6 address made from a device's MAC address names that device, so a
+reverse lookup for it does not go to the upstream or to the router. If
+s-hole cannot read its interface addresses (it logs a WARN), it does not know
+that prefix, and those lookups go to the upstream.
 
 Names that only mean something on the LAN stay on the LAN too. s-hole sends a
 single-label name (`printer`, `wpad`) and a name under `.local`, `home.arpa`,
 `.internal`, `.test`, `.intranet`, `.private`, `.corp`, `.home`, `.lan`,
-`.localdomain`, or a domain in `dns.local_domains` only to an upstream with a
-LAN address, such as the router. With no such upstream, s-hole answers "no
+`.localdomain`, `fritz.box`, or a domain in `dns.local_domains` only to an
+upstream with a LAN address, such as the router. With no such upstream, s-hole answers "no
 such name" itself. A LAN upstream decides itself what it does with a name it
 cannot answer; many routers forward it to the internet provider. s-hole
 answers `localhost` names and names under `.onion`, `.invalid`, and `.alt`
 itself and sends them nowhere. There is no setting to turn this off.
 
+Devices add the router's search domain to short names, so a name such as
+`laptop.home.example` reaches s-hole. If the search domain of the s-hole
+host is not a local domain, s-hole logs an INFO line at startup that names
+it. s-hole sends names under that domain to every upstream until you add it
+to `dns.local_domains`. s-hole does not add it on its own: a search domain can
+be a public domain that the router cannot answer.
+
 ## Who can query s-hole
 
 s-hole answers devices on the local network only: loopback, private IPv4
-ranges, link-local, IPv6 unique-local addresses, and the subnets of its own
-network interfaces. It refuses every other source without recording it.
+ranges, link-local, IPv6 unique-local addresses, and the IPv6 subnets of its
+own network interfaces. A public or shared (CGNAT, `100.64.0.0/10`) IPv4
+subnet on an interface does not count: such a subnet usually faces the
+internet provider or a VPN, and s-hole logs a WARN that names it. s-hole
+refuses every other source, and every query whose source address it cannot
+read, without recording it.
 
 ## The dashboard and the API
 

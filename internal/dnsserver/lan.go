@@ -34,16 +34,30 @@ var lanRanges = []netip.Prefix{
 // ISP renumbers the IPv6 prefix or DHCP moves the host.
 const lanRefreshInterval = 30 * time.Second
 
+// readFailWarnInterval limits the WARN for a failed interface read to one an
+// hour: a sandbox that blocks the read makes every refresh fail.
+const readFailWarnInterval = time.Hour
+
 // lanACL decides whether a source address is on the LAN: inside lanRanges,
 // or inside a subnet of one of the host's own interfaces. The interface
-// subnets cover a LAN that uses public addresses, which is the usual case
-// for IPv6. A global IPv6 address with a prefix longer than /64 (a DHCPv6
-// /128, for example) counts as its /64, the size of an IPv6 LAN.
+// subnets cover a LAN that uses public IPv6 addresses, the usual case. A
+// global IPv6 address with a prefix longer than /64 (a DHCPv6 /128, for
+// example) counts as its /64, the size of an IPv6 LAN. An IPv4 interface
+// subnet counts only inside lanRanges: a public or shared (CGNAT,
+// 100.64.0.0/10) IPv4 subnet usually faces the internet provider or a VPN,
+// and its other hosts are not the household's devices.
 type lanACL struct {
 	onLink    atomic.Pointer[[]netip.Prefix]
 	mu        sync.Mutex // serialises refreshes
 	refreshed time.Time  // guarded by mu
-	addrs     func() ([]net.Addr, error)
+	// readFailWarned is when the last interface read failure was logged.
+	// Guarded by mu.
+	readFailWarned time.Time
+	// notAdmitted holds the IPv4 interface subnets of the last good read
+	// that are outside lanRanges, so each one is logged once, when it
+	// appears. Guarded by mu.
+	notAdmitted map[netip.Prefix]bool
+	addrs       func() ([]net.Addr, error)
 }
 
 func newLANACL() *lanACL {
@@ -61,9 +75,16 @@ func (a *lanACL) refresh(now time.Time) {
 	a.refreshed = now
 	addrs, err := a.addrs()
 	if err != nil {
-		return // keep the last good list
+		// Keep the last good list. Without one, only lanRanges are answered.
+		if a.readFailWarned.IsZero() || now.Sub(a.readFailWarned) >= readFailWarnInterval {
+			a.readFailWarned = now
+			logger.Warn("interface address read failed", "err", err,
+				"hint", "s-hole cannot see the subnets of this host's interfaces. Until a read works, it refuses devices that use a public IPv6 address, and reverse lookups for the LAN's own IPv6 prefix go upstream. Under systemd, the unit must allow AF_NETLINK in RestrictAddressFamilies")
+		}
+		return
 	}
 	var out []netip.Prefix
+	refused := map[netip.Prefix]bool{}
 	for _, ad := range addrs {
 		n, ok := ad.(*net.IPNet)
 		if !ok {
@@ -81,11 +102,34 @@ func (a *lanACL) refresh(now time.Time) {
 		if ip.Is6() && ip.IsGlobalUnicast() && bits > 64 {
 			bits = 64
 		}
-		if p, err := ip.Prefix(bits); err == nil {
-			out = append(out, p)
+		p, err := ip.Prefix(bits)
+		if err != nil {
+			continue
+		}
+		if p.Addr().Is4() && !inLANRanges(p) {
+			refused[p] = true
+			continue
+		}
+		out = append(out, p)
+	}
+	for p := range refused {
+		if !a.notAdmitted[p] {
+			logger.Warn("an interface subnet is not treated as LAN", "subnet", p.String(),
+				"hint", "s-hole refuses queries from this subnet. A public or shared (CGNAT, 100.64.0.0/10) IPv4 subnet usually faces the internet provider or a VPN. s-hole answers IPv4 devices only from 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, and link-local addresses")
 		}
 	}
+	a.notAdmitted = refused
 	a.onLink.Store(&out)
+}
+
+// inLANRanges reports whether the whole of p is inside one of lanRanges.
+func inLANRanges(p netip.Prefix) bool {
+	for _, r := range lanRanges {
+		if r.Bits() <= p.Bits() && r.Contains(p.Addr()) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *lanACL) contains(ip netip.Addr) bool {
@@ -99,6 +143,32 @@ func (a *lanACL) contains(ip netip.Addr) bool {
 			if pr.Contains(ip) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// ownGlobalV6 reports whether p is inside a global IPv6 subnet of one of the
+// host's interfaces: a reverse-lookup name under the LAN's own public IPv6
+// prefix. On a miss it reads the interface addresses again, like allows.
+func (a *lanACL) ownGlobalV6(p netip.Prefix) bool {
+	if a.underGlobalV6(p) {
+		return true
+	}
+	a.refresh(time.Now())
+	return a.underGlobalV6(p)
+}
+
+func (a *lanACL) underGlobalV6(p netip.Prefix) bool {
+	links := a.onLink.Load()
+	if links == nil {
+		return false
+	}
+	for _, l := range *links {
+		ip := l.Addr()
+		if ip.Is6() && ip.IsGlobalUnicast() && !ip.IsPrivate() &&
+			l.Bits() <= p.Bits() && l.Contains(p.Addr()) {
+			return true
 		}
 	}
 	return false

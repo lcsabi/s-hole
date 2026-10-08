@@ -3,9 +3,10 @@
 //  0. Refuses a query from outside the LAN (see lan.go). Answers SERVFAIL to a
 //     query without exactly one question, NOTIMP to an opcode other than
 //     QUERY, and REFUSED to a query with RD=0, without counting or logging it.
-//  1. Intercepts PTR queries for RFC 6303 private-range zones and returns
+//  1. Intercepts PTR queries for the private reverse zones (RFC 6303 and
+//     RFC 6598) and for the LAN's own global IPv6 prefix, and returns
 //     authoritative NXDOMAIN locally, without consulting the blocklist,
-//     cache, or upstream (see privateReverseZones, isPrivatePTR).
+//     cache, or upstream (see privateReverseZones, ownPrefixPTR).
 //  2. Answers localhost names and never-resolved names (.onion, .invalid,
 //     .alt) locally, and LAN-only names (such as "printer" or "nas.lan")
 //     locally while no upstream is on the LAN (see localnames.go).
@@ -45,6 +46,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 
@@ -72,55 +74,129 @@ type Logger interface {
 	Log(rec querylog.Record)
 }
 
-// privateReverseZones lists the RFC 6303 locally-served DNS reverse zones.
-// PTR queries whose names fall under any of these zones are answered locally
-// with authoritative NXDOMAIN when localPTR is enabled: no public resolver
-// holds records for RFC 1918 or ULA addresses, so forwarding only wastes a
-// round-trip and leaks internal LAN addresses to the upstream resolver.
+// privateReverseZones holds the reverse zones that s-hole answers itself
+// when localPTR is on: the locally served zones of RFC 6303 (the IPv6
+// documentation prefix included), with the shared address space that
+// RFC 6598 adds to that list. A PTR query under one of them gets authoritative
+// NXDOMAIN. No public resolver holds records for these addresses, so
+// forwarding only wastes a round-trip and tells the upstream which LAN
+// addresses the devices talk to.
 //
-// IPv4 zones: RFC 1918 (10/8, 172.16/12, 192.168/16).
-// IPv6 zones: RFC 4193 ULA fc00::/7 (c.f, d.f) and RFC 4291 link-local
-// fe80::/10 (8.e.f, 9.e.f, a.e.f, b.e.f).
-var privateReverseZones = []string{
-	// 10.0.0.0/8
-	"10.in-addr.arpa.",
-	// 172.16.0.0/12 (second octet 16-31)
-	"16.172.in-addr.arpa.", "17.172.in-addr.arpa.", "18.172.in-addr.arpa.",
-	"19.172.in-addr.arpa.", "20.172.in-addr.arpa.", "21.172.in-addr.arpa.",
-	"22.172.in-addr.arpa.", "23.172.in-addr.arpa.", "24.172.in-addr.arpa.",
-	"25.172.in-addr.arpa.", "26.172.in-addr.arpa.", "27.172.in-addr.arpa.",
-	"28.172.in-addr.arpa.", "29.172.in-addr.arpa.", "30.172.in-addr.arpa.",
-	"31.172.in-addr.arpa.",
-	// 192.168.0.0/16
-	"168.192.in-addr.arpa.",
-	// fc00::/7 ULA, covers fc::/8 and fd::/8
-	"c.f.ip6.arpa.", "d.f.ip6.arpa.",
-	// fe80::/10 link-local, third nibble is 8, 9, a, or b
-	"8.e.f.ip6.arpa.", "9.e.f.ip6.arpa.", "a.e.f.ip6.arpa.", "b.e.f.ip6.arpa.",
+// IPv4: 0/8, 10/8, 100.64/10 (RFC 6598, CGNAT and Tailscale), 127/8,
+// 169.254/16, 172.16/12, 192.168/16, the three documentation networks
+// (192.0.2/24, 198.51.100/24, 203.0.113/24), and 255.255.255.255.
+// IPv6: the unspecified (::) and loopback (::1) addresses, ULA fc00::/7,
+// link-local fe80::/10, and documentation 2001:db8::/32.
+//
+// The keys are lowercase with the trailing root dot.
+var privateReverseZones = reverseZones()
+
+func reverseZones() map[string]bool {
+	zones := []string{
+		"0.in-addr.arpa.",
+		"10.in-addr.arpa.",
+		"127.in-addr.arpa.",
+		"254.169.in-addr.arpa.",
+		"168.192.in-addr.arpa.",
+		"2.0.192.in-addr.arpa.",
+		"100.51.198.in-addr.arpa.",
+		"113.0.203.in-addr.arpa.",
+		"255.255.255.255.in-addr.arpa.",
+		// :: and ::1, one label per nibble
+		strings.Repeat("0.", 32) + "ip6.arpa.",
+		"1." + strings.Repeat("0.", 31) + "ip6.arpa.",
+		// fc00::/7 ULA, covers fc::/8 and fd::/8
+		"c.f.ip6.arpa.", "d.f.ip6.arpa.",
+		// fe80::/10 link-local, third nibble is 8, 9, a, or b
+		"8.e.f.ip6.arpa.", "9.e.f.ip6.arpa.", "a.e.f.ip6.arpa.", "b.e.f.ip6.arpa.",
+		// 2001:db8::/32 documentation
+		"8.b.d.0.1.0.0.2.ip6.arpa.",
+	}
+	// 172.16.0.0/12: second octet 16-31
+	for i := 16; i <= 31; i++ {
+		zones = append(zones, strconv.Itoa(i)+".172.in-addr.arpa.")
+	}
+	// 100.64.0.0/10 (RFC 6598): second octet 64-127
+	for i := 64; i <= 127; i++ {
+		zones = append(zones, strconv.Itoa(i)+".100.in-addr.arpa.")
+	}
+	out := make(map[string]bool, len(zones))
+	for _, z := range zones {
+		out[z] = true
+	}
+	return out
 }
 
 // isPrivatePTR reports whether q is a PTR query whose name falls under one
-// of the RFC 6303 private-range reverse zones. Non-PTR queries return false
-// immediately without scanning the zone list.
+// of privateReverseZones. Non-PTR queries return false immediately without
+// scanning the zones.
 func isPrivatePTR(qtype uint16, name string) bool {
 	if qtype != dns.TypePTR {
 		return false
 	}
 	// DNS names are case-insensitive (RFC 1035 §2.3.3) and miekg/dns preserves
 	// the wire-format case verbatim, so a mixed-case name (e.g. from a dns-0x20
-	// forwarder) must be folded before matching the lowercase zone list; the
-	// same normalisation blocklist.normalize applies (b/032). Non-PTR queries
-	// already returned above, so this allocation only ever hits real PTR queries.
+	// forwarder) must be folded before matching the lowercase zones (b/032).
+	// strings.ToLower does not allocate for a lowercase name, the form
+	// ServeDNS passes.
 	name = strings.ToLower(name)
-	for _, zone := range privateReverseZones {
-		if name == zone || strings.HasSuffix(name, "."+zone) {
+	// Try the name and each parent: one map lookup per label.
+	for off, end := 0, false; !end; off, end = dns.NextLabel(name, off) {
+		if privateReverseZones[name[off:]] {
 			return true
 		}
 	}
 	return false
 }
 
-// Handler is the per-query routing logic: LAN check → RFC 6303 local PTR
+// ip6Prefix reads a reverse-lookup name under ip6.arpa ("b.a.9.8.[...].ip6.arpa.")
+// as the IPv6 prefix it names: each label is one hex nibble, the last
+// nibble first, so a name with n labels names a prefix of n*4 bits. It
+// returns false for a name with a label that is not one nibble, with more
+// than 32 nibbles, or outside ip6.arpa. name is lowercase with the trailing
+// root dot.
+func ip6Prefix(name string) (netip.Prefix, bool) {
+	const zone = ".ip6.arpa."
+	if !strings.HasSuffix(name, zone) {
+		return netip.Prefix{}, false
+	}
+	labels := strings.Split(strings.TrimSuffix(name, zone), ".")
+	if len(labels) > 32 {
+		return netip.Prefix{}, false
+	}
+	var b [16]byte
+	for i, l := range labels {
+		if len(l) != 1 {
+			return netip.Prefix{}, false
+		}
+		v, err := strconv.ParseUint(l, 16, 8)
+		if err != nil {
+			return netip.Prefix{}, false
+		}
+		// The last label is the first nibble of the address.
+		n := len(labels) - 1 - i
+		if n%2 == 0 {
+			b[n/2] |= byte(v) << 4
+		} else {
+			b[n/2] |= byte(v)
+		}
+	}
+	return netip.PrefixFrom(netip.AddrFrom16(b), len(labels)*4), true
+}
+
+// ownPrefixPTR reports whether q is a PTR query for an address in a global
+// IPv6 subnet of this host's interfaces, the LAN's own public prefix. An
+// IPv6 address made from the device's MAC address (EUI-64) names the
+// device, so these lookups stay on the LAN like the private ranges.
+func (h *Handler) ownPrefixPTR(qtype uint16, name string) bool {
+	if qtype != dns.TypePTR {
+		return false
+	}
+	p, ok := ip6Prefix(name)
+	return ok && h.lan.ownGlobalV6(p)
+}
+
+// Handler is the per-query routing logic: LAN check → local PTR
 // check → local-name check → blocklist check → cache check → upstream
 // forward. It is safe for
 // concurrent use; miekg/dns invokes ServeDNS from a separate goroutine
@@ -133,7 +209,7 @@ type Handler struct {
 	blockMode    string // "zero_ip" or "nxdomain"
 	blockTTL     uint32
 	cache        *cache.Cache // nil when caching is disabled
-	localPTR     bool         // when true, answer RFC 6303 private PTR queries locally
+	localPTR     bool         // when true, answer private and own-prefix PTR queries locally
 	queryPrivacy string       // "drop", "subnet", or "full"; how the client IP is stored
 	// logMode is query_log.mode: which queries are recorded. It decides what
 	// reaches the Top Domains and Top Clients tallies. The zero value records
@@ -153,7 +229,8 @@ type Handler struct {
 // NewHandler wires together all dependencies needed to answer a query.
 // c may be nil to disable response caching entirely (the handler then
 // always forwards on a cache miss). localPTR enables authoritative NXDOMAIN
-// replies for RFC 6303 private-range PTR queries; see privateReverseZones.
+// replies for PTR queries under privateReverseZones and under the host's
+// own global IPv6 prefixes.
 // queryPrivacy selects how the client IP is stored ("drop", "subnet", or
 // "full"); see querylog.MaskClientIP.
 func NewHandler(
@@ -226,14 +303,17 @@ func (h *Handler) tally(clientIP, domain string, blocked bool) (string, string) 
 	return clientIP, domain
 }
 
-// ServeDNS satisfies miekg/dns.Handler. It intercepts private-range PTR
-// queries (when localPTR is enabled) and local-only names, returns a sinkhole
-// reply for blocked domains, and otherwise serves from cache or forwards
-// upstream.
+// ServeDNS satisfies miekg/dns.Handler. It intercepts private and
+// own-prefix PTR queries (when localPTR is enabled) and local-only names,
+// returns a sinkhole reply for blocked domains, and otherwise serves from
+// cache or forwards upstream.
 func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// Answer the LAN only (see lan.go). This runs first, so a query from
-	// outside leaves no trace in the stats, the cache, or the query log.
-	if ip := remoteIP(w); ip.IsValid() && !h.lan.allows(ip) {
+	// outside leaves no trace in the stats, the cache, or the query log. A
+	// source that s-hole cannot read is not on the LAN either: the check
+	// fails closed (b/100).
+	ip := remoteIP(w).Unmap().WithZone("")
+	if !ip.IsValid() || !h.lan.allows(ip) {
 		refuse(w, req)
 		return
 	}
@@ -270,14 +350,15 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// stats counter (Top Clients) and every query-log sink downstream see the
 	// same value. See querylog.MaskClientIP and the query_log.clients config
 	// setting.
-	clientIP := querylog.MaskClientIP(clientAddr(w), h.queryPrivacy)
+	clientIP := querylog.MaskClientIP(ip.String(), h.queryPrivacy)
 
-	// RFC 6303: answer PTR queries for private-range zones (10/8, 172.16/12,
-	// 192.168/16, fc00::/7, fe80::/10) locally with authoritative NXDOMAIN.
-	// No public resolver holds records for these addresses; forwarding wastes
-	// a round-trip and leaks LAN addressing to the upstream. Checked before
-	// the blocklist so these queries are never counted as blocked.
-	if h.localPTR && isPrivatePTR(q.Qtype, domain) {
+	// Answer PTR queries for the private zones (RFC 6303, RFC 6598) and for
+	// the LAN's own global IPv6 prefix locally with authoritative NXDOMAIN.
+	// No public resolver holds records for the private addresses, and a
+	// reverse lookup of a LAN address tells the upstream which LAN
+	// addresses are in use. Checked before the blocklist so these queries are never counted
+	// as blocked.
+	if h.localPTR && (isPrivatePTR(q.Qtype, domain) || h.ownPrefixPTR(q.Qtype, domain)) {
 		ptrClient, ptrDomain := h.tally(clientIP, domain, false)
 		h.counter.RecordQuery(ptrClient, ptrDomain, false)
 		h.counter.RecordLocalPTR()
@@ -419,42 +500,12 @@ func (h *Handler) writeRcode(w dns.ResponseWriter, req *dns.Msg, rcode int) {
 }
 
 // writeLocalNXDOMAIN sends an authoritative NXDOMAIN reply for a name that
-// s-hole answers locally: a private-range PTR query (RFC 6303) or a local-only
-// name (see localnames.go).
+// s-hole answers locally: a local PTR query (a private reverse zone or the
+// LAN's own IPv6 prefix) or a local-only name (see localnames.go).
 func (h *Handler) writeLocalNXDOMAIN(w dns.ResponseWriter, req *dns.Msg) {
 	resp := new(dns.Msg)
 	resp.SetReply(req)
 	resp.Authoritative = true
 	resp.SetRcode(req, dns.RcodeNameError)
 	h.send(w, req, resp)
-}
-
-// clientAddr returns the query source IP (no port) for the stats top-clients
-// tracker and the query log. It runs on every query, so it reads the IP
-// directly from the concrete address type. The former SplitHostPort(addr.String())
-// form built "ip:port" (a JoinHostPort allocation) only to parse the port back
-// off, two allocations per query for a value we throw away. The type switch
-// keeps just the one IP.String() allocation; the SplitHostPort path stays as a
-// fallback for any other net.Addr implementation.
-func clientAddr(w dns.ResponseWriter) string {
-	switch a := w.RemoteAddr().(type) {
-	case *net.UDPAddr:
-		if a == nil {
-			return "unknown"
-		}
-		return a.IP.String()
-	case *net.TCPAddr:
-		if a == nil {
-			return "unknown"
-		}
-		return a.IP.String()
-	case nil:
-		return "unknown"
-	default:
-		host, _, err := net.SplitHostPort(a.String())
-		if err != nil {
-			return a.String()
-		}
-		return host
-	}
 }

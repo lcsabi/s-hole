@@ -132,7 +132,7 @@ func dotClient(pool *x509.CertPool) *dns.Client {
 
 func TestDoT_ServesQueryThroughSharedHandler(t *testing.T) {
 	// A blocked query over DoT gets the same sinkhole answer as plain DNS,
-	// and stats record the loopback client, which proves clientAddr and the
+	// and stats record the loopback client, which proves remoteIP and the
 	// query_privacy mask read the right address under tls.Conn.
 	certFile, keyFile, pool := writeTestCert(t, t.TempDir(), 1, time.Now().Add(90*24*time.Hour))
 	certs, err := NewCertReloader(certFile, keyFile)

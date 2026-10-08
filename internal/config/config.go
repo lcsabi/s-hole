@@ -71,11 +71,12 @@ type DNS struct {
 	Upstreams []string
 	// CacheEntries is the size of the DNS response cache; 0 turns it off.
 	CacheEntries int
-	// LocalPTR answers reverse lookups for private address ranges locally
-	// (RFC 6303) instead of forwarding them, so LAN addresses stay on the LAN.
+	// LocalPTR answers reverse lookups for private and special address
+	// ranges (RFC 6303, RFC 6598) and for the LAN's own public IPv6 prefix
+	// locally instead of forwarding them, so LAN addresses stay on the LAN.
 	LocalPTR bool
 	// LocalDomains are extra local-only suffixes, such as a router's own
-	// domain ("fritz.box"), in lowercase with no leading or trailing dot.
+	// domain ("home.example"), in lowercase with no leading or trailing dot.
 	// s-hole sends a name under one of them only to an upstream on the LAN,
 	// like the built-in local names (.lan, home.arpa, single-label names).
 	LocalDomains []string
@@ -484,7 +485,7 @@ func (c *Config) check() ([]Problem, error) {
 	var badLocal []string
 	c.DNS.LocalDomains, badLocal = filterLocalDomains(c.DNS.LocalDomains)
 	for _, d := range badLocal {
-		probs = append(probs, Problem{Key: "dns.local_domains", Detail: fmt.Sprintf("%q is not a valid domain and is ignored (use a name such as fritz.box or lan)", d)})
+		probs = append(probs, Problem{Key: "dns.local_domains", Detail: fmt.Sprintf("%q is not a valid domain and is ignored (use a name such as home.example or lan)", d)})
 	}
 
 	var badDomains []string
@@ -811,9 +812,9 @@ func filterAllowlist(entries []string) (valid, dropped []string) {
 
 // filterLocalDomains normalizes the dns.local_domains entries and splits them
 // into valid and invalid, preserving order and dropping duplicates. An entry
-// may be written as "fritz.box", ".fritz.box", "*.fritz.box", or
-// "fritz.box."; each is stored as "fritz.box" in lowercase. Unlike an
-// allowlist entry, a single label ("fritz", "lan") is valid: many routers use
+// may be written as "home.example", ".home.example", "*.home.example", or
+// "home.example."; each is stored as "home.example" in lowercase. Unlike an
+// allowlist entry, a single label ("box", "lan") is valid: many routers use
 // one as their local domain. An entry that is still not a DNS name (an empty
 // label, a space, a label that starts or ends with a hyphen) is dropped.
 //

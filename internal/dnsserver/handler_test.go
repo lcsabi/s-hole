@@ -2,7 +2,10 @@ package dnsserver
 
 import (
 	"net"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/lcsabi/s-hole/internal/blocklist"
 	"github.com/lcsabi/s-hole/internal/cache"
@@ -49,36 +52,11 @@ func fakeClient() *fakeWriter {
 	}
 }
 
-// customAddr is a net.Addr that is neither *net.UDPAddr nor *net.TCPAddr, to
-// exercise clientAddr's SplitHostPort fallback branch.
+// customAddr is a net.Addr that is neither *net.UDPAddr nor *net.TCPAddr.
 type customAddr string
 
 func (c customAddr) Network() string { return "custom" }
 func (c customAddr) String() string  { return string(c) }
-
-func TestClientAddr(t *testing.T) {
-	cases := []struct {
-		name   string
-		remote net.Addr
-		want   string
-	}{
-		{"udp", &net.UDPAddr{IP: net.IPv4(192, 168, 1, 5), Port: 5353}, "192.168.1.5"},
-		{"tcp", &net.TCPAddr{IP: net.IPv4(10, 0, 0, 9), Port: 853}, "10.0.0.9"},
-		{"ipv6 udp", &net.UDPAddr{IP: net.ParseIP("2001:db8::1"), Port: 53}, "2001:db8::1"},
-		{"nil interface", nil, "unknown"},
-		{"typed-nil udp", (*net.UDPAddr)(nil), "unknown"},
-		{"typed-nil tcp", (*net.TCPAddr)(nil), "unknown"},
-		{"other type with port", customAddr("host.example:99"), "host.example"},
-		{"other type no port", customAddr("host.example"), "host.example"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := clientAddr(&fakeWriter{remote: tc.remote}); got != tc.want {
-				t.Errorf("clientAddr(%v) = %q, want %q", tc.remote, got, tc.want)
-			}
-		})
-	}
-}
 
 func TestMaskClientIP(t *testing.T) {
 	cases := []struct {
@@ -90,12 +68,10 @@ func TestMaskClientIP(t *testing.T) {
 		{"full ipv4", "192.168.1.7", "full", "192.168.1.7"},
 		{"full ipv6", "2001:db8::1", "full", "2001:db8::1"},
 		{"drop ipv4", "192.168.1.7", "drop", ""},
-		{"drop unknown sentinel", "unknown", "drop", ""},
+		{"drop unparseable value", "unknown", "drop", ""},
 		{"subnet ipv4", "192.168.1.7", "subnet", "192.168.1.0"},
 		{"subnet ipv4 other octet", "10.4.5.6", "subnet", "10.4.5.0"},
 		{"subnet ipv6 to /64", "2001:db8:1:2:aaaa:bbbb:cccc:dddd", "subnet", "2001:db8:1:2::"},
-		{"subnet unknown sentinel passes through", "unknown", "subnet", "unknown"},
-		{"subnet non-ip passes through", "host.example", "subnet", "host.example"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -744,4 +720,345 @@ func BenchmarkHandler_ServeDNS_Parallel(b *testing.B) {
 // asQuery returns a client query for q as the cache keys it: CD and DO clear.
 func asQuery(q dns.Question) *dns.Msg {
 	return &dns.Msg{MsgHdr: dns.MsgHdr{RecursionDesired: true}, Question: []dns.Question{q}}
+}
+
+func TestServeDNS_StoredClientCarriesNoZone(t *testing.T) {
+	// b/101 (CL 101): a link-local source with a zone is stored without the
+	// zone: the address under clients "full", and its /64 under "subnet". The
+	// query log and the Top Clients tally see the same value.
+	cases := []struct {
+		mode string
+		want string
+	}{
+		{"full", "fe80::1"},
+		{"subnet", "fe80::"},
+	}
+	sources := map[string]net.Addr{
+		"udp": &net.UDPAddr{IP: net.ParseIP("fe80::1"), Port: 5353, Zone: "eth0"},
+		"tcp": &net.TCPAddr{IP: net.ParseIP("fe80::1"), Port: 5353, Zone: "eth0"},
+		// An address of another type keeps the zone in its String().
+		"other type": customAddr("[fe80::1%eth0]:5353"),
+	}
+	for _, tc := range cases {
+		for label, src := range sources {
+			t.Run(tc.mode+" "+label, func(t *testing.T) {
+				store := blocklist.NewStore()
+				store.Replace([]string{"ads.example.com"})
+				counter := stats.New()
+				log := &captureLogger{}
+				h := NewHandler(store, counter, nil, log, "zero", 60, nil, false, tc.mode)
+				h.lan = testACL(newFakeAddrs())
+				h.SetQueryLogMode("all")
+				w := &fakeWriter{remote: src}
+				h.ServeDNS(w, buildReq("ads.example.com"))
+				if w.written == nil || w.written.Rcode != dns.RcodeSuccess {
+					t.Fatalf("reply = %v, want the sinkhole answer", w.written)
+				}
+				if log.calls != 1 || log.clientIP != tc.want {
+					t.Errorf("logged client = %q (%d calls), want %q", log.clientIP, log.calls, tc.want)
+				}
+				clients := counter.Snapshot(10).TopClients
+				if len(clients) != 1 || clients[0].Name != tc.want {
+					t.Errorf("top clients = %v, want %q", clients, tc.want)
+				}
+			})
+		}
+	}
+}
+
+// ptrQuery builds a PTR query for name.
+func ptrQuery(name string) *dns.Msg {
+	req := new(dns.Msg)
+	req.SetQuestion(name, dns.TypePTR)
+	return req
+}
+
+// ip6Name returns the ip6.arpa name of the first n nibbles of addr: n = 32
+// names the address, n = 16 its /64.
+func ip6Name(t *testing.T, addr string, n int) string {
+	t.Helper()
+	full, err := dns.ReverseAddr(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels := dns.SplitDomainName(full)
+	nibbles := labels[:32] // the last two labels are "ip6" and "arpa"
+	return strings.Join(nibbles[32-n:], ".") + ".ip6.arpa."
+}
+
+// localPTRZoneNames are names under each reverse zone that s-hole answers
+// itself (RFC 6303, RFC 6598): a zone apex and a name under it.
+func localPTRZoneNames() []string {
+	names := []string{
+		"0.in-addr.arpa.", "0.0.0.0.in-addr.arpa.", "5.4.3.0.in-addr.arpa.",
+		"127.in-addr.arpa.", "1.0.0.127.in-addr.arpa.", "254.255.255.127.in-addr.arpa.",
+		"254.169.in-addr.arpa.", "4.3.254.169.in-addr.arpa.",
+		"2.0.192.in-addr.arpa.", "1.2.0.192.in-addr.arpa.",
+		"100.51.198.in-addr.arpa.", "7.100.51.198.in-addr.arpa.",
+		"113.0.203.in-addr.arpa.", "9.113.0.203.in-addr.arpa.",
+		"255.255.255.255.in-addr.arpa.",
+		strings.Repeat("0.", 32) + "ip6.arpa.",
+		"1." + strings.Repeat("0.", 31) + "ip6.arpa.",
+		"8.b.d.0.1.0.0.2.ip6.arpa.",
+		"1." + strings.Repeat("0.", 23) + "8.b.d.0.1.0.0.2.ip6.arpa.",
+		// Letter case does not matter.
+		"1.0.64.100.IN-ADDR.ARPA.", "4.3.254.169.In-Addr.Arpa.",
+		"8.B.D.0.1.0.0.2.IP6.ARPA.",
+	}
+	for i := 64; i <= 127; i++ {
+		names = append(names, strconv.Itoa(i)+".100.in-addr.arpa.", "9.8."+strconv.Itoa(i)+".100.in-addr.arpa.")
+	}
+	return names
+}
+
+// notLocalPTRNames are reverse names just outside the local zones, and public
+// ones.
+var notLocalPTRNames = []string{
+	"1.0.63.100.in-addr.arpa.", "63.100.in-addr.arpa.",
+	"1.0.128.100.in-addr.arpa.", "128.100.in-addr.arpa.",
+	"100.in-addr.arpa.", "1.0.0.100.in-addr.arpa.",
+	"1.255.255.255.in-addr.arpa.",
+	"1.3.0.192.in-addr.arpa.", "1.101.51.198.in-addr.arpa.", "1.114.0.203.in-addr.arpa.",
+	"1.0.0.1.in-addr.arpa.", "8.8.8.8.in-addr.arpa.", "1.1.168.128.in-addr.arpa.",
+	"1.0.255.169.in-addr.arpa.",
+	"2." + strings.Repeat("0.", 31) + "ip6.arpa.",
+	"9.b.d.0.1.0.0.2.ip6.arpa.",
+	"1.1.1.1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.7.4.6.0.6.2.ip6.arpa.",
+}
+
+func TestIsPrivatePTR_RFC6303Zones(t *testing.T) {
+	// CL 101: the RFC 6303 and RFC 6598 zones are local, in any letter case.
+	// The neighbors of each zone, public names, and other query types are
+	// not.
+	for _, name := range localPTRZoneNames() {
+		if !isPrivatePTR(dns.TypePTR, strings.ToLower(name)) {
+			t.Errorf("isPrivatePTR(PTR, %q) = false, want true", name)
+		}
+		for _, qtype := range []uint16{dns.TypeA, dns.TypeAAAA, dns.TypeTXT, dns.TypeSOA} {
+			if isPrivatePTR(qtype, strings.ToLower(name)) {
+				t.Errorf("isPrivatePTR(%s, %q) = true, want false", dns.TypeToString[qtype], name)
+			}
+		}
+	}
+	for _, name := range notLocalPTRNames {
+		if isPrivatePTR(dns.TypePTR, name) {
+			t.Errorf("isPrivatePTR(PTR, %q) = true, want false", name)
+		}
+	}
+}
+
+// ptrFixture is a handler with localPTR on, a LAN upstream that records
+// every query, and the given interface addresses.
+type ptrFixture struct {
+	h       *Handler
+	counter *stats.Counter
+	log     *captureLogger
+	rec     *queryRecorder
+	addrs   *fakeAddrs
+}
+
+func newPTRFixture(t *testing.T, localPTR bool, ifaces ...net.Addr) *ptrFixture {
+	t.Helper()
+	lan, rec := startRecordingUpstream(t, answerWith(net.IPv4(192, 168, 1, 1)), false)
+	store := blocklist.NewStore()
+	if localPTR {
+		// A local PTR is never blocked, even when the blocklist holds the
+		// name.
+		store.Replace([]string{"64.100.in-addr.arpa", "8.b.d.0.1.0.0.2.ip6.arpa", "127.in-addr.arpa"})
+	}
+	counter := stats.New()
+	log := &captureLogger{}
+	h := NewHandler(store, counter, []string{lan}, log, "zero", 60, nil, localPTR, "full")
+	h.SetQueryLogMode("all")
+	addrs := newFakeAddrs(ifaces...)
+	h.lan = testACL(addrs)
+	if !h.HasLANUpstream() {
+		t.Fatal("fixture: the loopback upstream is not on the LAN")
+	}
+	return &ptrFixture{h: h, counter: counter, log: log, rec: rec, addrs: addrs}
+}
+
+// local sends a PTR query for name and reports whether s-hole answered it
+// itself (authoritative NXDOMAIN, no upstream query). It fails the test on
+// any other mix.
+func (f *ptrFixture) local(t *testing.T, name string) bool {
+	t.Helper()
+	before := f.rec.count()
+	w := fakeClient()
+	f.h.ServeDNS(w, ptrQuery(name))
+	sent := f.rec.count() - before
+	r := w.written
+	switch {
+	case r == nil:
+		t.Fatalf("%s: no reply", name)
+	case sent == 0 && r.Rcode == dns.RcodeNameError && r.Authoritative:
+		return true
+	case sent == 1 && !r.Authoritative:
+		return false
+	}
+	t.Fatalf("%s: upstream got %d queries, reply %v", name, sent, r)
+	return false
+}
+
+func TestServeDNS_RFC6303ZonesAnsweredLocally(t *testing.T) {
+	// CL 101: a PTR query under an RFC 6303 or RFC 6598 zone gets an
+	// authoritative NXDOMAIN from s-hole. Nothing leaves s-hole, not even to
+	// a LAN upstream. It counts as a local PTR, never as blocked.
+	f := newPTRFixture(t, true)
+	names := localPTRZoneNames()
+	for _, name := range names {
+		if !f.local(t, name) {
+			t.Errorf("%s: forwarded, want a local NXDOMAIN", name)
+		}
+	}
+	if f.rec.count() != 0 {
+		t.Errorf("LAN upstream got %d queries, want 0", f.rec.count())
+	}
+	s := f.counter.Snapshot(0)
+	if s.LocalPTRCount != int64(len(names)) || s.BlockedCount != 0 || s.TotalQueries != int64(len(names)) {
+		t.Errorf("local PTR %d, blocked %d, total %d; want %d, 0, %d", s.LocalPTRCount, s.BlockedCount, s.TotalQueries, len(names), len(names))
+	}
+	if !f.log.last.Synthesized || f.log.last.Blocked || f.log.last.Rcode != dns.RcodeNameError {
+		t.Errorf("last query log record = %+v, want synthesized NXDOMAIN, not blocked", f.log.last)
+	}
+}
+
+func TestServeDNS_NotLocalPTRIsForwarded(t *testing.T) {
+	// CL 101: the neighbors of the local zones and public reverse names go
+	// upstream, and so does a non-PTR query under a local zone.
+	f := newPTRFixture(t, true)
+	for _, name := range notLocalPTRNames {
+		if f.local(t, name) {
+			t.Errorf("%s: answered locally, want forwarded", name)
+		}
+	}
+	before := f.rec.count()
+	w := fakeClient()
+	f.h.ServeDNS(w, buildReq("1.0.65.100.in-addr.arpa"))
+	if f.rec.count() != before+1 {
+		t.Errorf("A query under 65.100.in-addr.arpa: upstream got %d queries, want 1", f.rec.count()-before)
+	}
+	if s := f.counter.Snapshot(0); s.LocalPTRCount != 0 {
+		t.Errorf("local PTR = %d, want 0", s.LocalPTRCount)
+	}
+}
+
+func TestServeDNS_LocalPTROffForwardsNewZones(t *testing.T) {
+	// CL 101: with dns.local_ptr off, the RFC 6303 and RFC 6598 zones and the
+	// own-prefix names go upstream as before.
+	f := newPTRFixture(t, false, ipnet(t, "3fff:0:aa:bb::5/64"))
+	names := append(localPTRZoneNames(),
+		ip6Name(t, "3fff:0:aa:bb:1234:5678:9abc:def0", 32),
+		ip6Name(t, "3fff:0:aa:bb::", 16))
+	for _, name := range names {
+		if f.local(t, name) {
+			t.Errorf("%s: answered locally with local_ptr off, want forwarded", name)
+		}
+	}
+	if s := f.counter.Snapshot(0); s.LocalPTRCount != 0 {
+		t.Errorf("local PTR = %d, want 0", s.LocalPTRCount)
+	}
+}
+
+func TestHandler_OwnPrefixPTR(t *testing.T) {
+	// CL 101: a PTR name under ip6.arpa names a prefix of 4 bits per label.
+	// It is local when that prefix lies inside a global IPv6 subnet of a host
+	// interface: a full address in the /64 and the /64 itself, but not the
+	// /60 above it, another /64, a malformed name, or a ULA or link-local
+	// subnet (those have their own zones). A global /128 counts as its /64.
+	f := newPTRFixture(t, true,
+		ipnet(t, "3fff:0:aa:bb::5/64"),
+		ipnet(t, "3fff:0:cc:dd::5/128"),
+		ipnet(t, "3fff:0:ee:f0::5/64"), // the /60 and /48 above it start at the same address
+		ipnet(t, "fd00:1:2:3::5/64"),
+		ipnet(t, "fe80::5/64"),
+		ipnet(t, "192.168.1.5/24"),
+	)
+	full := ip6Name(t, "3fff:0:aa:bb:1234:5678:9abc:def0", 32)
+	labels := strings.Split(full, ".")
+	twoChar := "12." + strings.Join(labels[1:], ".")
+	nonHex := "g." + strings.Join(labels[1:], ".")
+	cases := []struct {
+		label string
+		qtype uint16
+		name  string
+		want  bool
+	}{
+		{"full address in /64", dns.TypePTR, full, true},
+		{"other address in /64", dns.TypePTR, ip6Name(t, "3fff:0:aa:bb::1", 32), true},
+		{"/64 zone", dns.TypePTR, ip6Name(t, "3fff:0:aa:bb::", 16), true},
+		{"/68 inside /64", dns.TypePTR, ip6Name(t, "3fff:0:aa:bb::", 17), true},
+		{"address in /64 of a /128", dns.TypePTR, ip6Name(t, "3fff:0:cc:dd:ffff::1", 32), true},
+		{"/60 above /64", dns.TypePTR, ip6Name(t, "3fff:0:aa:bb::", 15), false},
+		{"/48 above /64", dns.TypePTR, ip6Name(t, "3fff:0:aa:bb::", 12), false},
+		{"/64 at its /60 start", dns.TypePTR, ip6Name(t, "3fff:0:ee:f0::", 16), true},
+		{"/60 with the same start", dns.TypePTR, ip6Name(t, "3fff:0:ee:f0::", 15), false},
+		{"/48 with the same start", dns.TypePTR, ip6Name(t, "3fff:0:ee::", 12), false},
+		{"other /64", dns.TypePTR, ip6Name(t, "3fff:0:aa:bc::1", 32), false},
+		{"other /64 zone", dns.TypePTR, ip6Name(t, "3fff:0:aa:ba::", 16), false},
+		{"two-character label", dns.TypePTR, twoChar, false},
+		{"non-hex label", dns.TypePTR, nonHex, false},
+		{"33 nibbles", dns.TypePTR, "0." + full, false},
+		{"ULA subnet", dns.TypePTR, ip6Name(t, "fd00:1:2:3::9", 32), false},
+		{"link-local subnet", dns.TypePTR, ip6Name(t, "fe80::9", 32), false},
+		{"public address", dns.TypePTR, ip6Name(t, "2606:4700::1111", 32), false},
+		{"not PTR", dns.TypeA, full, false},
+		{"in-addr.arpa", dns.TypePTR, "9.1.168.192.in-addr.arpa.", false},
+	}
+	for _, tc := range cases {
+		if got := f.h.ownPrefixPTR(tc.qtype, tc.name); got != tc.want {
+			t.Errorf("%s: ownPrefixPTR(%s, %q) = %v, want %v", tc.label, dns.TypeToString[tc.qtype], tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestServeDNS_OwnPrefixPTRAnsweredLocally(t *testing.T) {
+	// CL 101: a PTR query under the LAN's own global IPv6 prefix gets an
+	// authoritative NXDOMAIN from s-hole, in any letter case, and reaches no
+	// upstream, not even the LAN one. Names outside the prefix go upstream.
+	f := newPTRFixture(t, true, ipnet(t, "3fff:0:aa:bb::5/64"))
+	local := []string{
+		ip6Name(t, "3fff:0:aa:bb:1234:5678:9abc:def0", 32),
+		strings.ToUpper(ip6Name(t, "3fff:0:aa:bb:1234:5678:9abc:def0", 32)),
+		ip6Name(t, "3fff:0:aa:bb::", 16),
+	}
+	for _, name := range local {
+		if !f.local(t, name) {
+			t.Errorf("%s: forwarded, want a local NXDOMAIN", name)
+		}
+	}
+	for _, name := range []string{
+		ip6Name(t, "3fff:0:aa:bb::", 15),
+		ip6Name(t, "3fff:0:aa:bc::1", 32),
+	} {
+		if f.local(t, name) {
+			t.Errorf("%s: answered locally, want forwarded", name)
+		}
+	}
+	s := f.counter.Snapshot(0)
+	if s.LocalPTRCount != int64(len(local)) || s.BlockedCount != 0 {
+		t.Errorf("local PTR %d, blocked %d; want %d, 0", s.LocalPTRCount, s.BlockedCount, len(local))
+	}
+}
+
+func TestServeDNS_OwnPrefixPTRFollowsRenumbering(t *testing.T) {
+	// CL 101: after the ISP renumbers the prefix, the next interface read
+	// (at most every 30 s) makes the new prefix local and the old one public.
+	f := newPTRFixture(t, true, ipnet(t, "3fff:0:1:1::5/64"))
+	oldName := ip6Name(t, "3fff:0:1:1::77", 32)
+	newName := ip6Name(t, "3fff:0:2:2::77", 32)
+	if !f.local(t, oldName) {
+		t.Fatal("old prefix: forwarded before renumbering, want local")
+	}
+	f.addrs.set(ipnet(t, "3fff:0:2:2::5/64"))
+	if f.local(t, newName) {
+		t.Error("new prefix: local inside 30 s of the last read, want forwarded")
+	}
+	ageACL(f.h.lan, lanRefreshInterval+time.Second)
+	if !f.local(t, newName) {
+		t.Error("new prefix: forwarded after the refresh, want local")
+	}
+	if f.local(t, oldName) {
+		t.Error("old prefix: local after renumbering, want forwarded")
+	}
 }

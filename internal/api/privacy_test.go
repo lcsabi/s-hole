@@ -660,6 +660,63 @@ func TestAllowlistAudit_ClientFollowsQueryLog(t *testing.T) {
 	}
 }
 
+func TestAllowlistAudit_SubnetDropsZonedRequester(t *testing.T) {
+	// b/101 (CL 101): under clients "subnet", a requester address that
+	// subnet masking cannot read (a link-local address with a zone) gives no
+	// client attribute, and neither the address nor the zone appears
+	// anywhere in the audit lines. A global IPv6 requester still logs its /64.
+	cases := []struct {
+		remote string
+		want   string   // "" means no client attribute
+		absent []string // text that must appear in no attribute
+	}{
+		{"[fe80::1%eth0]:51234", "", []string{"fe80::1", "eth0", "%", "fe80::", "51234"}},
+		{"[2001:db8:1:2::5]:51234", "2001:db8:1:2::", []string{"2001:db8:1:2::5", "51234"}},
+	}
+	for _, mode := range []string{"blocked", "all"} {
+		for _, tc := range cases {
+			t.Run(mode+"/"+tc.remote, func(t *testing.T) {
+				s, _ := newTestServer(t, nil)
+				s.SetPrivacy(PrivacyInfo{Mode: mode, Clients: "subnet"})
+				logs := captureJSONLogs(t)
+				h := s.handler()
+				if code := requestFrom(h, http.MethodPost, "/api/allowlist", tc.remote, "application/json", `{"domain":"audit.example.com"}`); code != http.StatusOK {
+					t.Fatalf("POST /api/allowlist = %d", code)
+				}
+				if code := requestFrom(h, http.MethodDelete, "/api/allowlist?domain=audit.example.com", tc.remote, "", ""); code != http.StatusOK {
+					t.Fatalf("DELETE /api/allowlist = %d", code)
+				}
+				for _, msg := range []string{"allowlist entry added", "allowlist entry removed"} {
+					lines := logs.withMsg(t, msg)
+					if len(lines) != 1 {
+						t.Fatalf("got %d %q lines, want 1", len(lines), msg)
+					}
+					client, has := lines[0]["client"]
+					if tc.want == "" && has {
+						t.Errorf("%q has client = %v, want no client attribute", msg, client)
+					}
+					if tc.want != "" && client != tc.want {
+						t.Errorf("%q client = %v, want %q", msg, client, tc.want)
+					}
+				}
+				for _, r := range logs.records(t) {
+					for k, v := range r {
+						if k == "time" {
+							continue
+						}
+						s := fmt.Sprint(v)
+						for _, a := range tc.absent {
+							if strings.Contains(s, a) {
+								t.Errorf("attribute %s = %q holds %q", k, s, a)
+							}
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestReload_LogLineHasNoClientAddress(t *testing.T) {
 	// PRIV-10: the "reload requested via API" line has no client attribute
 	// and no requester address under every query_log.clients value, over IPv4

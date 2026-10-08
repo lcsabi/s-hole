@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/miekg/dns"
 )
 
 // The host that runs s-hole must not use s-hole as its own DNS server. After
@@ -52,6 +54,54 @@ func nameservers(files []string) []netip.Addr {
 		_ = fh.Close()
 	}
 	return out
+}
+
+// searchDomains reads the search and domain lines of the resolver files that
+// exist: the domains that the host, and usually every device on the LAN
+// (they get the same DHCP search domain), append to a short name. It
+// returns each domain once, lowercase, with no trailing dot.
+func searchDomains(files []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, f := range files {
+		fh, err := os.Open(f)
+		if err != nil {
+			continue
+		}
+		sc := bufio.NewScanner(fh)
+		for sc.Scan() {
+			fields := strings.Fields(sc.Text())
+			if len(fields) < 2 || (fields[0] != "search" && fields[0] != "domain") {
+				continue
+			}
+			for _, d := range fields[1:] {
+				d = strings.TrimSuffix(strings.ToLower(d), ".")
+				if _, ok := dns.IsDomainName(d); !ok || d == "" || seen[d] {
+					continue
+				}
+				seen[d] = true
+				out = append(out, d)
+			}
+		}
+		_ = fh.Close()
+	}
+	return out
+}
+
+// logSearchDomains logs an INFO line for each search domain whose names
+// s-hole sends to every upstream. A device that uses the search domain asks
+// for "laptop.<domain>", and when the domain is the router's domain for LAN
+// devices, that name then reaches the public upstream. s-hole does not add
+// the domain on its own: a search domain can be a public domain that the
+// router cannot answer, and its names would then get NXDOMAIN.
+func logSearchDomains(log *slog.Logger, domains []string, keepsLocal func(string) bool) {
+	for _, d := range domains {
+		if keepsLocal(d) {
+			continue
+		}
+		log.Info("a search domain of this host is not a local domain", "domain", d,
+			"hint", "s-hole sends names under this domain to every upstream. If the router uses this domain for the devices on the LAN, add it to dns.local_domains. Do not add a public domain")
+	}
 }
 
 // hostUsesShole reports whether one of the host's resolvers is this s-hole:

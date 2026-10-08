@@ -80,7 +80,7 @@ func (c *Config) Warnings() []Warning {
 			"set admin.pprof to false when the investigation is done")
 	}
 	if !c.DNS.LocalPTR {
-		add("dns.local_ptr", "reverse lookups for private addresses go upstream and tell the upstream which addresses the LAN uses",
+		add("dns.local_ptr", "reverse lookups for LAN addresses go upstream and tell the upstream which addresses the LAN uses",
 			"set dns.local_ptr to true, unless a resolver on the LAN serves those reverse zones")
 	}
 	encrypted := false

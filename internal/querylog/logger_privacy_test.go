@@ -16,8 +16,8 @@ import (
 )
 
 func TestMaskClientIP_Modes(t *testing.T) {
-	// Q1: "full" keeps the address, "subnet" keeps IPv4 /24 and IPv6 /64 and
-	// passes a value that is not an IP through, and every other mode ("drop",
+	// Q1: "full" keeps the address, "subnet" keeps IPv4 /24 and IPv6 /64,
+	// and every other mode ("drop",
 	// "", or an unknown value) gives "" so a bad value fails closed.
 	cases := []struct {
 		ip, mode, want string
@@ -29,8 +29,6 @@ func TestMaskClientIP_Modes(t *testing.T) {
 		{"::ffff:192.168.1.77", "subnet", "192.168.1.0"},
 		{"2001:db8:1:2:3:4:5:6", "subnet", "2001:db8:1:2::"},
 		{"fe80::1234", "subnet", "fe80::"},
-		{"unknown", "subnet", "unknown"},
-		{"not an ip", "subnet", "not an ip"},
 		{"192.168.1.77", "drop", ""},
 		{"192.168.1.77", "", ""},
 		{"192.168.1.77", "Full", ""},
@@ -41,6 +39,19 @@ func TestMaskClientIP_Modes(t *testing.T) {
 	for _, tc := range cases {
 		if got := MaskClientIP(tc.ip, tc.mode); got != tc.want {
 			t.Errorf("MaskClientIP(%q, %q) = %q, want %q", tc.ip, tc.mode, got, tc.want)
+		}
+	}
+}
+
+func TestMaskClientIP_SubnetFailsClosed(t *testing.T) {
+	// b/101 (CL 101): under "subnet", a value that does not parse as an IP
+	// address gives "", so an address s-hole cannot mask is never stored.
+	for _, ip := range []string{
+		"fe80::1%eth0", "2001:db8::1%2", "garbage", "unknown", "", "192.168.1",
+		"192.168.1.77:53", "[2001:db8::1]:53", "192.168.1.0/24", " 192.168.1.77",
+	} {
+		if got := MaskClientIP(ip, "subnet"); got != "" {
+			t.Errorf("MaskClientIP(%q, \"subnet\") = %q, want \"\"", ip, got)
 		}
 	}
 }

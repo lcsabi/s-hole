@@ -183,7 +183,10 @@ func expiryWarning(notAfter, now time.Time) (msg, hint string) {
 // completes the TLS handshake with the certificate from certs. It binds
 // synchronously, so a port conflict or a bad address surfaces at startup
 // instead of inside a serving goroutine. The listener caps concurrent
-// connections at maxDoTConns and accepts TLS 1.2 or later.
+// connections at maxDoTConns and accepts TLS 1.3 only: in TLS 1.2, a resumed
+// session sends its session ticket in clear text, so a passive observer on
+// the LAN could link the DoT connections of one device. TLS 1.3 encrypts the
+// ticket. Android 10 and later and current DoT stub resolvers support TLS 1.3.
 func ListenDoT(addr string, certs *CertReloader) (net.Listener, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -191,15 +194,16 @@ func ListenDoT(addr string, certs *CertReloader) (net.Listener, error) {
 	}
 	tlsCfg := &tls.Config{
 		GetCertificate: certs.GetCertificate,
-		MinVersion:     tls.VersionTLS12,
+		MinVersion:     tls.VersionTLS13,
 	}
 	return tls.NewListener(newLimitListener(ln, maxDoTConns), tlsCfg), nil
 }
 
-// limitListener caps the number of open connections. Accept waits for a
-// free slot, and each connection frees its slot when it closes. Close also
-// wakes an Accept that is waiting for a slot, so shutdown cannot hang on a
-// full listener.
+// limitListener caps the number of open connections. It serves both the
+// plain-TCP listener (maxTCPConns) and the DoT listener (maxDoTConns). Accept
+// waits for a free slot, and each connection frees its slot when it closes.
+// Close also wakes an Accept that is waiting for a slot, so shutdown cannot
+// hang on a full listener.
 type limitListener struct {
 	net.Listener
 	slots     chan struct{}

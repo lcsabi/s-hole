@@ -48,7 +48,7 @@ groups:
           severity: warning
         annotations:
           summary: "s-hole cannot resolve many queries"
-          description: "s-hole is synthesizing SERVFAIL for more than 0.2 queries/s over 5 minutes. Every upstream is failing to answer. Check upstream reachability and the upstreams config."
+          description: "s-hole is synthesizing SERVFAIL for more than 0.2 queries/s over 5 minutes. Every upstream is failing to answer, or the forward limit was reached (see shole_forward_limited_total). Check upstream reachability and the upstreams config."
 
       - alert: UpstreamTransportFailing
         expr: rate(shole_upstream_transport_failures_total[5m]) > 0
@@ -57,7 +57,7 @@ groups:
           severity: warning
         annotations:
           summary: "An upstream resolver is failing at the transport level"
-          description: "Upstream {{ $labels.upstream }} has non-zero transport failures (a timeout, a refused connection, a reply that does not match the query, or for a DoH upstream a non-200 status or unparsable body) over 10 minutes. It may be unreachable or rate-limiting."
+          description: "Upstream {{ $labels.upstream }} has non-zero transport failures (a timeout, a refused connection, a reply that does not match the query, or for a DoH upstream a non-200 status, a redirect, or an unparsable body) over 10 minutes. It may be unreachable or rate-limiting."
 
       - alert: GoroutineLeak
         expr: shole_goroutines - (shole_goroutines offset 1h) > 100

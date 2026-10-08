@@ -67,11 +67,21 @@ Out of scope:
   read is refused. If s-hole cannot read the interface addresses (for
   example, a sandbox without `AF_NETLINK`), it logs a WARN at most once an
   hour.
+- **DNS server limits.** At most 512 queries wait for an upstream at the same
+  time. A query over this limit gets SERVFAIL at once, and
+  `shole_forward_limited_total` counts it. The plain-TCP listener caps open
+  connections at 256, like the DoT listener, and closes a connection
+  that sends nothing for 2 seconds, or that is idle for 8 seconds after a
+  query. These limits are global. A limit for
+  each client would keep client addresses in memory, so there is none.
 - **DNS answers.** The cache keeps a separate answer for each combination of
   the CD and DO bits, so one client's DNSSEC choice does not reach another
   client. An upstream reply must match the query's name, type, and class, or
   s-hole tries the next upstream. A cached answer lives one day at most. A
-  query with RD=0 (a query that reads only the cache) gets REFUSED.
+  query with RD=0 (a query that reads only the cache) gets REFUSED. The DoH
+  client follows no redirect: a DoH upstream that answers with a redirect is
+  a failed attempt, and s-hole tries the next upstream (b/102). So a query
+  goes only to a configured upstream, never over plain HTTP.
 - **Admin HTTP** binds to `127.0.0.1:8080` by default (LAN access is
   opt-in, with a repeating WARN). The server applies `ReadHeaderTimeout=5s`,
   `ReadTimeout=15s`, `WriteTimeout=30s`, `IdleTimeout=60s`, and a 64 KiB body
@@ -121,10 +131,13 @@ Out of scope:
   `ProtectHome=true`, `CapabilityBoundingSet=CAP_NET_BIND_SERVICE`, and
   `UMask=0077`.
 - **DNS over TLS** is off by default. When `dns.dot_listen` is set, the listener
-  caps open connections at 256, accepts TLS 1.2 or later, and bounds the TLS
-  handshake with the 2-second per-connection read timeout. The operator
-  supplies the certificate and private key; keep the key readable only by root
-  and the `s-hole` group (mode `640`). A reload whose files do not load keeps
+  caps open connections at 256, accepts TLS 1.3 only, and bounds the TLS
+  handshake with the 2-second per-connection read timeout. In TLS 1.2, a
+  resumed session sends its session ticket in clear text, so a passive
+  observer on the LAN could link the DoT connections of one device. Android 9,
+  the first version with Private DNS, supports only TLS 1.2 for it, so it
+  cannot use s-hole's DoT. The operator supplies the certificate and private
+  key; keep the key readable only by root and the `s-hole` group (mode `640`). A reload whose files do not load keeps
   the current certificate, and an expired or failing certificate shows in the
   log, `/metrics`, and the dashboard. The `dot` object in `/api/stats` includes
   the last reload error, which can name the certificate file path. Like the

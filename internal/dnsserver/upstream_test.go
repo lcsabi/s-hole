@@ -385,7 +385,8 @@ func TestForward_PackageLevelHonorsTracker(t *testing.T) {
 }
 
 // startDoHUpstream runs an httptest TLS server with the given handler and swaps
-// the package dohClient to trust its certificate. The swap is safe because the
+// the package dohClient for one that trusts its certificate and keeps the
+// production redirect policy. The swap is safe because the
 // package runs its tests sequentially (no t.Parallel); cleanup restores the
 // original client, closes idle connections, and stops the server so the goleak
 // TestMain stays green. It returns the RFC 8484 endpoint URL and a query
@@ -400,7 +401,7 @@ func startDoHUpstream(t *testing.T, h http.HandlerFunc) (endpoint string, hits *
 	}))
 
 	old := dohClient
-	dohClient = ts.Client()
+	dohClient = &http.Client{Transport: ts.Client().Transport, CheckRedirect: old.CheckRedirect}
 	t.Cleanup(func() {
 		dohClient.CloseIdleConnections()
 		dohClient = old

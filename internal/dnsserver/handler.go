@@ -16,7 +16,9 @@
 //  5. Forwards cache misses upstream in a fresh query that carries nothing
 //     from the client but the question and a few flags (see edns.go). A
 //     LAN-only name goes only to upstreams on the LAN. A reply that does not
-//     match the query is a failed attempt (see checkReply in upstream.go).
+//     match the query is a failed attempt (see checkReply in upstream.go). At
+//     most maxForwards queries wait for an upstream; a query over the limit
+//     gets SERVFAIL at once.
 //
 // UDP and TCP listeners (and the optional DNS-over-TLS listener, see dot.go)
 // run in parallel and share this handler; clients fall back to TCP
@@ -44,10 +46,12 @@ package dnsserver
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/lcsabi/s-hole/internal/blocklist"
@@ -65,6 +69,31 @@ var logger = logging.For("dns")
 // is the worst case). Bounds the goroutine lifetime under pathological
 // upstream behaviour.
 const queryDeadline = 10 * time.Second
+
+// maxForwards caps the queries that wait for an upstream at the same time.
+// A cache miss holds its goroutine, a socket, and an upstream connection for
+// up to queryDeadline, so without a cap one LAN device that sends many unique
+// names could hold thousands of them. A query over the cap gets SERVFAIL at
+// once (see ServeDNS). A home LAN rarely has more than a few dozen
+// forwards in flight, so 512 leaves wide headroom. The cap is global: a limit
+// for each client would keep client addresses in memory. It is a constant,
+// not a config setting, like maxDoTConns.
+const maxForwards = 512
+
+// forwardLimited counts the queries that got SERVFAIL because maxForwards
+// queries were already waiting for an upstream.
+var forwardLimited atomic.Uint64
+
+// ForwardLimited returns the number of queries that got SERVFAIL because
+// s-hole already had the maximum number of queries waiting for an upstream,
+// since startup. /metrics shows it as shole_forward_limited_total.
+func ForwardLimited() uint64 {
+	return forwardLimited.Load()
+}
+
+// errForwardLimit is the failure-summary cause for a query that got SERVFAIL
+// because maxForwards queries were already waiting for an upstream.
+var errForwardLimit = errors.New("too many queries were waiting for an upstream")
 
 // Logger is the minimal log sink used by the DNS handler. Both the file
 // and SQLite query loggers satisfy it; cmd/s-hole/main.go fans out to multiple via
@@ -224,6 +253,9 @@ type Handler struct {
 	// localDomains are the dns.local_domains suffixes, lowercase with the
 	// trailing root dot.
 	localDomains []string
+	// forwardSlots holds one token for each query that waits for an
+	// upstream; its capacity is maxForwards.
+	forwardSlots chan struct{}
 }
 
 // NewHandler wires together all dependencies needed to answer a query.
@@ -262,6 +294,7 @@ func NewHandler(
 		replies:      newReplyLog(),
 		lan:          newLANACL(),
 		upstreamIPs:  ips,
+		forwardSlots: make(chan struct{}, maxForwards),
 	}
 }
 
@@ -398,7 +431,8 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// the cache-hit flag (cache_hit) and the outcome (rcode + synthesized). A
 	// blocked query short-circuits before the cache, and a local-PTR or
 	// local-name answer never reaches it, so each logs CacheHit=false; total =
-	// blocked + localPTR + localName + cached + forwarded. The block reply is
+	// blocked + localPTR + localName + cached + forwarded (the remainder,
+	// including forward-limited queries). The block reply is
 	// synthesized locally: NXDOMAIN in "nxdomain" mode, NOERROR otherwise
 	// (matching writeSinkhole), neither a failure rcode.
 	if blocked {
@@ -428,12 +462,27 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// work in CL 76) so the row records rcode and the synthesized flag. A
 	// forwarded query is still always logged, in both the error and success
 	// branches, so the move does not lose the row a failed upstream used to log.
-	ctx, cancel := context.WithTimeout(context.Background(), queryDeadline)
-	defer cancel()
-	resp, err := forward(ctx, upstreamQuery(req), upstreams)
+	//
+	// A query over maxForwards is not forwarded. It is unresolved like a query
+	// that every upstream failed: s-hole synthesizes the SERVFAIL, and the
+	// query goes into the stats, the query log, and the failure summary the
+	// same way.
+	var resp *dns.Msg
+	var err error
+	select {
+	case h.forwardSlots <- struct{}{}:
+		ctx, cancel := context.WithTimeout(context.Background(), queryDeadline)
+		resp, err = forward(ctx, upstreamQuery(req), upstreams)
+		cancel()
+		<-h.forwardSlots
+	default:
+		forwardLimited.Add(1)
+		err = errForwardLimit
+	}
 	if err != nil {
-		// Unresolved: every upstream failed at the transport level or the
-		// deadline hit, so s-hole synthesizes the SERVFAIL.
+		// Unresolved: every upstream failed at the transport level, the
+		// deadline hit, or the forward limit was reached, so s-hole
+		// synthesizes the SERVFAIL.
 		// The failure goes into the once-a-minute summary (RunFailureReport),
 		// not a per-query WARN, and the summary holds no name, so the system
 		// log gets no query data.

@@ -278,7 +278,8 @@ var (
 // upstream's TLS connection alive: only the first query after startup or a long
 // idle gap pays the handshake, the rest reuse the warm connection. The
 // per-attempt deadline rides on the request context (like the UDP/TCP path), so
-// no Client.Timeout is set. Tests swap this var to trust an httptest TLS server.
+// no Client.Timeout is set. It follows no redirect (see refuseRedirect). Tests
+// swap this var to trust an httptest TLS server.
 var dohClient = &http.Client{
 	Transport: &http.Transport{
 		ForceAttemptHTTP2:   true,
@@ -286,6 +287,25 @@ var dohClient = &http.Client{
 		IdleConnTimeout:     90 * time.Second,
 		TLSHandshakeTimeout: perUpstreamTimeout,
 	},
+	CheckRedirect: refuseRedirect,
+}
+
+// errDoHRedirect is the error for a DoH reply that redirects. It holds no URL:
+// the redirect target comes from the upstream, and exchangeDoH names the
+// configured upstream through redact.URL instead.
+var errDoHRedirect = errors.New("redirect refused")
+
+// refuseRedirect is the redirect policy of dohClient: it refuses every
+// redirect, so the redirected request is not sent. Go's default policy sends
+// the POST again, with the query in its body, to the Location URL on a 307
+// or 308, and connects to the new host on a 301, 302, or 303. That host is
+// not in the config and can be a plain http:// URL, which sends the queried
+// name unencrypted (b/102). RFC 8484 does not need redirects. The error,
+// unlike http.ErrUseLastResponse, makes the attempt fail like a transport
+// error, so forwardWith tries the next upstream and no 3xx body is read as an
+// answer.
+func refuseRedirect(*http.Request, []*http.Request) error {
+	return errDoHRedirect
 }
 
 // maxDoHResponse caps a DoH response body read. dns.MaxMsgSize (65535) is the

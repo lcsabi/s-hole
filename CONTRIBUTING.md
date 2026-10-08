@@ -216,6 +216,8 @@ the banner. Then:
 - Make a second certificate over the same two files, send
   `kill -HUP "$(pidof s-hole)"` (or `POST /api/reload`), and check that a new connection gets the new serial:
   `echo | openssl s_client -connect 127.0.0.1:8853 -servername dns.home 2>/dev/null | openssl x509 -noout -serial`.
+- `echo | openssl s_client -connect 127.0.0.1:8853 -tls1_2` fails with
+  `alert protocol version`; with `-tls1_3` it connects.
 - Write garbage into `/tmp/cert.pem` and reload. The log shows a WARN, the
   header badge shows RELOAD FAILED, and the old serial is still served.
 

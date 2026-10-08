@@ -244,7 +244,7 @@ func clockTLSUpstream(t *testing.T, notBefore, notAfter time.Time) string {
 	pool := x509.NewCertPool()
 	pool.AddCert(cert)
 	old := dohClient
-	dohClient = &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}}
+	dohClient = &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}, CheckRedirect: old.CheckRedirect}
 	t.Cleanup(func() {
 		dohClient.CloseIdleConnections()
 		dohClient = old

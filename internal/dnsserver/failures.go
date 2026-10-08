@@ -3,6 +3,7 @@ package dnsserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -18,15 +19,19 @@ import (
 const failureReportInterval = time.Minute
 
 // failureLog collects unresolved queries between two summary lines: how many
-// there were, the last error from each upstream, and whether any error looks
-// like a wrong system clock. It holds no query name and no client: the system
-// journal keeps a log line where retention and purge cannot reach it, so the
-// name stays in the query log only.
+// there were, the last error from each upstream, whether any error looks like
+// a wrong system clock, and whether the forward limit was reached. It holds no
+// query name and no client: the system journal keeps a log line where
+// retention and purge cannot reach it, so the name stays in the query log
+// only.
 type failureLog struct {
 	mu     sync.Mutex
 	count  int
-	causes map[string]string // upstream -> last error text
+	causes map[string]string // upstream, "forward limit", or "query" -> last error text
 	clock  bool
+	// limited is set when a query got SERVFAIL because maxForwards queries
+	// were already waiting for an upstream.
+	limited bool
 }
 
 func newFailureLog() *failureLog {
@@ -48,6 +53,11 @@ func (f *failureLog) record(err error) {
 		}
 		return
 	}
+	if errors.Is(err, errForwardLimit) {
+		f.limited = true
+		f.causes["forward limit"] = err.Error()
+		return
+	}
 	f.causes["query"] = err.Error()
 }
 
@@ -55,8 +65,8 @@ func (f *failureLog) record(err error) {
 // starts a new interval.
 func (f *failureLog) flush() {
 	f.mu.Lock()
-	count, causes, clock := f.count, f.causes, f.clock
-	f.count, f.causes, f.clock = 0, make(map[string]string), false
+	count, causes, clock, limited := f.count, f.causes, f.clock, f.limited
+	f.count, f.causes, f.clock, f.limited = 0, make(map[string]string), false, false
 	f.mu.Unlock()
 	if count == 0 {
 		return
@@ -71,8 +81,13 @@ func (f *failureLog) flush() {
 		parts[i] = u + ": " + causes[u]
 	}
 	hint := "every upstream failed for these queries. Check the network path to the upstreams"
-	if clock {
+	switch {
+	case clock:
 		hint = "an upstream's TLS certificate looks expired or not yet valid, which usually means the system clock is wrong. Check the clock and NTP (timedatectl), then the network path to the upstreams"
+	case limited && len(causes) == 1:
+		hint = fmt.Sprintf("s-hole already had %d queries waiting for an upstream, so it answered SERVFAIL at once. A slow upstream or a device that sends many queries can cause this. Check the network path to the upstreams", maxForwards)
+	case limited:
+		hint = fmt.Sprintf("some queries got SERVFAIL at once because s-hole already had %d queries waiting for an upstream, and every upstream failed for the others. Check the network path to the upstreams", maxForwards)
 	}
 	logger.Warn("queries could not be resolved", "queries", count, "interval", failureReportInterval.String(),
 		"causes", strings.Join(parts, "; "), "hint", hint)

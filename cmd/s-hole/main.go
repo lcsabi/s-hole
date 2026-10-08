@@ -20,8 +20,9 @@
 //     (which exposes /healthz, /readyz, /metrics, and, opt-in via
 //     admin.pprof, /debug/pprof/* alongside the REST API)
 //   - launch the background goroutines: the stats line and blocklist reload
-//     tickers (both panic-recovered), the unresolved-query summary, the
-//     stale-row check, and the host-resolver check
+//     tickers (both panic-recovered), the failure summaries (unresolved
+//     queries and failed replies), the stale-row check, and the
+//     host-resolver check
 //   - either enter the Windows SCM event loop (service mode) or run the DNS
 //     server in the background and block until doStop completes the ordered
 //     teardown (interactive mode)
@@ -264,6 +265,7 @@ func main() {
 	releaseMemory()
 
 	counter := stats.New()
+	counter.SetQueryLogMode(cfg.QueryLog.Mode)
 
 	fileLog := newFileLogger(mainLog, cfg.QueryLog)
 

@@ -82,9 +82,10 @@ func stripOPT(resp *dns.Msg) {
 // had one (the client's UDP size and DO bit mirrored, with no options; RFC
 // 6891 forbids an OPT record in a reply to a query without one), truncates a
 // UDP reply to the size the client can take, and pads the reply when the
-// query came over DNS-over-TLS with a Padding option (RFC 8467). On a write
-// error it logs warnMsg (see warnAttrs).
-func (h *Handler) send(w dns.ResponseWriter, req, resp *dns.Msg, warnMsg, domain string) {
+// query came over DNS-over-TLS with a Padding option (RFC 8467). A write
+// error goes into the once-a-minute failed-reply summary (replyLog), not a
+// line of its own.
+func (h *Handler) send(w dns.ResponseWriter, req, resp *dns.Msg) {
 	resp.Id = req.Id
 	opt := req.IsEdns0()
 	if opt != nil {
@@ -101,7 +102,7 @@ func (h *Handler) send(w dns.ResponseWriter, req, resp *dns.Msg, warnMsg, domain
 		pad(resp, replyPadBlock)
 	}
 	if err := w.WriteMsg(resp); err != nil {
-		logger.Warn(warnMsg, h.warnAttrs(err, domain)...)
+		h.replies.record(err)
 	}
 }
 

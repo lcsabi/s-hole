@@ -17,18 +17,25 @@ dashboard. You cannot turn these warnings off.
 | Query history: time (UTC), domain, client (as `query_log.clients` allows), and outcome of each recorded query | SQLite file `query_log.database` | off | `query_log.retention_days`, default 7 days. Deleted rows are overwritten in the file | the s-hole user only (file mode `600`, data directory `700`); and anyone who can reach the dashboard | `s-hole -purge`, the dashboard's **Delete history** button on the s-hole host, or retention |
 | Query lines: the same fields as text | `query_log.file`: a file, or standard output | off | a file: until you delete it. Standard output: the system journal or the container log keeps it under its own rules | a file: the s-hole user only (mode `600`). The journal: root and the `adm` and `systemd-journal` groups (on Raspberry Pi OS the first user is in `adm`) | a file: `s-hole -purge`. The journal: `journalctl --rotate && journalctl --vacuum-time=1s` (deletes every service's logs) |
 | Top Domains and Top Clients | memory | follow `query_log.mode`; empty under `"none"` | until a restart or a purge | anyone who can reach the dashboard | restart, or purge |
-| Per-minute graph: counts of queries, blocked, cached, and failed, with no domain or client | memory | on | 24 hours, and until a restart or a purge | anyone who can reach the dashboard | restart, or purge |
+| Per-minute graph: counts of queries, blocked, cached, and failed, with no domain or client. The counts over time show when the household is active | memory | off (follows `query_log.mode`: empty under `"none"`, blocked queries only under `"blocked"`) | 24 hours, and until a restart or a purge | anyone who can reach the dashboard | restart, or purge |
 | Since-start counters (total, blocked, local answers, cache hits, failures) | memory | on | until a restart | anyone who can reach the dashboard or `/metrics` | restart |
 | DNS response cache: recent answers, by name, type, and DNSSEC bits | memory | on (`dns.cache_entries`) | each answer's TTL, one day at most | nobody directly. A LAN device can query a name and tell from the response time whether another device queried it recently. The remaining TTL in the answer tells when. s-hole refuses a query that reads only the cache (RD=0), so each check also puts the name in the cache | restart, or purge |
-| Application log: startup, reloads, errors | the system journal, standard output, or the Windows Event Log | on | the log's own rules | root and the log groups; on Windows, every interactive user | outside s-hole |
+| Application log: startup, reloads, errors, failure summaries, uptime, and allowlist changes. No queried domain or client address (one exception below), and no total query count | the system journal, standard output, or the Windows Event Log | on | the log's own rules | root and the log groups; on Windows, every interactive user | outside s-hole |
 | Downloaded blocklists (public lists) | `blocking.cache_dir` | on | replaced on each download | the s-hole user only | `s-hole -purge` |
 | Client labels (`query_log.client_names`): a name for each device or subnet address | `config.yaml` | none | until you edit the config | anyone who can reach the dashboard; the labels show on the dashboard, in the API, and in the query export | edit the config |
 | Allowlist | `config.yaml`, and memory for runtime additions | as configured | config: until you edit it; runtime: until a restart | anyone who can reach the dashboard | edit the config; remove an entry in the dashboard |
 
-The application log never holds a queried domain or a client address, with
-two exceptions. Under `query_log.mode: "all"`, a warning about one failed
-query can name its domain. An allowlist change through the API logs the
-domain and the address of the device that made the change, as an audit line.
+The application log never holds a queried domain or a client address, and
+its periodic stats line holds only the uptime, not the query counts. The
+dashboard and `/metrics` show the counts. Failures are counted in summaries
+of at most one line a minute (queries that could not be resolved, replies
+that could not be sent, queries sent unencrypted), with no domain and no
+client. One exception: an allowlist change through the API logs the domain
+as an audit line. The line has the address of the device that made the
+change only while `query_log.mode` records queries (`"blocked"` or `"all"`),
+masked by `query_log.clients`: no address under `"drop"`, the subnet under
+`"subnet"`, and the address under `"full"`. Under the defaults the line holds
+no address.
 
 ## What leaves the network
 

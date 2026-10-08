@@ -3,7 +3,6 @@ package dnsserver
 import (
 	"context"
 	"errors"
-	"net"
 	"sort"
 	"strings"
 	"sync"
@@ -12,38 +11,33 @@ import (
 	"github.com/lcsabi/s-hole/internal/redact"
 )
 
-// failureReportInterval is how often the unresolved-query summary is logged.
-// One summary line per interval replaces the old per-query WARN, which put
-// every failed name in the system log, and, during an outage, one line per
-// query (b/078).
+// failureReportInterval is how often the unresolved-query and failed-reply
+// summaries are logged. One summary line per interval replaces the old
+// per-query WARN, which put every failed name in the system log, and, during
+// an outage, one line per query (b/078).
 const failureReportInterval = time.Minute
 
 // failureLog collects unresolved queries between two summary lines: how many
 // there were, the last error from each upstream, and whether any error looks
-// like a wrong system clock. It keeps a query name only when the query log
-// records every query (query_log.mode "all"), so the summary never holds
-// more than the query log.
+// like a wrong system clock. It holds no query name and no client: the system
+// journal keeps a log line where retention and purge cannot reach it, so the
+// name stays in the query log only.
 type failureLog struct {
-	mu         sync.Mutex
-	count      int
-	causes     map[string]string // upstream -> last error text
-	clock      bool
-	lastDomain string
+	mu     sync.Mutex
+	count  int
+	causes map[string]string // upstream -> last error text
+	clock  bool
 }
 
 func newFailureLog() *failureLog {
 	return &failureLog{causes: make(map[string]string)}
 }
 
-// record adds one unresolved query. domain is "" unless the query log
-// records every query.
-func (f *failureLog) record(err error, domain string) {
+// record adds one unresolved query.
+func (f *failureLog) record(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.count++
-	if domain != "" {
-		f.lastDomain = domain
-	}
 	var fe *ForwardError
 	if errors.As(err, &fe) {
 		for _, c := range fe.Causes {
@@ -61,8 +55,8 @@ func (f *failureLog) record(err error, domain string) {
 // starts a new interval.
 func (f *failureLog) flush() {
 	f.mu.Lock()
-	count, causes, clock, domain := f.count, f.causes, f.clock, f.lastDomain
-	f.count, f.causes, f.clock, f.lastDomain = 0, make(map[string]string), false, ""
+	count, causes, clock := f.count, f.causes, f.clock
+	f.count, f.causes, f.clock = 0, make(map[string]string), false
 	f.mu.Unlock()
 	if count == 0 {
 		return
@@ -76,27 +70,75 @@ func (f *failureLog) flush() {
 	for i, u := range ups {
 		parts[i] = u + ": " + causes[u]
 	}
-	attrs := []any{"queries", count, "interval", failureReportInterval.String(), "causes", strings.Join(parts, "; ")}
-	if domain != "" {
-		attrs = append(attrs, "last_domain", domain)
-	}
 	hint := "every upstream failed for these queries. Check the network path to the upstreams"
 	if clock {
 		hint = "an upstream's TLS certificate looks expired or not yet valid, which usually means the system clock is wrong. Check the clock and NTP (timedatectl), then the network path to the upstreams"
 	}
-	attrs = append(attrs, "hint", hint)
-	logger.Warn("queries could not be resolved", attrs...)
+	logger.Warn("queries could not be resolved", "queries", count, "interval", failureReportInterval.String(),
+		"causes", strings.Join(parts, "; "), "hint", hint)
 }
 
-// RunFailureReport logs the unresolved-query summary and the plaintext
-// fallback count once per interval until ctx is cancelled. main runs it in a
-// goroutine next to the stats ticker.
+// maxReplyErrors caps the distinct error texts that one failed-reply summary
+// keeps. A failed write has few causes (a closed connection, a timeout, a
+// full buffer), so the cap only bounds memory.
+const maxReplyErrors = 8
+
+// replyLog collects the replies that s-hole could not send to a client
+// between two summary lines: how many there were and the distinct errors.
+// It holds no query name and no client, and an error keeps no address (see
+// redact.NetError). One summary line replaces the old WARN for each failed
+// write, which named the query under query_log.mode "all".
+type replyLog struct {
+	mu    sync.Mutex
+	count int
+	errs  map[string]struct{}
+}
+
+func newReplyLog() *replyLog {
+	return &replyLog{errs: make(map[string]struct{})}
+}
+
+// record adds one failed reply write.
+func (r *replyLog) record(err error) {
+	text := redact.NetError(err)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.count++
+	if len(r.errs) < maxReplyErrors {
+		r.errs[text] = struct{}{}
+	}
+}
+
+// flush logs the summary for the interval, if a write failed, and starts a
+// new interval.
+func (r *replyLog) flush() {
+	r.mu.Lock()
+	count, errs := r.count, r.errs
+	r.count, r.errs = 0, make(map[string]struct{})
+	r.mu.Unlock()
+	if count == 0 {
+		return
+	}
+	texts := make([]string, 0, len(errs))
+	for e := range errs {
+		texts = append(texts, e)
+	}
+	sort.Strings(texts)
+	logger.Warn("replies could not be sent", "replies", count, "interval", failureReportInterval.String(),
+		"errors", strings.Join(texts, "; "),
+		"hint", "a client closed the connection or left the network before s-hole replied. Many failures can mean a network problem on the s-hole host")
+}
+
+// RunFailureReport logs the unresolved-query summary, the failed-reply
+// summary, and the plaintext fallback count once per interval until ctx is
+// cancelled. main runs it in a goroutine next to the stats ticker.
 func (h *Handler) RunFailureReport(ctx context.Context) {
 	t := time.NewTicker(failureReportInterval)
 	defer t.Stop()
 	last := PlaintextFallbacks()
 	report := func() {
 		h.failures.flush()
+		h.replies.flush()
 		now := PlaintextFallbacks()
 		if n := now - last; n > 0 {
 			logger.Warn("queries were sent unencrypted", "queries", n, "interval", failureReportInterval.String(),
@@ -113,16 +155,4 @@ func (h *Handler) RunFailureReport(ctx context.Context) {
 			report()
 		}
 	}
-}
-
-// writeErr is the part of a reply-write error that is safe to log. A write
-// to a client returns a *net.OpError whose text includes the client's
-// address, which must not reach the system log (b/078), so only the
-// operation and the underlying error are kept.
-func writeErr(err error) string {
-	var op *net.OpError
-	if errors.As(err, &op) && op.Err != nil {
-		return op.Op + ": " + op.Err.Error()
-	}
-	return err.Error()
 }

@@ -613,7 +613,7 @@
   <div class="full panel">
     <div class="panel-hd">
       <span>Queries over time
-        <span class="legend">
+        <span class="legend" id="history-legend">
           <span id="legend-total"><span class="sw sw-total"></span>Total</span>
           <span><span class="sw sw-blocked"></span>Blocked</span>
           <span id="legend-cached"><span class="sw sw-cached"></span>Cached</span>
@@ -1078,14 +1078,15 @@
     // ── Query-volume chart ────────────────────────────────────
     let historyWindow = '24h';
     let historySeries = [];
-    // Where the series comes from: 'memory' (per-minute counts of every query
-    // for the last 24 hours, so every line is available under every setting)
-    // or 'database' (the stored history, for the 7d window). historyLogging is
-    // the mode the series reflects: 'all' for memory, and the database's mode
-    // for a stored series. Under 'blocked' the stored history holds blocked
-    // rows only, so the graph draws one labeled blocked line.
+    // Where the series comes from: 'memory' (per-minute counts for the last 24
+    // hours) or 'database' (the stored history, for the 7d window).
+    // historyLogging is the query_log.mode the series reflects; both sources
+    // follow it. Under 'blocked' the series holds blocked queries only, so the
+    // graph draws one labeled blocked line. Under 'none' s-hole records no
+    // counts over time, so the graph shows a note instead. It is '' until the
+    // first answer.
     let historySource = 'memory';
-    let historyLogging = 'all';
+    let historyLogging = '';
 
     // hexA turns a #rrggbb color (read from the theme CSS variables) into an
     // rgba() string, matching how the rest of the sheet writes translucent fills.
@@ -1103,7 +1104,7 @@
         const data = await fetch(`/api/history?window=${historyWindow}&bucket=1h`).then(r => r.json());
         historySeries = data.series || [];
         historySource = data.source || 'memory';
-        historyLogging = data.logging || 'all';
+        historyLogging = data.logging || 'none';
         drawHistory();
       } catch (e) { console.error('history fetch failed:', e); }
     }
@@ -1129,9 +1130,23 @@
       $('legend-cached').hidden = blockedOnly;
       $('legend-unresolved').hidden = blockedOnly;
       $('legend-upstream').hidden = blockedOnly;
+      const where = historySource === 'memory' ? 'counts only, kept in memory, last 24 hours' : 'stored history';
       $('history-note').textContent = blockedOnly
-        ? 'stored history: blocked queries only (query_log.mode is "blocked")'
-        : historySource === 'memory' ? 'counts only, kept in memory, last 24 hours' : 'stored history';
+        ? where + '; blocked queries only (query_log.mode is "blocked")'
+        : where;
+
+      // Under "none" s-hole records no counts over time (the per-minute graph
+      // follows query_log.mode), so say why the graph is empty instead of
+      // drawing a flat line that reads as a quiet network.
+      const off = mode === 'none';
+      $('history-legend').hidden = off;
+      if (off) {
+        $('history-note').textContent = '';
+        canvas.hidden = true;
+        empty.hidden = false;
+        empty.textContent = 'The graph is off: query_log.mode is "none", so s-hole does not record when queries occur. To turn it on, set query_log.mode to "blocked" or "all".';
+        return;
+      }
 
       // No series yet (the first poll has not answered). A quiet network still
       // gets a real zero-filled series, a flat line at the baseline.

@@ -1,106 +1,11 @@
 package stats
 
 import (
-	"bytes"
-	"encoding/json"
-	"io"
-	"log/slog"
-	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 )
-
-// TestCounter_Log checks that Log writes exactly one INFO record with msg
-// "stats" through the package logger, with each counter as its own
-// attribute, and nothing on stdout. The top-N lists are not logged (CL 89).
-func TestCounter_Log(t *testing.T) {
-	orig := slog.Default()
-	t.Cleanup(func() { slog.SetDefault(orig) })
-	var buf bytes.Buffer
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
-
-	c := New()
-	// 8 queries: 4 blocked (50.0 %), 1 local PTR, so 3 forwardable with
-	// 2 cache hits (66.7 %).
-	for i := 0; i < 4; i++ {
-		c.RecordQuery("1.2.3.4", "ads.example.com.", true)
-	}
-	for i := 0; i < 4; i++ {
-		c.RecordQuery("5.6.7.8", "google.com.", false)
-	}
-	c.RecordLocalPTR()
-	c.RecordCacheHit()
-	c.RecordCacheHit()
-	c.RecordForwardFailure()
-	for i := 0; i < 3; i++ {
-		c.RecordUpstreamError()
-	}
-
-	origStdout := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	os.Stdout = w
-	done := make(chan string)
-	go func() {
-		var out bytes.Buffer
-		io.Copy(&out, r)
-		done <- out.String()
-	}()
-	c.Log()
-	w.Close()
-	os.Stdout = origStdout
-	if stdout := <-done; stdout != "" {
-		t.Errorf("Log wrote to stdout directly: %q", stdout)
-	}
-
-	lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
-	if len(lines) != 1 || lines[0] == "" {
-		t.Fatalf("Log wrote %d records, want exactly 1: %q", len(lines), buf.String())
-	}
-	var rec map[string]any
-	if err := json.Unmarshal([]byte(lines[0]), &rec); err != nil {
-		t.Fatalf("record is not JSON: %q: %v", lines[0], err)
-	}
-
-	want := map[string]any{
-		"level":            "INFO",
-		"msg":              "stats",
-		"pkg":              "stats",
-		"queries":          float64(8),
-		"blocked":          float64(4),
-		"blocked_pct":      "50.0",
-		"local_ptr":        float64(1),
-		"local_names":      float64(0),
-		"cache_hits":       float64(2),
-		"cache_hit_pct":    "66.7",
-		"forward_failures": float64(1),
-		"upstream_errors":  float64(3),
-	}
-	for k, v := range want {
-		if rec[k] != v {
-			t.Errorf("%s = %#v, want %#v", k, rec[k], v)
-		}
-	}
-	uptime, ok := rec["uptime"].(string)
-	if !ok {
-		t.Fatalf("uptime = %#v, want a duration string", rec["uptime"])
-	}
-	if _, err := time.ParseDuration(uptime); err != nil {
-		t.Errorf("uptime = %q, want a duration string: %v", uptime, err)
-	}
-	// time and uptime are the only keys beyond want; no top-N lists.
-	for k := range rec {
-		if _, ok := want[k]; !ok && k != "time" && k != "uptime" {
-			t.Errorf("unexpected attribute %s = %v", k, rec[k])
-		}
-	}
-}
 
 func TestCounter_RecordAndSnapshot(t *testing.T) {
 	c := New()

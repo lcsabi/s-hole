@@ -1,5 +1,5 @@
-// Package stats tracks per-process query counters and top-N domain/client
-// tallies.
+// Package stats tracks per-process query counters, top-N domain/client
+// tallies, and the per-minute graph, which follows query_log.mode.
 //
 // total, cacheHit, localPTR, and localName are atomic and updated lock-free on
 // the hot path. blocked is mutex-guarded because RecordQuery's critical section
@@ -14,12 +14,11 @@
 // race against Snapshot (R31).
 //
 // The package is safe for concurrent use and produces a
-// JSON-serialisable Summary via Snapshot, consumed both by the periodic
-// stats log line (Counter.Log) and the REST API (/api/stats).
+// JSON-serialisable Summary via Snapshot, which the REST API (/api/stats)
+// serves. The periodic stats log line (Counter.Log) holds no counts.
 package stats
 
 import (
-	"fmt"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -73,7 +72,10 @@ type Counter struct {
 
 	// timeline is the per-minute graph (see timeline.go). Its counts are not
 	// part of the LOAD-ORDER INVARIANT: the graph shows counts, not ratios.
-	timeline timeline
+	// graphMode is query_log.mode, which decides what the graph records (see
+	// SetQueryLogMode). The zero value records nothing.
+	timeline  timeline
+	graphMode string
 }
 
 // Entry is a name/count pair used in top-N lists (domains and clients).
@@ -133,10 +135,12 @@ func New() *Counter {
 // (see Snapshot).
 func (c *Counter) RecordQuery(clientIP, domain string, blocked bool) {
 	c.total.Add(1)
-	b := c.timeline.at(time.Now())
-	b.total.Add(1)
-	if blocked {
-		b.blocked.Add(1)
+	if c.graphs(blocked) {
+		b := c.timeline.at(time.Now())
+		b.total.Add(1)
+		if blocked {
+			b.blocked.Add(1)
+		}
 	}
 	c.mu.Lock()
 	if clientIP != "" {
@@ -204,7 +208,9 @@ func (c *Counter) ResetTallies() {
 // handler when a query is satisfied from the in-memory response cache.
 func (c *Counter) RecordCacheHit() {
 	c.cacheHit.Add(1)
-	c.timeline.at(time.Now()).cached.Add(1)
+	if c.graphs(false) {
+		c.timeline.at(time.Now()).cached.Add(1)
+	}
 }
 
 // RecordLocalPTR increments the local-PTR counter. Called from the DNS
@@ -230,7 +236,9 @@ func (c *Counter) RecordLocalName() {
 // total ≥ forwardFailures at all times.
 func (c *Counter) RecordForwardFailure() {
 	c.forwardFailures.Add(1)
-	c.timeline.at(time.Now()).unresolved.Add(1)
+	if c.graphs(false) {
+		c.timeline.at(time.Now()).unresolved.Add(1)
+	}
 }
 
 // RecordUpstreamError increments the relayed-failure counter. Called from the
@@ -239,7 +247,9 @@ func (c *Counter) RecordForwardFailure() {
 // RecordQuery first so that total ≥ upstreamErrors at all times.
 func (c *Counter) RecordUpstreamError() {
 	c.upstreamErrors.Add(1)
-	c.timeline.at(time.Now()).upstreamError.Add(1)
+	if c.graphs(false) {
+		c.timeline.at(time.Now()).upstreamError.Add(1)
+	}
 }
 
 // topNTarget selects which of the two tally maps Snapshot/topN reads.
@@ -343,23 +353,12 @@ func (c *Counter) topN(target topNTarget, n int) []Entry {
 	return entries
 }
 
-// Log writes the counters as one INFO line (msg=stats). Called periodically
-// by cmd/s-hole/main.go (stats_interval) and once at shutdown. The top-N
-// lists are not logged; the dashboard and /api/stats show them. One line with
-// fields replaces an older multi-line block that had no level and no pkg, so
-// a log filter could not select it.
+// Log writes the periodic stats line: one INFO line (msg=stats) with the
+// uptime only. Called periodically by cmd/s-hole/main.go (stats_interval) and
+// once at shutdown. The line holds no counts: the difference between two
+// lines would give the number of queries in each interval, a record of when
+// the household is active, and the system journal keeps it where retention
+// and purge cannot reach (b/098). The dashboard and /metrics show the counts.
 func (c *Counter) Log() {
-	s := c.Snapshot(1) // the top-N lists are not logged; n only truncates them
-	logger.Info("stats",
-		"uptime", s.Uptime,
-		"queries", s.TotalQueries,
-		"blocked", s.BlockedCount,
-		"blocked_pct", fmt.Sprintf("%.1f", s.BlockedPct),
-		"local_ptr", s.LocalPTRCount,
-		"local_names", s.LocalNameCount,
-		"cache_hits", s.CacheHits,
-		"cache_hit_pct", fmt.Sprintf("%.1f", s.CacheHitPct),
-		"forward_failures", s.ForwardFailures,
-		"upstream_errors", s.UpstreamErrors,
-	)
+	logger.Info("stats", "uptime", time.Since(c.start).Round(time.Second).String())
 }

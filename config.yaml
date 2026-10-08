@@ -139,8 +139,9 @@ query_log:
   # Which queries s-hole records: "none", "blocked", or "all".
   # This covers every place a queried domain is kept: the database, the log
   # file, and the Top Domains and Top Clients panels on the dashboard.
-  # "none" records nothing. The dashboard then shows the live counters and the
-  # per-minute graph (counts only, kept in memory, never on disk).
+  # The per-minute graph on the dashboard (counts only, kept in memory, never
+  # on disk) follows this setting too. "none" records nothing: the dashboard
+  # then shows only the live counters since startup, and the graph is off.
   # s-hole warns while this is "blocked" or "all".
   mode: "none"
 
@@ -150,7 +151,9 @@ query_log:
   #              network with VLANs or several subnets. On a flat home LAN
   #              every device has the same /24, so use "drop" there.
   #   "full"   - the full address of each device.
-  # The setting applies when a query is recorded. Rows that are already stored
+  # While mode records queries, the allowlist audit line in the application
+  # log masks the address of the device that changed the allowlist the same
+  # way. The setting applies when a query is recorded. Rows that are already stored
   # keep their addresses. To remove them, delete the history (see "Delete the
   # query history" in README.md).
   # s-hole warns while this is "subnet" or "full" and mode is not "none".
@@ -207,6 +210,6 @@ admin:
   # state of the process. s-hole warns while this is true.
   pprof: false
 
-# How often s-hole logs the stats line (msg=stats), with the privacy and
-# security warnings that apply.
+# How often s-hole logs the stats line (msg=stats, the uptime only, no query
+# counts), with the privacy and security warnings that apply.
 stats_interval: "5m"

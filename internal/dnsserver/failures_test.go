@@ -71,70 +71,6 @@ func reportNow(h *Handler) {
 	h.RunFailureReport(ctx) // logs once at ctx end and returns
 }
 
-func TestServeDNS_ForwardFailureSummary(t *testing.T) {
-	// D4 (b/078): a forward failure writes no WARN per query. The summary
-	// that RunFailureReport logs has the count and each upstream's last
-	// error, and names the last domain only under mode "all".
-	for _, mode := range []string{"all", "blocked", "none"} {
-		t.Run(mode, func(t *testing.T) {
-			h, ups := failingHandler(t, mode)
-			app := captureAppLog(t)
-			for _, name := range []string{"first.example.com", "Second.Example.com"} {
-				w := fakeClient()
-				h.ServeDNS(w, buildReq(name))
-				if w.written == nil || w.written.Rcode != dns.RcodeServerFailure {
-					t.Fatalf("reply = %v, want SERVFAIL", w.written)
-				}
-			}
-			if recs := app.records(t); len(recs) != 0 {
-				t.Fatalf("failed queries wrote %d log lines before the summary, want 0:\n%s", len(recs), app.text())
-			}
-
-			reportNow(h)
-			sums := app.withMsg(t, "queries could not be resolved")
-			if len(sums) != 1 {
-				t.Fatalf("got %d summary lines, want 1:\n%s", len(sums), app.text())
-			}
-			s := sums[0]
-			if s["level"] != "WARN" || s["queries"] != float64(2) {
-				t.Errorf("summary = %v, want a WARN with queries=2", s)
-			}
-			causes, _ := s["causes"].(string)
-			for _, u := range ups {
-				if !strings.Contains(causes, u+": ") {
-					t.Errorf("causes %q do not name %s with its error", causes, u)
-				}
-			}
-			if hint, _ := s["hint"].(string); hint == "" || strings.Contains(hint, "clock") {
-				t.Errorf("hint = %q, want a hint that does not blame the clock", hint)
-			}
-			last, has := s["last_domain"]
-			if mode == "all" {
-				if last != "second.example.com." {
-					t.Errorf("last_domain = %v, want second.example.com.", last)
-				}
-			} else {
-				if has {
-					t.Errorf("summary names a domain under mode %q: %v", mode, s)
-				}
-				if strings.Contains(strings.ToLower(app.text()), "example.com") {
-					t.Errorf("application log names a query under mode %q:\n%s", mode, app.text())
-				}
-			}
-			if strings.Contains(app.text(), "192.168.1.100") {
-				t.Errorf("application log holds the client address:\n%s", app.text())
-			}
-
-			// The interval starts again: a report without new failures logs
-			// nothing.
-			reportNow(h)
-			if n := len(app.withMsg(t, "queries could not be resolved")); n != 1 {
-				t.Errorf("got %d summary lines after an empty interval, want still 1", n)
-			}
-		})
-	}
-}
-
 func TestRunFailureReport_OncePerMinute(t *testing.T) {
 	// D4: the summary is logged once per minute while failures happen, and
 	// not in a minute without failures. The fake clock of synctest drives
@@ -153,8 +89,8 @@ func TestRunFailureReport_OncePerMinute(t *testing.T) {
 
 		summaries := func() int { return len(app.withMsg(t, "queries could not be resolved")) }
 
-		h.failures.record(cause, "")
-		h.failures.record(cause, "")
+		h.failures.record(cause)
+		h.failures.record(cause)
 		time.Sleep(30 * time.Second)
 		synctest.Wait()
 		if n := summaries(); n != 0 {
@@ -175,14 +111,14 @@ func TestRunFailureReport_OncePerMinute(t *testing.T) {
 			t.Errorf("summary after an empty minute = %d lines, want still 1", n)
 		}
 
-		h.failures.record(cause, "")
+		h.failures.record(cause)
 		time.Sleep(time.Minute)
 		synctest.Wait()
 		if n := summaries(); n != 2 {
 			t.Errorf("summary after the third minute = %d lines, want 2", n)
 		}
 
-		h.failures.record(cause, "")
+		h.failures.record(cause)
 		cancel()
 		<-done
 		if n := summaries(); n != 3 {
@@ -376,8 +312,8 @@ func TestFailureReport_HidesDoHSecrets(t *testing.T) {
 	h.failures.record(&ForwardError{Causes: []UpstreamCause{{
 		Upstream: "https://u53r:p455@9.9.9.9/dns-query?token=t0k3n",
 		Err:      errors.New("status 403"),
-	}}}, "")
-	h.failures.record(context.DeadlineExceeded, "")
+	}}})
+	h.failures.record(context.DeadlineExceeded)
 	reportNow(h)
 	text := app.text()
 	for _, secret := range []string{"u53r", "p455", "t0k3n"} {
@@ -388,4 +324,146 @@ func TestFailureReport_HidesDoHSecrets(t *testing.T) {
 	if sums := app.withMsg(t, "queries could not be resolved"); len(sums) != 1 || sums[0]["queries"] != float64(2) {
 		t.Errorf("summary = %v, want one line with queries=2", sums)
 	}
+}
+
+func TestServeDNS_UnresolvedSummaryNamesNoQuery(t *testing.T) {
+	// PRIV-03 (b/078): an unresolved query writes no line of its own. The
+	// summary that RunFailureReport logs has the count, each upstream's last
+	// error, and a hint that does not blame the clock. Under every mode, "all"
+	// included, it has no last_domain and names no query (in any case) and no
+	// client address or port. An interval without failures logs nothing.
+	for _, mode := range []string{"all", "blocked", "none"} {
+		t.Run(mode, func(t *testing.T) {
+			h, ups := failingHandler(t, mode)
+			app := captureAppLog(t)
+			for _, name := range []string{"first.zqxv-example.com", "Second.ZQXV-Example.com"} {
+				w := fakeClient()
+				h.ServeDNS(w, buildReq(name))
+				if w.written == nil || w.written.Rcode != dns.RcodeServerFailure {
+					t.Fatalf("reply = %v, want SERVFAIL", w.written)
+				}
+			}
+			if recs := app.records(t); len(recs) != 0 {
+				t.Fatalf("failed queries wrote %d log lines before the summary, want 0:\n%s", len(recs), app.text())
+			}
+
+			reportNow(h)
+			sums := app.withMsg(t, "queries could not be resolved")
+			if len(sums) != 1 {
+				t.Fatalf("got %d summary lines, want 1:\n%s", len(sums), app.text())
+			}
+			s := sums[0]
+			if s["level"] != "WARN" || s["queries"] != float64(2) {
+				t.Errorf("summary = %v, want a WARN with queries=2", s)
+			}
+			causes, _ := s["causes"].(string)
+			for _, u := range ups {
+				if !strings.Contains(causes, u+": ") {
+					t.Errorf("causes %q do not name %s with its error", causes, u)
+				}
+			}
+			if hint, _ := s["hint"].(string); hint == "" || strings.Contains(hint, "clock") {
+				t.Errorf("hint = %q, want a hint that does not blame the clock", hint)
+			}
+			if _, has := s["last_domain"]; has {
+				t.Errorf("summary has last_domain under mode %q: %v", mode, s)
+			}
+			text := strings.ToLower(app.text())
+			for _, leak := range []string{"zqxv-example", "first.", "second.", "192.168.1.100", "33333"} {
+				if strings.Contains(text, leak) {
+					t.Errorf("application log holds %q under mode %q:\n%s", leak, mode, app.text())
+				}
+			}
+			if n := len(app.withMsg(t, "replies could not be sent")); n != 0 {
+				t.Errorf("got %d failed-reply summaries, but every reply was sent", n)
+			}
+
+			// The interval starts again: a report without new failures logs
+			// nothing.
+			reportNow(h)
+			if n := len(app.records(t)); n != 1 {
+				t.Errorf("got %d log lines after an empty interval, want still 1:\n%s", n, app.text())
+			}
+		})
+	}
+}
+
+func TestRunFailureReport_ReplySummaryOncePerMinute(t *testing.T) {
+	// PRIV-03: a failed reply write is counted into a summary that
+	// RunFailureReport logs once per minute, with the count for the minute,
+	// and nothing in a minute without failures. The fake clock of synctest
+	// drives the ticker.
+	app := captureAppLog(t)
+	synctest.Test(t, func(t *testing.T) {
+		store := blocklist.NewStore()
+		store.Replace([]string{"ads.zqxv-tracker.com"})
+		h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, false, "full")
+		h.SetQueryLogMode("all")
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			h.RunFailureReport(ctx)
+			close(done)
+		}()
+		// Stop the report goroutine also when a check below ends the test
+		// early, so the bubble can exit.
+		defer func() {
+			cancel()
+			<-done
+		}()
+		synctest.Wait()
+
+		fail := func(n int) {
+			for i := 0; i < n; i++ {
+				w := fakeClient()
+				w.writeError = replyWriteError()
+				h.ServeDNS(w, buildReq("Ads.Zqxv-Tracker.com"))
+			}
+		}
+		summaries := func() []map[string]any { return app.withMsg(t, "replies could not be sent") }
+
+		fail(3)
+		if n := len(app.records(t)); n != 0 {
+			t.Errorf("failed writes logged %d lines at once, want 0", n)
+		}
+		time.Sleep(30 * time.Second)
+		synctest.Wait()
+		if n := len(summaries()); n != 0 {
+			t.Errorf("summary after 30 s = %d lines, want 0", n)
+		}
+		time.Sleep(30 * time.Second)
+		synctest.Wait()
+		got := summaries()
+		if len(got) != 1 || got[0]["replies"] != float64(3) || got[0]["level"] != "WARN" {
+			t.Fatalf("after 1 min: summaries = %v, want one WARN with replies=3", got)
+		}
+
+		time.Sleep(time.Minute) // a minute without failures
+		synctest.Wait()
+		if n := len(summaries()); n != 1 {
+			t.Errorf("summary after an empty minute = %d lines, want still 1", n)
+		}
+
+		fail(1)
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		got = summaries()
+		if len(got) != 2 || got[1]["replies"] != float64(1) {
+			t.Errorf("after the third minute: summaries = %v, want a second one with replies=1", got)
+		}
+
+		fail(2)
+		cancel()
+		<-done
+		got = summaries()
+		if len(got) != 3 || got[2]["replies"] != float64(2) {
+			t.Errorf("at ctx end: summaries = %v, want a third one with replies=2", got)
+		}
+		if n := len(app.withMsg(t, "queries could not be resolved")); n != 0 {
+			t.Errorf("unresolved summary logged %d times without an unresolved query", n)
+		}
+		if text := strings.ToLower(app.text()); strings.Contains(text, "zqxv-tracker") || strings.Contains(text, "192.168.1.100") {
+			t.Errorf("application log holds query data:\n%s", app.text())
+		}
+	})
 }

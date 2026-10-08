@@ -314,8 +314,9 @@ func (m *Multi) Log(rec Record) {
 // A value that net.ParseIP cannot read (for example the "unknown" sentinel the
 // DNS handler uses when it has no address) is returned unchanged under subnet,
 // so masking never invents an address. The DNS handler masks every query with
-// it, and StaleRows uses it to find stored values that are less masked than
-// the current mode.
+// it, StaleRows uses it to find stored values that are less masked than the
+// current mode, and the admin API masks the requester of an allowlist change
+// with it (the audit line).
 func MaskClientIP(ip, mode string) string {
 	switch mode {
 	case "full":

@@ -10,6 +10,7 @@ func TestRecordQuery_EmptyClientOrDomainIsNotTallied(t *testing.T) {
 	// S1: an empty client or domain is not tallied, and the counters still
 	// count the query.
 	c := New()
+	c.SetQueryLogMode("all")
 	c.RecordQuery("", "ads.example.com.", true)
 	c.RecordQuery("192.168.1.5", "", true)
 	c.RecordQuery("", "", true)
@@ -30,6 +31,7 @@ func TestResetTallies(t *testing.T) {
 	// S1: ResetTallies empties Top Domains and Top Clients and keeps every
 	// counter.
 	c := New()
+	c.SetQueryLogMode("all")
 	c.RecordQuery("192.168.1.5", "ads.example.com.", true)
 	c.RecordQuery("192.168.1.6", "ok.example.com.", false)
 	c.RecordCacheHit()
@@ -85,6 +87,7 @@ func TestTimeline_RecordersFillTheCurrentMinute(t *testing.T) {
 	// S2: RecordQuery, RecordCacheHit, RecordForwardFailure, and
 	// RecordUpstreamError add to the current minute.
 	c := New()
+	c.SetQueryLogMode("all")
 	c.RecordQuery("", "", true)
 	c.RecordQuery("", "", true)
 	c.RecordQuery("", "", false)
@@ -117,6 +120,7 @@ func TestTimeline_DenseAlignedOldestFirst(t *testing.T) {
 	// S2: Timeline returns a dense series, oldest first, with bucket starts
 	// aligned to the bucket width, and the current, partial bucket last.
 	c := New()
+	c.SetQueryLogMode("all")
 	now := fixedMinute(37) // 37 minutes past a 2-day boundary
 	nowMin := now.Unix() / 60
 	put := func(minutesAgo int64, n int64) {
@@ -198,6 +202,7 @@ func TestTimeline_OlderThanADayReadsAsZero(t *testing.T) {
 	// a day later, and a bucket wider than the window does not reach back
 	// past 24 hours either.
 	c := New()
+	c.SetQueryLogMode("all")
 	old := fixedMinute(200)
 	c.timeline.at(old).total.Add(5)
 
@@ -224,6 +229,7 @@ func TestTimeline_NewMinuteClearsTheSlot(t *testing.T) {
 	// S2: the first event of a minute claims its ring slot and clears the
 	// counts that a minute a day earlier left there.
 	c := New()
+	c.SetQueryLogMode("all")
 	old := fixedMinute(300)
 	b := c.timeline.at(old)
 	b.total.Add(9)
@@ -243,6 +249,7 @@ func TestTimeline_NewMinuteClearsTheSlot(t *testing.T) {
 func TestResetTimeline(t *testing.T) {
 	// S2: ResetTimeline empties the graph and keeps the counters.
 	c := New()
+	c.SetQueryLogMode("all")
 	for i := 0; i < 3; i++ {
 		c.RecordQuery("", "", true)
 		c.RecordCacheHit()
@@ -268,6 +275,7 @@ func TestTimeline_ConcurrentRecordAndRead(t *testing.T) {
 	// data races (run with -race) and must not lose the count of a minute
 	// that is not changing.
 	c := New()
+	c.SetQueryLogMode("all")
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
 	wg.Add(1)

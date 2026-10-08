@@ -1,10 +1,7 @@
 package stats
 
 import (
-	"bytes"
 	"encoding/json"
-	"log/slog"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -64,28 +61,6 @@ func TestCounter_CacheHitPctExcludesLocalNames(t *testing.T) {
 	c.RecordQuery("", "", false)
 	if s := c.Snapshot(0); s.CacheHitPct != 50 {
 		t.Errorf("CacheHitPct = %v, want 50", s.CacheHitPct)
-	}
-}
-
-func TestCounter_LogHasLocalNames(t *testing.T) {
-	// CL 94 R9: the stats log line has local_names.
-	orig := slog.Default()
-	t.Cleanup(func() { slog.SetDefault(orig) })
-	var buf bytes.Buffer
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
-
-	c := New()
-	for i := 0; i < 2; i++ {
-		c.RecordQuery("", "", false)
-		c.RecordLocalName()
-	}
-	c.Log()
-	var rec map[string]any
-	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &rec); err != nil {
-		t.Fatalf("log line is not one JSON record: %q: %v", buf.String(), err)
-	}
-	if rec["local_names"] != float64(2) {
-		t.Errorf("local_names = %#v, want 2", rec["local_names"])
 	}
 }
 

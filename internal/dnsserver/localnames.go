@@ -172,5 +172,5 @@ func (h *Handler) writeLocalhost(w dns.ResponseWriter, req *dns.Msg, q dns.Quest
 	case dns.TypeAAAA:
 		resp.Answer = append(resp.Answer, &dns.AAAA{Hdr: hdr, AAAA: net.IPv6loopback})
 	}
-	h.send(w, req, resp, "write localhost reply failed", q.Name)
+	h.send(w, req, resp)
 }

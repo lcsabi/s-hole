@@ -6,7 +6,7 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/lcsabi/s-hole)](go.mod)
 [![License](https://img.shields.io/github/license/lcsabi/s-hole)](LICENSE)
 
-A lightweight, self-contained DNS sinkhole for network-wide ad and tracker blocking. Deploy it on any always-on machine, point your router's DHCP DNS field at it, and every device on the network is protected, with no per-device configuration required.
+A privacy-first, self-contained DNS sinkhole for network-wide ad and tracker blocking. By default it records no queries and no device addresses, and it sends its upstream queries encrypted, over DNS-over-HTTPS. Deploy it on any always-on machine, point your router's DHCP DNS field at it, and every device on the network is protected, with no per-device configuration required.
 
 s-hole is intentionally small: a single binary, a single YAML config file, no runtime dependencies. The full codebase fits comfortably in an afternoon's reading.
 
@@ -56,7 +56,7 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
 - **Cross-platform.** A single binary for Windows, Linux x86-64, Linux arm64 (Pi 3/4/5 with a 64-bit OS), and Linux armv7 (32-bit OS).
 - **Windows Service.** Installs as an auto-start system service with one command. The service runs under its own low-privilege account.
 - **Linux systemd.** Ships a hardened unit file with `CAP_NET_BIND_SERVICE`, so it needs no root at runtime.
-- **Docker.** A multi-stage image of about 33 MB that runs as an unprivileged user.
+- **Docker.** A multi-stage image of about 34 MB (amd64, on disk) that runs as an unprivileged user.
 
 ---
 

@@ -93,7 +93,7 @@ func TestServiceSID_Shape(t *testing.T) {
 func TestServiceTokenSIDs_ExactSet(t *testing.T) {
 	// b/104: the binary check counts the service SID and every group in the
 	// token of a virtual-account service, and no other SID. CONSOLE LOGON
-	// was in the token of NT SERVICE\s-hole on Windows 11 (whoami /groups).
+	// was in the token of NT SERVICE\s-hole on Windows 10 (whoami /groups).
 	got := serviceTokenSIDs(tSvcSID)
 	want := []string{tSvcSID, tEveryone, tLocal, tConsoleLogon, tService, tAuthUsers, tThisOrg, tUsers, tAllServices}
 	if len(got) != 9 {

@@ -104,7 +104,7 @@ func serviceSID(name string) string {
 // serviceTokenSIDs returns the SIDs that grant rights to the service: the
 // service's own SID and the groups that Windows puts in the token of a
 // service that runs as a virtual account (whoami /groups as the service
-// account on Windows 11). An extra group here only makes the binary check
+// account on Windows 10). An extra group here only makes the binary check
 // stricter.
 func serviceTokenSIDs(svcSID string) []string {
 	return []string{

@@ -3148,7 +3148,7 @@ opens an append handle without the right to write data (`FILE_WRITE_DATA`),
 so `Truncate` failed with `Access is denied`. The dashboard purge reported
 `query log file: empty failed`, and the file kept its size. The zeros were
 written, so no query line stayed in the file. Found in the CL 107 live test
-on Windows 11; `master` had the same result.
+on Windows 10; `master` had the same result.
 
 ### Fix
 

@@ -1801,7 +1801,7 @@ tested with automated tests, `dig +tls`, and `openssl s_client` on a
 development machine, and on the maintainer's Debian 12 VM (see the desktop
 check below). These tests ran while TLS 1.2 was the floor. After CL 102 raised
 it to TLS 1.3, Android Automatic mode was tested again (see the Android check
-below); the desktop check was not run again. Android was tested in a VM, not on a phone (see the Android
+below), and so was the `systemd-resolved` part of the desktop check. Android was tested in a VM, not on a phone (see the Android
 check below). Strict mode with a user-installed certificate was tested and rejected. The
 public-domain route in the README (the publicly trusted certificate, the public
 A record, and the off-LAN warning) comes from Android's documented behavior,
@@ -1828,6 +1828,9 @@ not from a test run, and the README says so. The steps, cheapest route first:
   was untrusted, and worked after the `CA:FALSE` self-signed certificate was
   installed with `update-ca-certificates`. So the self-signed certificate works
   as a trust anchor, and Linux desktops do not need mkcert.
+- Repeated on 2026-10-08 for CL 102 (TLS 1.3 only) with `systemd-resolved`
+  257 on a Debian 13 VM: the same three results, and each successful
+  connection negotiated TLS 1.3 (checked in a capture of port 853).
 
 **Android check: Automatic mode done (2026-09-28, Bliss OS 16.9.7, Android 13,
 in VirtualBox).** Android took s-hole as its DNS server from DHCP, validated

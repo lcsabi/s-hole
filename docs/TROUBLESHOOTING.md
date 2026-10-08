@@ -451,16 +451,19 @@ The metric `shole_query_log_dropped_total` counts queries that the database
 dropped because it was busy; `shole_query_log_file_dropped_total` counts query
 lines that the file output dropped.
 
-## A purge says that a file was not found
+## A purge says that a file was not found or not overwritten
 
-When no s-hole runs, `s-hole -purge` deletes the files itself. Relative paths
-in the config then start in the current directory (on Windows, in the folder
-of `config.yaml`). If a file is not found, a note after the list names that
-directory.
+When no s-hole runs, `s-hole -purge` overwrites the query files with zeros and
+deletes them itself. Relative paths in the config then start in the current
+directory (on Windows, in the folder of `config.yaml`). If a file is not
+found, a note after the list names that directory. When s-hole runs, the
+purge overwrites the query log file with zeros and then empties it.
 
 | You see | What it means | What to do |
 |---|---|---|
 | `query database ... not found at <path>` or `query log file ... not found at <path>`, then a note | No file is at that path, so the purge deleted nothing there. Usually, the command ran in a directory other than s-hole's working directory. | If an earlier purge deleted the file, do nothing. Otherwise, run the purge again in s-hole's working directory. For an install by `install-linux.sh`, run `sudo sh -c 'cd /var/lib/s-hole && s-hole -purge -config /etc/s-hole/config.yaml'`. On Windows, the purge already starts relative paths in the folder of `config.yaml`, so the file is not there. |
+| `query database ... FAILED delete failed: ... not overwritten`, or the same for `query log file` | s-hole is stopped. The file is a symbolic link, is not a regular file, or (on Linux and macOS) has more than one hard link. The purge does not overwrite such a file, so it keeps it. | Find out why. If you made the link, overwrite and delete the file yourself, and delete each of its other names (on Linux, for example, `shred -u <file>`). If you did not make it, treat it as a sign that someone changed the data directory. |
+| `query log file ... FAILED emptied, but not overwritten with zeros: ...` | s-hole runs. The purge emptied the open log file but did not overwrite it with zeros first. The path is a link, another file now has the path (for example, after a log rotation), or the overwrite failed; the text after the colon says which. | If a tool rotates the log, overwrite or delete the rotated files yourself. If the path is a link, see the row above. |
 | `downloaded blocklists ... none found in <dir>` | No downloaded list is in that directory: s-hole has not downloaded one there, or a purge deleted them. The lists hold no personal data, so this line gives no note. | No action is necessary. When s-hole starts, it downloads each list that it does not find. |
 
 ## Privacy and security warnings

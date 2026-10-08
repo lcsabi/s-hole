@@ -158,6 +158,8 @@ type DBLogger struct {
 // stayed readable in the file (b/077). FAST is not enough: it leaves whole
 // freed pages untouched. journal_size_limit truncates the WAL back to 4 MiB
 // after each checkpoint, so the WAL does not keep old page images either.
+// The disk blocks that the truncate frees can still hold them (see
+// PRIVACY.md).
 const pragmas = `
 PRAGMA busy_timeout=5000;
 PRAGMA journal_mode=WAL;

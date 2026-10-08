@@ -191,7 +191,7 @@ router-setup banner. Then, in a second terminal:
 8. **Purge.** With the same variables, run
    `/tmp/s-hole -purge -config config.yaml`: it reports each step, and
    `/api/queries` is then empty. Stop s-hole and run the purge again: it
-   deletes the files itself.
+   overwrites the query files with zeros and deletes them itself.
 
 **Optional: DNS over TLS.** Run this pass after a change to the DoT listener,
 the certificate reload, or the reload path. You need BIND `dig` 9.18 or later.

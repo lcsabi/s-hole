@@ -14,8 +14,8 @@ dashboard. You cannot turn these warnings off.
 
 | Data | Where | Default | How long | Who can read it | How to delete it |
 |---|---|---|---|---|---|
-| Query history: time (UTC), domain, client (as `query_log.clients` allows), and outcome of each recorded query | SQLite file `query_log.database` | off | `query_log.retention_days`, default 7 days. Deleted rows are overwritten in the file | the s-hole user only (file mode `600`, data directory `700`); and anyone who can reach the dashboard | `s-hole -purge`, the dashboard's **Delete history** button on the s-hole host, or retention |
-| Query lines: the same fields as text | `query_log.file`: a file, or standard output | off | a file: until you delete it. Standard output: the system journal or the container log keeps it under its own rules | a file: the s-hole user only (mode `600`). The journal: root and the `adm` and `systemd-journal` groups (on Raspberry Pi OS the first user is in `adm`) | a file: `s-hole -purge`. The journal: `journalctl --rotate && journalctl --vacuum-time=1s` (deletes every service's logs) |
+| Query history: time (UTC), domain, client (as `query_log.clients` allows), and outcome of each recorded query | SQLite file `query_log.database` | off | `query_log.retention_days`, default 7 days. Deleted rows are overwritten in the file | the s-hole user only (file mode `600`, data directory `700`); and anyone who can reach the dashboard | `s-hole -purge` (when s-hole is stopped, it overwrites the files with zeros before it deletes them), the dashboard's **Delete history** button on the s-hole host, or retention |
+| Query lines: the same fields as text | `query_log.file`: a file, or standard output | off | a file: until you delete it. Standard output: the system journal or the container log keeps it under its own rules | a file: the s-hole user only (mode `600`). The journal: root and the `adm` and `systemd-journal` groups (on Raspberry Pi OS the first user is in `adm`) | a file: `s-hole -purge`, which overwrites it with zeros before it empties or deletes it. The journal: `journalctl --rotate && journalctl --vacuum-time=1s` (deletes every service's logs) |
 | Top Domains and Top Clients | memory | follow `query_log.mode`; empty under `"none"` | until a restart or a purge | anyone who can reach the dashboard | restart, or purge |
 | Per-minute graph: counts of queries, blocked, cached, and failed, with no domain or client. The counts over time show when the household is active | memory | off (follows `query_log.mode`: empty under `"none"`, blocked queries only under `"blocked"`) | 24 hours, and until a restart or a purge | anyone who can reach the dashboard | restart, or purge |
 | Since-start counters (total, blocked, local answers, cache hits, failures) | memory | on | until a restart | anyone who can reach the dashboard or `/metrics` | restart |
@@ -108,7 +108,17 @@ The query filter you type is kept for the browser tab only (sessionStorage).
   do not reach it.
 - A backup of the data directory, a VM snapshot, or an SD-card image keeps the
   history as it was.
-- On flash storage, a deleted block can stay on the medium. Only disk
+- A purge overwrites the query log file with zeros before it empties or
+  deletes it. When s-hole is stopped, the purge also overwrites the query
+  database files with zeros before it deletes them. When s-hole runs,
+  `secure_delete` overwrites the deleted rows in the database file.
+- The overwrite is best effort. On flash storage and on a copy-on-write file
+  system (Btrfs, ZFS), the zeros can go to new blocks, and a deleted block
+  can stay on the medium. SQLite also frees its write-ahead log (the `-wal`
+  file next to the database) without overwriting it: at each checkpoint, and
+  when s-hole stops. So older copies of database pages can stay in free disk
+  blocks until the file system reuses them. Reading free blocks needs access
+  to the raw disk (root, or the disk or SD card itself). Only disk
   encryption makes sure deleted data cannot be recovered.
 - A change to a more private setting applies to new rows only. s-hole warns
   about stored rows that hold more than the current settings, with the date

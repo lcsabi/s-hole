@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lcsabi/s-hole/internal/api"
@@ -63,6 +64,8 @@ func (t purgeTargets) purge(ctx context.Context) api.PurgeReport {
 		switch {
 		case errors.Is(err, querylog.ErrStdoutNotPurgeable):
 			add("query log output", journalNote, false)
+		case errors.Is(err, querylog.ErrNotOverwritten):
+			add("query log file", err.Error(), true)
 		case err != nil:
 			add("query log file", "empty failed: "+err.Error(), true)
 		default:
@@ -171,29 +174,43 @@ func purgeViaAPI(adminListen string) (api.PurgeReport, error) {
 
 // purgeOffline deletes the stored files of an s-hole that is not running:
 // the query database with its -wal and -shm files, the query log file, and
-// the downloaded blocklists. A configured database or query log file that
-// does not exist is reported as "not found" with its absolute path, and
-// notFound is true: a relative path resolves against the current directory,
-// so a purge run from the wrong directory must not claim that it deleted the
-// history (b/091). A missing blocklist cache is reported with its directory
-// but does not set notFound, because the lists hold no personal data.
+// the downloaded blocklists. It overwrites each database and query log file
+// with zeros (querylog.ZeroFile) before it deletes it, so the blocks these
+// files free hold zeros. It does not open the database with SQLite: the
+// purge can run as root in the data directory that the s-hole user owns,
+// and SQLite writes through a hard link at the -wal or -shm path. The zeros
+// cover every byte that a SQLite purge would change. A file that ZeroFile
+// refuses (a symbolic link, for one) is not deleted, and the step fails. A
+// configured database or query log file that does not exist is reported as
+// "not found" with its absolute path, and notFound is true: a relative path
+// resolves against the current directory, so a purge run from the wrong
+// directory must not claim that it deleted the history (b/091). A missing
+// blocklist cache is reported with its directory but does not set notFound,
+// because the lists hold no personal data.
 func purgeOffline(cfg *config.Config) (rep api.PurgeReport, notFound bool) {
 	add := func(what, result string, failed bool) {
 		rep.Steps = append(rep.Steps, api.PurgeStep{What: what, Result: result, Failed: failed})
 	}
-	// remove deletes paths and reports whether any of them existed.
-	remove := func(paths ...string) (bool, error) {
+	// wipe overwrites each of paths with zeros, then deletes it, and
+	// reports whether any of them existed. It goes on after an error and
+	// returns all errors on one line (joinErrs).
+	wipe := func(paths ...string) (bool, error) {
 		found := false
+		var errs []error
 		for _, p := range paths {
-			err := os.Remove(p)
-			switch {
-			case err == nil:
-				found = true
-			case !errors.Is(err, fs.ErrNotExist):
-				return found, err
+			err := querylog.ZeroFile(p)
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			found = true
+			if err == nil {
+				err = os.Remove(p)
+			}
+			if err != nil {
+				errs = append(errs, err)
 			}
 		}
-		return found, nil
+		return found, joinErrs(errs...)
 	}
 	missing := func(what, path string) {
 		if abs, err := filepath.Abs(path); err == nil {
@@ -205,7 +222,7 @@ func purgeOffline(cfg *config.Config) (rep api.PurgeReport, notFound bool) {
 
 	if db := cfg.QueryLog.Database; db == "" {
 		add("query database", "off, nothing stored", false)
-	} else if found, err := remove(db, db+"-wal", db+"-shm"); err != nil {
+	} else if found, err := wipe(db, db+"-wal", db+"-shm"); err != nil {
 		add("query database", "delete failed: "+err.Error(), true)
 	} else if !found {
 		missing("query database", db)
@@ -219,7 +236,7 @@ func purgeOffline(cfg *config.Config) (rep api.PurgeReport, notFound bool) {
 	case config.FileStdout:
 		add("query log output", journalNote, false)
 	default:
-		if found, err := remove(f); err != nil {
+		if found, err := wipe(f); err != nil {
 			add("query log file", "delete failed: "+err.Error(), true)
 		} else if !found {
 			missing("query log file", f)
@@ -245,6 +262,21 @@ func purgeOffline(cfg *config.Config) (rep api.PurgeReport, notFound bool) {
 		add("downloaded blocklists", strconv.Itoa(n)+" files deleted", false)
 	}
 	return rep, notFound
+}
+
+// joinErrs joins the errors that are not nil with "; ", so a purge step
+// result stays on one line (errors.Join puts each error on its own line).
+func joinErrs(errs ...error) error {
+	var msgs []string
+	for _, err := range errs {
+		if err != nil {
+			msgs = append(msgs, err.Error())
+		}
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+	return errors.New(strings.Join(msgs, "; "))
 }
 
 // localAdminAddr is the address a command on the s-hole host uses to reach

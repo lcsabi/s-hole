@@ -114,6 +114,18 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   separate file, and the Content-Security-Policy no longer allows inline
   script. If an injection ever got into the page, the browser would not run
   it. (CL 104)
+- **A purge overwrites the query files with zeros.** `s-hole -purge`, the
+  dashboard's **Delete history** button, and `uninstall-linux.sh --purge` now
+  overwrite the query log file with zeros and sync it before they empty or
+  delete it. When s-hole is stopped, the purge also overwrites the query
+  database and its `-wal` and `-shm` files with zeros before it deletes
+  them. Before, a stopped purge only deleted the files, and a purge of a
+  running s-hole only emptied the log file, so the history stayed in free
+  disk blocks. The purge does not overwrite through a symbolic link or (on
+  Linux and macOS) a file with more than one hard link. When s-hole is
+  stopped, it keeps that file; when s-hole runs, it still empties the log
+  file. In both cases it reports the step as failed. The overwrite is best
+  effort (see `PRIVACY.md`). (CL 105)
 
 ## [2.0.1] - 2026-10-08
 

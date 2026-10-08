@@ -1799,8 +1799,9 @@ unchanged (`remoteIP` sees the `*net.TCPAddr` under the `tls.Conn`).
 **Validation status: Automatic mode tested; strict mode partly tested.** CL 86 was
 tested with automated tests, `dig +tls`, and `openssl s_client` on a
 development machine, and on the maintainer's Debian 12 VM (see the desktop
-check below). These tests ran while TLS 1.2 was the floor; they were not run
-again after CL 102 raised it to TLS 1.3. Android was tested in a VM, not on a phone (see the Android
+check below). These tests ran while TLS 1.2 was the floor. After CL 102 raised
+it to TLS 1.3, Android Automatic mode was tested again (see the Android check
+below); the desktop check was not run again. Android was tested in a VM, not on a phone (see the Android
 check below). Strict mode with a user-installed certificate was tested and rejected. The
 public-domain route in the README (the publicly trusted certificate, the public
 A record, and the off-LAN warning) comes from Android's documented behavior,
@@ -1833,7 +1834,12 @@ in VirtualBox).** Android took s-hole as its DNS server from DHCP, validated
 DoT on port 853 with the self-signed openssl certificate (`dumpsys
 connectivity`: `UsePrivateDns: true`, no hostname, s-hole in
 `ValidatedPrivateDnsAddresses`), and sent app lookups over DoT: a blocked
-domain returned `0.0.0.0` with a `BLOCK` line in the journal. Android's
+domain returned `0.0.0.0` with a `BLOCK` line in the journal. Repeated on
+2026-10-08 for CL 102 (TLS 1.3 only), with the same Android 13 VM bridged on
+the LAN: Android validated Private DNS against s-hole, both DoT connections
+in a capture negotiated TLS 1.3, and app lookups went over port 853 (a
+blocked domain got `0.0.0.0`). The VM's DNS traffic to the router was sent
+to s-hole with a temporary `iptables` DNAT rule in place of a DHCP change. Android's
 network check stays on port 53 by design. With Private DNS off, the same lookup
 went over port 53. VirtualBox's NAT Network DHCP replaces option 6 with the
 host's DNS server, so the test used a dnsmasq DHCP server on an internal

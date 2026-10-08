@@ -8,6 +8,14 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-10-08
+
+A patch release with privacy and security fixes. The config format and the
+config defaults do not change. One change is visible on the dashboard: under
+the default `query_log.mode: "none"` the "Queries over time" graph is now
+empty (see Changed). Lines that s-hole 2.0.0 already wrote to the system
+journal stay there; s-hole cannot delete them (see `docs/TROUBLESHOOTING.md`).
+
 ### Changed
 
 - **A query with RD=0 gets REFUSED.** A query with the RD (recursion desired)
@@ -66,8 +74,9 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   it is a response to a standard query with the same name, type, and class.
   Any other reply counts as a failed attempt, and s-hole tries the next
   upstream. The failure summary shows it as `reply does not match the query`,
-  and `shole_upstream_transport_failures_total` counts it. On a plain-DNS upstream, a spoofed reply for another name then
-  cannot get into the cache. (CL 97)
+  and `shole_upstream_transport_failures_total` counts it. On a plain-DNS
+  upstream, a spoofed reply for another name then cannot get into the cache.
+  (CL 97)
 - **The cache keeps an answer for one day at most.** An answer leaves the cache
   after 86,400 seconds (Unbound's default `cache-max-ttl`), whatever TTL the
   upstream gave. A cached answer never has a TTL longer than that. (CL 97)
@@ -76,7 +85,8 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   downloaded in plain text with no warning, so anyone on the network path
   could change the list. s-hole now refuses such a redirect, logs
   `blocklist redirect refused` with both URLs, and uses its cached copy of the
-  list if it has one. Without a copy, the list does not load. A redirect to another HTTPS host still works. (CL 98, b/097)
+  list if it has one. Without a copy, the list does not load. A redirect to
+  another HTTPS host still works. (CL 98, b/097)
 
 ## [2.0.0] - 2026-10-07
 

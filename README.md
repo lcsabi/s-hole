@@ -136,7 +136,7 @@ archive for your platform (`linux_amd64`, `linux_arm64`, `linux_armv7`, or
 
 ```bash
 sha256sum -c SHA256SUMS --ignore-missing   # confirm the download
-tar -xzf s-hole_v2.0.0_linux_amd64.tar.gz  # Linux (unzip the .zip on Windows)
+tar -xzf s-hole_v2.0.1_linux_amd64.tar.gz  # Linux (unzip the .zip on Windows)
 ```
 
 Each archive contains the binary, a sample `config.yaml`, `LICENSE`, `README.md`, `PRIVACY.md`,
@@ -645,7 +645,7 @@ ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1   # for example
 ```bash
 docker build -t s-hole .
 # Or pull a tagged release instead of building:
-#   docker pull ghcr.io/lcsabi/s-hole:2.0.0   (and use that name in step 4)
+#   docker pull ghcr.io/lcsabi/s-hole:2.0.1   (and use that name in step 4)
 ```
 
 **4. Run with host networking** (recommended on Linux):
@@ -981,7 +981,7 @@ The binary reports its build identity at any time:
 
 ```
 $ s-hole -version
-s-hole v2.0.0
+s-hole v2.0.1
   commit:  ab12cd3
   built:   2026-06-24T12:00:00Z
   go:      go1.26.0

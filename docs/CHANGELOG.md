@@ -40,6 +40,10 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   it sends plain DNS to s-hole, and in strict mode it cannot resolve names. (CL 102)
 - **New metric `shole_forward_limited_total`.** It counts the queries that
   got SERVFAIL because of the forward limit (see Security below). (CL 102)
+- **Smaller Docker image.** The image sets the binary's file capability in
+  the build stage, so it no longer stores the binary twice: about 34 MB on
+  disk instead of 60 MB, and about 10 MiB to download instead of 18 MiB
+  (amd64). The image works the same way. (CL 103)
 
 ### Fixed
 

@@ -14,6 +14,10 @@ WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 
+# libcap-utils provides setcap (see below). It is installed before the source
+# is copied, so a source change does not fetch it again.
+RUN apk add --no-cache libcap-utils
+
 COPY . .
 
 # Build-time version metadata. Callers can override with --build-arg.
@@ -35,12 +39,19 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH GOARM=${TARGETVARIANT#v} go 
       -X 'github.com/lcsabi/s-hole/internal/version.BuildDate=${BUILD_DATE}'" \
     -o s-hole ./cmd/s-hole
 
+# The file capability lets s-hole bind port 53 (and 853 for DoT) as an
+# unprivileged user, also with --network host. Set it here, in the build
+# stage: BuildKit's COPY keeps it. In the runtime stage, setcap would change
+# the file that the COPY layer added, and the image would store the binary
+# twice (CL 103).
+RUN setcap cap_net_bind_service=+ep s-hole
+
 # ── Runtime stage ─────────────────────────────────────────────
 FROM alpine:3.24
 
 # ca-certificates: required for HTTPS blocklist downloads and DoH upstreams.
 # Container logs default to UTC (matches log/slog), so tzdata is not
-# pulled in, which saves ~30 MB of image size.
+# pulled in.
 RUN apk add --no-cache ca-certificates
 
 # The binary lives on PATH, NOT in /app. /app is declared a VOLUME and is
@@ -50,15 +61,11 @@ RUN apk add --no-cache ca-certificates
 # what the operator mounts over /app (b/039).
 COPY --from=builder /build/s-hole /usr/local/bin/s-hole
 
-# s-hole runs as an unprivileged user (65532), not root (b/087). The file
-# capability lets it bind port 53 (and 853 for DoT) without root, also with
-# --network host; NET_BIND_SERVICE is in Docker's default capability set.
-# libcap-utils provides setcap and is removed again in the same layer.
+# s-hole runs as an unprivileged user (65532), not root (b/087). The binary
+# carries the file capability from the build stage; NET_BIND_SERVICE is in
+# Docker's default capability set.
 RUN addgroup -S -g 65532 s-hole \
- && adduser -S -D -H -u 65532 -G s-hole -s /sbin/nologin s-hole \
- && apk add --no-cache libcap-utils \
- && setcap cap_net_bind_service=+ep /usr/local/bin/s-hole \
- && apk del libcap-utils
+ && adduser -S -D -H -u 65532 -G s-hole -s /sbin/nologin s-hole
 
 WORKDIR /app
 # Baked-in default config, used only when /app is NOT bind-mounted. When an

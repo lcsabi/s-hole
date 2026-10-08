@@ -22,7 +22,7 @@ Rules (review enforces them, and tests pin them):
 - **Stored data is owner-only and deletable.** Files are created `0600` (umask `077`, `UMask=0077`), directories `0700`; on Windows the config folder gets an owner-only access list. The query database keeps `secure_delete=ON` and a TRUNCATE checkpoint after deletes, so a deleted row leaves the file. New stored data follows retention and is reached by `s-hole -purge` and `uninstall-linux.sh --purge`.
 - **Never rewrite the operator's history on your own.** A stricter setting applies to new rows; `StaleRows` reports the older ones and the operator decides (purge or wait for retention).
 - **LAN only, and LAN data stays on the LAN.** The DNS server answers LAN sources only (`lan.go`), with no setting to widen it. Do not forward names or options that only mean something on the LAN or identify a device: private PTR is answered locally, the upstream gets a fresh query with no client EDNS option or query ID (`edns.go`), and local-only names go to LAN upstreams only (`localnames.go`, CL 94).
-- **No other outbound connections.** s-hole connects only to the configured upstreams and blocklist URLs (and the hosts a list URL redirects to; an HTTPS list never goes to a non-HTTPS URL, b/097), with `User-Agent: s-hole`. No telemetry, update check, crash report, or analytics; the dashboard loads nothing from a third party. A new outbound connection needs a ROADMAP decision first.
+- **No other outbound connections.** s-hole connects only to the configured upstreams and blocklist URLs (and the hosts a list URL redirects to; an HTTPS list never goes to a non-HTTPS URL, b/097; the DoH client follows no redirect, b/102), with `User-Agent: s-hole`. No telemetry, update check, crash report, or analytics; the dashboard loads nothing from a third party. A new outbound connection needs a ROADMAP decision first.
 - **Keep metrics aggregate.** No per-client or per-domain label on `/metrics`. A URL that s-hole shows anywhere goes through `redact.URL`.
 - **Respect the device's own privacy choices.** s-hole does not defeat a client's encrypted DNS, private relay, or address randomization.
 - **Show what is stored.** The dashboard header, the warnings panel, and the startup log say what is recorded and for how long. A new stored field shows there.
@@ -74,6 +74,8 @@ ServeDNS (internal/dnsserver/handler.go)
   → blocked? write sinkhole reply (0.0.0.0/:: or NXDOMAIN) through send
   → cache.Cache.Get                key: question + CD + DO bits (b/096); TTL-respecting, 1-day cap;
                                    holds no OPT record; hit ends here
+  → forward limit                  at most 512 queries wait for an upstream (maxForwards); over it → SERVFAIL at once,
+                                   counted as unresolved and in shole_forward_limited_total
   → forward (upstream.go)          fresh query (upstreamQuery: question, RD/CD/AD/DO, random ID,
                                    own OPT 1232, DoH padded); DoH or UDP (TCP retry on TC); checkReply fails a
                                    reply that is not a QUERY response to the sent question; cooldown tracker skips

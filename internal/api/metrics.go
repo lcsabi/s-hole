@@ -75,7 +75,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	// up" signal: s-hole could not resolve the query and synthesized a SERVFAIL.
 	// upstream_errors is a failure rcode a live upstream returned and s-hole
 	// relayed, usually not s-hole's fault.
-	fmt.Fprintln(w, "# HELP shole_forward_failures_total Total DNS queries s-hole could not resolve (every upstream failed, so it synthesized a SERVFAIL).")
+	fmt.Fprintln(w, "# HELP shole_forward_failures_total Total DNS queries s-hole could not resolve (every upstream failed or the forward limit was reached, so it synthesized a SERVFAIL).")
 	fmt.Fprintln(w, "# TYPE shole_forward_failures_total counter")
 	fmt.Fprintf(w, "shole_forward_failures_total %d\n", snap.ForwardFailures)
 
@@ -91,7 +91,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	// disjoint events. Cardinality is bounded by the configured upstream count.
 	if s.upstreamTransportFailures != nil {
 		if failures := s.upstreamTransportFailures(); len(failures) > 0 {
-			fmt.Fprintln(w, "# HELP shole_upstream_transport_failures_total Per-upstream cumulative transport failures (no usable answer: a timeout, a refused connection, a reply that does not match the query, or for a DoH upstream a non-200 status or unparsable body) seen by the forward cooldown tracker.")
+			fmt.Fprintln(w, "# HELP shole_upstream_transport_failures_total Per-upstream cumulative transport failures (no usable answer: a timeout, a refused connection, a reply that does not match the query, or for a DoH upstream a non-200 status, a redirect, or an unparsable body) seen by the forward cooldown tracker.")
 			fmt.Fprintln(w, "# TYPE shole_upstream_transport_failures_total counter")
 			for addr, n := range failures {
 				fmt.Fprintf(w, "shole_upstream_transport_failures_total{upstream=\"%s\"} %d\n", escapeLabel(redact.URL(addr)), n)
@@ -117,7 +117,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		// Hits are already exposed above from the stats counter; only
 		// misses and size come from the cache itself.
 		_, misses, size := s.dnsCache.Stats()
-		fmt.Fprintln(w, "# HELP shole_cache_misses_total DNS cache misses (forwarded to upstream).")
+		fmt.Fprintln(w, "# HELP shole_cache_misses_total DNS cache misses (sent upstream, or refused at the forward limit).")
 		fmt.Fprintln(w, "# TYPE shole_cache_misses_total counter")
 		fmt.Fprintf(w, "shole_cache_misses_total %d\n", misses)
 		fmt.Fprintln(w, "# HELP shole_cache_size Current number of entries in the DNS response cache.")
@@ -172,6 +172,11 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "# HELP shole_refused_total Queries refused because they came from outside the LAN.")
 		fmt.Fprintln(w, "# TYPE shole_refused_total counter")
 		fmt.Fprintf(w, "shole_refused_total %d\n", s.refusedQueries())
+	}
+	if s.forwardLimited != nil {
+		fmt.Fprintln(w, "# HELP shole_forward_limited_total Queries answered SERVFAIL at once because the limit of queries waiting for an upstream was reached.")
+		fmt.Fprintln(w, "# TYPE shole_forward_limited_total counter")
+		fmt.Fprintf(w, "shole_forward_limited_total %d\n", s.forwardLimited())
 	}
 	if s.plaintextFallbacks != nil {
 		fmt.Fprintln(w, "# HELP shole_upstream_plaintext_fallback_total Queries sent to a plain upstream because every DoH upstream had failed.")

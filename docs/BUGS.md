@@ -3029,3 +3029,32 @@ fails closed.
 address, the same result as `drop`. The audit line then has no `client`
 attribute for such a requester. `StaleRows` under `subnet` now also reports a
 stored value that it cannot parse.
+
+## b/102: dns: the DoH client followed redirects to another host or to plain HTTP
+
+**Priority:** P3
+**Component:** dnsserver
+**Status:** Fixed in CL 102
+**Filed:** 2026-10-08
+
+### Description
+
+`dohClient` used Go's default redirect policy: up to 10 redirects, with no
+check of the scheme or the host. The DoH query is a POST with a
+`bytes.Reader` body, so on a 307 or 308 Go sent the POST again, with the DNS
+query in its body, to the `Location` URL. On a 301, 302, or 303 it connected
+to the new host with a GET. A redirect to `http://` sent the queried name in
+clear text, and `PlaintextFallbacks` did not count it, because the configured
+upstream was DoH. A redirect to another host sent the query to a host that is
+not in the config, and a host name needed a DNS lookup that could loop back
+into s-hole. Only the DoH endpoint can send the redirect (an on-path attacker
+cannot add one inside TLS), so the trigger is a misbehaving or compromised
+upstream.
+
+### Fix
+
+`dohClient` sets `CheckRedirect` to `refuseRedirect`, which refuses every
+redirect with an error. The redirected request is not sent, and the attempt
+fails like a transport error: the forwarder records the failure and tries the
+next upstream. The failure summary shows `redirect refused` with the
+configured URL through `redact.URL`, never the query or the redirect target.

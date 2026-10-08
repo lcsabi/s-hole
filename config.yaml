@@ -32,8 +32,9 @@ dns:
   listen: ":53"
 
   # DNS over TLS (DoT): an encrypted listener for LAN clients, usually on
-  # port 853. Android phones in the default "Automatic" Private DNS mode use it
-  # and do not check the certificate, so a self-signed one works.
+  # port 853. Android 10 and later phones in the default "Automatic" Private
+  # DNS mode use it and do not check the certificate, so a self-signed one
+  # works. s-hole accepts TLS 1.3 only.
   # DoT is off while dot_listen is off. To turn it on, set all three keys. You
   # supply the certificate and key (PEM). See "DNS over TLS" in README.md.
   # To renew, replace the two files and reload: the dashboard reload button,

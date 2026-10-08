@@ -33,6 +33,13 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   it refuses devices that use a public IPv6 address, and reverse lookups for
   the LAN's own IPv6 prefix go upstream. s-hole now logs a WARN, `interface
   address read failed`, at most once an hour, with a hint. (CL 101)
+- **DNS over TLS accepts TLS 1.3 only.** In TLS 1.2, a resumed session sends
+  its session ticket in clear text, so an observer on the LAN could link the
+  DoT connections of one device. Android 10 and later support TLS 1.3.
+  Android 9 can no longer use s-hole's DoT: in Automatic Private DNS mode
+  it sends plain DNS to s-hole, and in strict mode it cannot resolve names. (CL 102)
+- **New metric `shole_forward_limited_total`.** It counts the queries that
+  got SERVFAIL because of the forward limit (see Security below). (CL 102)
 
 ### Fixed
 
@@ -43,6 +50,11 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   full address, while `query_log.mode` recorded queries and `admin.listen`
   was on an IPv6 address. It now logs no address for such a requester.
   (CL 101, b/101)
+- **A DoH upstream's redirect is no longer followed.** On an HTTP 307 or 308
+  redirect, s-hole sent the query again to the redirect target, which could
+  be another host or a plain `http://` URL. Now a redirect is a failed
+  attempt: s-hole tries the next upstream, and the failure summary shows
+  `redirect refused`. (CL 102, b/102)
 
 ### Security
 
@@ -58,6 +70,13 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   upstream on the LAN, so s-hole does not send local names to it. IPv6
   interface subnets are LAN as before. There is no setting to change this.
   (CL 101)
+- **DNS server limits.** At most 512 queries wait for an upstream at the same
+  time. A query over this limit gets SERVFAIL at once, counts as unresolved,
+  and shows as `forward limit` in the `queries could not be resolved` line.
+  The plain-TCP listener caps open connections at 256, like the DoT listener.
+  One device on the LAN can no longer hold thousands of upstream queries or
+  idle TCP connections. There is no rate limit for each client, because it
+  would keep client addresses in memory. (CL 102)
 - **A query whose source address s-hole cannot read gets REFUSED.** The LAN
   check ran only for a valid source address. The DNS listeners always give
   one, so no query reached this case; the check now fails closed. (CL 101,

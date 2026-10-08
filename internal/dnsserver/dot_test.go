@@ -419,7 +419,7 @@ func serverClosesWithin(t *testing.T, conn net.Conn, limit time.Duration) time.D
 
 func TestDoT_SilentTCPClientIsDisconnected(t *testing.T) {
 	// A client that opens TCP and sends nothing (no TLS ClientHello) must not
-	// hold one of the maxDoTConns slots. dotReadTimeout (2 s) covers the
+	// hold one of the maxDoTConns slots. tcpReadTimeout (2 s) covers the
 	// handshake, so the server closes the connection well within 5 s.
 	dotAddr, _ := startDoTOnly(t)
 	conn, err := net.DialTimeout("tcp", dotAddr, 3*time.Second)
@@ -432,7 +432,7 @@ func TestDoT_SilentTCPClientIsDisconnected(t *testing.T) {
 
 func TestDoT_SilentAfterHandshakeIsDisconnected(t *testing.T) {
 	// A client that completes the TLS handshake and then sends no query is
-	// closed after the first-read bound (dotReadTimeout, 2 s).
+	// closed after the first-read bound (tcpReadTimeout, 2 s).
 	dotAddr, pool := startDoTOnly(t)
 	d := &net.Dialer{Timeout: 3 * time.Second}
 	conn, err := tls.DialWithDialer(d, "tcp", dotAddr, &tls.Config{RootCAs: pool, ServerName: testCertName, MinVersion: tls.VersionTLS12})
@@ -445,7 +445,7 @@ func TestDoT_SilentAfterHandshakeIsDisconnected(t *testing.T) {
 
 func TestDoT_IdleConnectionClosedAfterIdleTimeout(t *testing.T) {
 	// After one query, the connection stays open for later queries and is
-	// closed after dotIdleTimeout (8 s). The lower bound shows the idle
+	// closed after tcpIdleTimeout (8 s). The lower bound shows the idle
 	// timeout, not the 2 s first-read timeout, applies after a query.
 	if testing.Short() {
 		t.Skip("waits for the 8 s idle timeout")
@@ -462,12 +462,12 @@ func TestDoT_IdleConnectionClosedAfterIdleTimeout(t *testing.T) {
 	}
 	took := serverClosesWithin(t, conn.Conn, 12*time.Second)
 	if took < 4*time.Second {
-		t.Errorf("idle connection closed after %v, want about %v", took, dotIdleTimeout)
+		t.Errorf("idle connection closed after %v, want about %v", took, tcpIdleTimeout)
 	}
 }
 
 func TestDoT_RejectsTLS11(t *testing.T) {
-	// The DoT listener accepts TLS 1.2 or later. The client allows TLS 1.0 and
+	// The DoT listener accepts TLS 1.3 only. The client allows TLS 1.0 and
 	// 1.1 only, so the handshake must fail on the server's version check.
 	dotAddr, pool := startDoTOnly(t)
 	d := &net.Dialer{Timeout: 3 * time.Second}
@@ -487,7 +487,11 @@ func TestDoT_RejectsTLS11(t *testing.T) {
 	}
 }
 
-func TestDoT_AcceptsTLS12(t *testing.T) {
+func TestDoT_RejectsTLS12(t *testing.T) {
+	// PRIV-12: the DoT listener accepts TLS 1.3 only. In TLS 1.2 a resumed
+	// session sends its ticket in clear text, which lets a passive observer
+	// link the DoT connections of one device. A client that offers TLS 1.2
+	// only must fail the handshake on the server's version check.
 	dotAddr, pool := startDoTOnly(t)
 	d := &net.Dialer{Timeout: 3 * time.Second}
 	conn, err := tls.DialWithDialer(d, "tcp", dotAddr, &tls.Config{
@@ -496,12 +500,55 @@ func TestDoT_AcceptsTLS12(t *testing.T) {
 		MinVersion: tls.VersionTLS12,
 		MaxVersion: tls.VersionTLS12,
 	})
-	if err != nil {
-		t.Fatalf("TLS 1.2 handshake: %v", err)
+	if err == nil {
+		v := conn.ConnectionState().Version
+		conn.Close()
+		t.Fatalf("TLS 1.2 client completed a handshake (version %#x), want a failure", v)
 	}
-	defer conn.Close()
-	if v := conn.ConnectionState().Version; v != tls.VersionTLS12 {
-		t.Errorf("negotiated version %#x, want TLS 1.2", v)
+	if !strings.Contains(err.Error(), "protocol version") {
+		t.Errorf("handshake error = %v, want a protocol version failure", err)
+	}
+}
+
+func TestDoT_TLS13ClientGetsAnswer(t *testing.T) {
+	// PRIV-12: a client that offers TLS 1.3 only completes the handshake and
+	// gets a DNS answer. A client that offers TLS 1.2 and 1.3 gets TLS 1.3.
+	dotAddr, pool := startDoTOnly(t)
+	for name, minVersion := range map[string]uint16{"1.3 only": tls.VersionTLS13, "1.2 and 1.3": tls.VersionTLS12} {
+		t.Run(name, func(t *testing.T) {
+			c := &dns.Client{
+				Net:     "tcp-tls",
+				Timeout: 3 * time.Second,
+				TLSConfig: &tls.Config{
+					RootCAs:    pool,
+					ServerName: testCertName,
+					MinVersion: minVersion,
+					MaxVersion: tls.VersionTLS13,
+				},
+			}
+			conn, err := c.Dial(dotAddr)
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			defer conn.Close()
+			tc, ok := conn.Conn.(*tls.Conn)
+			if !ok {
+				t.Fatalf("conn is %T, want *tls.Conn", conn.Conn)
+			}
+			if v := tc.ConnectionState().Version; v != tls.VersionTLS13 {
+				t.Errorf("negotiated version %#x, want TLS 1.3", v)
+			}
+			resp, _, err := c.ExchangeWithConn(buildReq("ads.example.com"), conn)
+			if err != nil {
+				t.Fatalf("exchange: %v", err)
+			}
+			if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) != 1 {
+				t.Fatalf("reply = %v, want one answer", resp)
+			}
+			if a, ok := resp.Answer[0].(*dns.A); !ok || !a.A.Equal(net.IPv4zero) {
+				t.Errorf("answer = %v, want the sinkhole 0.0.0.0", resp.Answer[0])
+			}
+		})
 	}
 }
 

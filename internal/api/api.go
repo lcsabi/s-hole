@@ -27,7 +27,7 @@
 //	POST   /api/purge            delete the query history and other stored data ({"confirm": true}; from this machine only)
 //	GET    /healthz              liveness probe (always 200 when running)
 //	GET    /readyz               readiness probe (200 once blocklist > 0)
-//	GET    /metrics              Prometheus text exposition (queries, blocked, local_ptr, local_names, cache, failures, refused, plaintext fallbacks, query-log drops, blocklist, allowlist, DoT certificate, runtime gauges)
+//	GET    /metrics              Prometheus text exposition (queries, blocked, local_ptr, local_names, cache, failures, forward limit, refused, plaintext fallbacks, query-log drops, blocklist, allowlist, DoT certificate, runtime gauges)
 //	GET    /debug/pprof/*        net/http/pprof handlers (/symbol also POST); opt-in via EnablePprof
 //	GET    /                     embedded SPA from internal/api/static/
 package api
@@ -144,6 +144,10 @@ type Server struct {
 	// refusedQueries returns the count of queries refused from outside the
 	// LAN for /metrics (dnsserver.RefusedQueries); nil leaves the metric off.
 	refusedQueries func() uint64
+	// forwardLimited returns the count of queries that got SERVFAIL at the
+	// forward limit for /metrics (dnsserver.ForwardLimited); nil leaves the
+	// metric off.
+	forwardLimited func() uint64
 	// plaintextFallbacks returns the plaintext fallback count for /metrics
 	// (dnsserver.PlaintextFallbacks); nil leaves the metric off.
 	plaintextFallbacks func() uint64
@@ -249,6 +253,13 @@ func (s *Server) SetUpstreamTransportFailures(fn func() map[string]uint64) {
 // before Serve.
 func (s *Server) SetRefusedQueries(fn func() uint64) {
 	s.refusedQueries = fn
+}
+
+// SetForwardLimited wires the forward-limit counter
+// (dnsserver.ForwardLimited) so /metrics can emit shole_forward_limited_total.
+// Call before Serve.
+func (s *Server) SetForwardLimited(fn func() uint64) {
+	s.forwardLimited = fn
 }
 
 // SetPlaintextFallbacks wires the plaintext fallback counter

@@ -44,7 +44,7 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
 - **DNS response cache.** Serves repeat queries from memory. Typical cache hit rates of 40–70% reduce upstream load and latency.
 - **Encrypted, resilient upstream forwarding.** Forwards over DNS-over-HTTPS (DoH) to Quad9, then Cloudflare, by default. For a public name, plain DNS is a fallback that s-hole uses only when every DoH upstream fails, and it warns when it does. Skips recently-failed resolvers until they recover.
 - **LAN only.** Answers clients on the local network only and refuses every other source, so s-hole cannot become an open resolver.
-- **DNS over TLS for LAN clients.** An optional encrypted listener (usually port 853). Android phones in the default Automatic Private DNS mode use it on their own, so their DNS queries cross the Wi-Fi encrypted. Off by default. You supply the certificate, and a reload picks up a renewed one without a restart.
+- **DNS over TLS for LAN clients.** An optional encrypted listener (usually port 853). Android 10 and later phones in the default Automatic Private DNS mode use it on their own, so their DNS queries cross the Wi-Fi encrypted. Off by default. You supply the certificate, and a reload picks up a renewed one without a restart.
 - **Local reverse DNS.** Answers PTR queries for the private and special ranges (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, loopback, link-local, IPv6 ULA, and the others in RFC 6303) and for the LAN's own public IPv6 prefix locally, so internal LAN addresses do not go to the upstream resolver. On by default.
 - **Local names stay local.** Names that only mean something on your network, such as `printer`, `nas.lan`, or `router.home.arpa`, go only to an upstream on the LAN (your router), never to a public resolver. `localhost` gets the loopback address, and `.onion`, `.invalid`, and `.alt` names get "no such name", without a query upstream.
 - **Minimal upstream query.** s-hole sends the upstream a new query with only the question and a few flags. The device's own query ID and EDNS options, such as a cookie that identifies the device, or a Client Subnet (part of its address), stay on the LAN. DoH queries are padded, so their size does not show the name.
@@ -363,7 +363,9 @@ s-hole can serve DNS over TLS (DoT, RFC 7858), usually on port 853. It is off by
 
 The main use is Android's **Automatic** Private DNS mode, the default on most phones. In this mode the phone tries DoT on the network's DNS server and, when it answers, sends its queries to s-hole encrypted. The phone does not check the certificate in this mode, so a self-signed certificate is enough and the phone needs no setup. This stops other devices on the Wi-Fi from reading DNS queries. It does not protect against an impostor resolver, because the certificate is not checked.
 
-> **Test status.** The listener, certificate reload, and certificate status were tested with automated tests, `dig +tls`, and `openssl s_client`, and on a Debian 12 VM with `systemd-resolved` as the DoT client in both modes. Automatic mode was tested on Bliss OS 16.9.7 (Android 13) in VirtualBox, not on a phone: Android found DoT on the DHCP DNS server, accepted the self-signed certificate, and s-hole blocked its lookups over DoT. In strict mode, the same Android rejected a certificate that the user installed, both a self-signed certificate and a CA. The public-certificate route in strict mode was not tested.
+s-hole accepts TLS 1.3 only. In TLS 1.2, a resumed session sends its session ticket in clear text, so an observer on the Wi-Fi could link the DoT connections of one phone. Android 10 and later support TLS 1.3. Android 9 cannot use s-hole's DoT: in Automatic mode it sends plain DNS to s-hole, and in strict mode it cannot resolve names.
+
+> **Test status.** The listener, certificate reload, and certificate status were tested with automated tests, `dig +tls`, and `openssl s_client`, and on a Debian 12 VM with `systemd-resolved` as the DoT client in both modes. Automatic mode was tested on Bliss OS 16.9.7 (Android 13) in VirtualBox, not on a phone: Android found DoT on the DHCP DNS server, accepted the self-signed certificate, and s-hole blocked its lookups over DoT. In strict mode, the same Android rejected a certificate that the user installed, both a self-signed certificate and a CA. The public-certificate route in strict mode was not tested. These tests ran while TLS 1.2 was the floor. After CL 102 made TLS 1.3 the floor, Automatic mode was tested again on the same Android 13 VM, and it validated and used DoT over TLS 1.3. `systemd-resolved` 257 on Debian 13 was tested again in both modes, also over TLS 1.3.
 
 **1. Make a certificate.** s-hole serves one certificate to every DoT client. Phones in Automatic mode accept any certificate, so a self-signed one is enough. If you also have desktop DoT clients, make the certificate with mkcert instead (see [Other DoT clients](#other-dot-clients)); phones accept that one too. Put the hostname and the LAN IP of the s-hole box in the certificate:
 
@@ -441,7 +443,7 @@ systemctl reload s-hole
 
 #### Other DoT clients
 
-Desktop support for DoT varies. The two `systemd-resolved` rows were tested against s-hole on Debian 12. The other rows come from each client's documentation and are untested.
+Desktop support for DoT varies. The two `systemd-resolved` rows were tested against s-hole on Debian 12, and again on Debian 13 (systemd 257) with TLS 1.3 only. The other rows come from each client's documentation and are untested.
 
 | Client | DoT to s-hole | Certificate |
 |---|---|---|
@@ -512,7 +514,7 @@ The server answers only requests addressed to an IP address, to `localhost`, or 
 | `POST` | `/api/purge` | Delete everything s-hole stored (see [Delete the query history](#delete-the-query-history)). Body: `{"confirm": true}`, JSON. Accepted only from the s-hole host itself (loopback or one of its own addresses); returns a report of each step |
 | `GET`  | `/healthz` | Liveness probe. Always 200 OK while the HTTP server is responsive |
 | `GET`  | `/readyz` | Readiness probe. 200 OK once the blocklist has loaded at least one entry, 503 otherwise |
-| `GET`  | `/metrics` | Prometheus text exposition of the `shole_*` series: query, cache, blocklist, upstream-failure, refused-query, plaintext-fallback, DoT certificate (when DoT is on), and Go-runtime metrics. See the [Metrics reference](docs/DESIGN.md#metrics-reference) for the full list. |
+| `GET`  | `/metrics` | Prometheus text exposition of the `shole_*` series: query, cache, blocklist, upstream-failure, forward-limit, refused-query, plaintext-fallback, DoT certificate (when DoT is on), and Go-runtime metrics. See the [Metrics reference](docs/DESIGN.md#metrics-reference) for the full list. |
 | `GET`  | `/debug/pprof/*` | Standard Go pprof endpoints. Registered **only** when `admin.pprof: true` is set (or `S_HOLE_ADMIN_PPROF=1`); s-hole warns while it is on. Keep `admin.listen` on localhost while you use it. |
 
 Runtime allowlist changes take effect immediately but do not persist across restarts. To make an allowlist entry permanent, add it to `blocking.allowlist` in `config.yaml`.
@@ -1002,7 +1004,7 @@ A full end-to-end integration test (`internal/dnsserver/integration_test.go`) wi
 
 ## Security Notes
 
-- s-hole is designed for **LAN deployment only**. It answers queries from the local network only and refuses every other source, but do not expose port 53 to the public internet anyway. There is no rate limiting.
+- s-hole is designed for **LAN deployment only**. It answers queries from the local network only and refuses every other source, but do not expose port 53 to the public internet anyway. There is no rate limit for each client. Global limits apply: at most 512 queries wait for an upstream at the same time (a query over the limit gets SERVFAIL), and at most 256 plain-TCP and 256 DoT connections can be open.
 - The query history (`query_log.database`) and a query log file hold the browsing history of the devices on your network. They are off by default. When you turn them on, treat them as sensitive data, and see [`PRIVACY.md`](PRIVACY.md) for where they live and how long they stay.
 - The admin UI has no authentication. The default `admin.listen` (`127.0.0.1:8080`) restricts it to localhost; s-hole warns while it listens on another address. The server refuses requests addressed to a foreign hostname (DNS rebinding) and cross-site requests that change something, and it enforces read/write/idle timeouts and a 64 KiB request body limit. These are no substitute for proper access control on a multi-user network.
 - Blocklist URLs are operator-controlled. Use HTTPS URLs from sources you trust; s-hole warns about an `http://` URL. s-hole does not follow a redirect from an HTTPS list URL to a plain HTTP URL.

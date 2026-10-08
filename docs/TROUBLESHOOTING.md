@@ -238,7 +238,7 @@ journalctl -u s-hole | grep 'queries could not be resolved'
 
 `msg="queries could not be resolved"` comes once a minute while queries fail.
 `queries` is how many failed, and `causes` gives the last error of each
-upstream. The clients got SERVFAIL. The line names no domain and no client.
+upstream, and `forward limit` when s-hole refused queries at the limit. The clients got SERVFAIL. The line names no domain and no client.
 
 - If `hint` names the system clock, an upstream's TLS certificate looks
   expired or not yet valid. The DoH upstreams use HTTPS, so a wrong clock
@@ -248,6 +248,17 @@ upstream. The clients got SERVFAIL. The line names no domain and no client.
   does not use s-hole as its own DNS server, or it cannot reach its time
   server while DoH fails: read
   [This host uses s-hole as its own DNS server](#this-host-uses-s-hole-as-its-own-dns-server).
+- If a cause starts with `forward limit`, s-hole already had 512 queries waiting for
+  an upstream, so it answered SERVFAIL at once and did not forward the query.
+  `shole_forward_limited_total` on `/metrics` counts these queries. A slow
+  upstream can cause this: check the other causes and the network path to
+  the upstreams. If the upstreams are fast, a device possibly sends many
+  queries. To find it, look in your router. If you turned on the query
+  history, look there too.
+- If a cause ends in `redirect refused`, a DoH upstream answered with an HTTP
+  redirect. s-hole does not follow it, so the query does not go to a host
+  that is not in your config, and it tries the next upstream. Check the DoH
+  URL in `dns.upstreams` with the provider's documentation.
 - If a cause is `reply does not match the query`, the upstream sent a reply
   for a different name, type, or class, or a reply that is not a standard
   answer. s-hole does not use such a reply and tries the next upstream. If
@@ -407,6 +418,7 @@ To keep it, also add it to `blocking.allowlist` in the config file.
 | `msg="DoT certificate expired"` | Clients that check the certificate cannot connect. | Renew the certificate. Then reload. |
 | `msg="DoT certificate reload failed; keeping the current certificate"` | A reload cannot read the new files, or the certificate and key do not match. s-hole still uses the old certificate. | Read `err`. Correct the files. Then reload. |
 | `msg="DoT certificate reloaded"` | The reload loaded the files. `expires` gives the new expiry. | Nothing. |
+| An Android 9 phone or an old DoT client does not use DoT (no log line) | s-hole accepts TLS 1.3 only. Android 9 and clients with OpenSSL older than 1.1.1 support only TLS 1.2. In Automatic mode, Android 9 sends plain DNS on port 53. In strict mode, it cannot resolve names. | Update the device or the client. To test the TLS version, run `echo \| openssl s_client -connect <s-hole IP>:853 -tls1_3`. |
 
 ## The query history is empty or has gaps
 

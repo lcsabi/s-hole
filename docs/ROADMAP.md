@@ -63,6 +63,7 @@ rails.
 | 41 | Minimal upstream query: no client EDNS options, a fresh ID, local-only names to LAN upstreams only, EDNS padding, localhost names never blocked | High | done (CL 94) |
 | 42 | Admin authentication by device pairing | Medium | not started (reopened in CL 93) |
 | 43 | Adblock-format blocklists (`\|\|example.com^`), with `@@` exceptions | Low | not started |
+| 44 | DNS admission control: global caps on in-flight forwards and plain-TCP connections | Low | done (CL 102); no rate limit for each client (see the #44 notes) |
 
 Items 19-26 came out of a 2026-08-24 feature-ideas session. Items 21-24 are a
 dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
@@ -1798,7 +1799,9 @@ unchanged (`remoteIP` sees the `*net.TCPAddr` under the `tls.Conn`).
 **Validation status: Automatic mode tested; strict mode partly tested.** CL 86 was
 tested with automated tests, `dig +tls`, and `openssl s_client` on a
 development machine, and on the maintainer's Debian 12 VM (see the desktop
-check below). Android was tested in a VM, not on a phone (see the Android
+check below). These tests ran while TLS 1.2 was the floor. After CL 102 raised
+it to TLS 1.3, Android Automatic mode was tested again (see the Android check
+below), and so was the `systemd-resolved` part of the desktop check. Android was tested in a VM, not on a phone (see the Android
 check below). Strict mode with a user-installed certificate was tested and rejected. The
 public-domain route in the README (the publicly trusted certificate, the public
 A record, and the off-LAN warning) comes from Android's documented behavior,
@@ -1825,13 +1828,21 @@ not from a test run, and the README says so. The steps, cheapest route first:
   was untrusted, and worked after the `CA:FALSE` self-signed certificate was
   installed with `update-ca-certificates`. So the self-signed certificate works
   as a trust anchor, and Linux desktops do not need mkcert.
+- Repeated on 2026-10-08 for CL 102 (TLS 1.3 only) with `systemd-resolved`
+  257 on a Debian 13 VM: the same three results, and each successful
+  connection negotiated TLS 1.3 (checked in a capture of port 853).
 
 **Android check: Automatic mode done (2026-09-28, Bliss OS 16.9.7, Android 13,
 in VirtualBox).** Android took s-hole as its DNS server from DHCP, validated
 DoT on port 853 with the self-signed openssl certificate (`dumpsys
 connectivity`: `UsePrivateDns: true`, no hostname, s-hole in
 `ValidatedPrivateDnsAddresses`), and sent app lookups over DoT: a blocked
-domain returned `0.0.0.0` with a `BLOCK` line in the journal. Android's
+domain returned `0.0.0.0` with a `BLOCK` line in the journal. Repeated on
+2026-10-08 for CL 102 (TLS 1.3 only), with the same Android 13 VM bridged on
+the LAN: Android validated Private DNS against s-hole, both DoT connections
+in a capture negotiated TLS 1.3, and app lookups went over port 853 (a
+blocked domain got `0.0.0.0`). The VM's DNS traffic to the router was sent
+to s-hole with a temporary `iptables` DNAT rule in place of a DHCP change. Android's
 network check stays on port 53 by design. With Private DNS off, the same lookup
 went over port 53. VirtualBox's NAT Network DHCP replaces option 6 with the
 host's DNS server, so the test used a dnsmasq DHCP server on an internal
@@ -1888,8 +1899,10 @@ Design decisions settled in the CL:
   would cut off the clients that depend on it.
 - **Fixed limits, no knobs.** A limiter caps open connections at 256; miekg's
   2 s read timeout (which also bounds the TLS handshake), 8 s idle timeout, and
-  128-query cap bound each connection. TLS 1.2 is the floor. The connection cap is
-  the shed point for the overload concern from the 2026-09-18 session.
+  128-query cap bound each connection. TLS 1.2 was the floor; CL 102 raised it
+  to TLS 1.3, because a TLS 1.2 session ticket is sent in clear text and links
+  the connections of one device. The connection cap is the shed point for the
+  overload concern from the 2026-09-18 session.
 - **Certificate state is visible outside the log.** An expired certificate must
   not fail silently (Android just stops using Private DNS). s-hole logs a WARN
   at startup, on each reload, and in `-check-config` when the certificate has
@@ -2099,6 +2112,20 @@ rule, as now. Most popular lists (oisd, HaGeZi, StevenBlack) also come in a
 hosts or domains version, so this is Low. This adds one built-in line format
 to `parseHostsFormat`. It is not a plug-in system, so the non-goal "Pluggable
 blocklist formats/backends" still holds.
+
+## 44. DNS admission control (done, CL 102)
+
+s-hole spawned one goroutine per query with no cap, and a cache miss can wait
+up to 10 s for the upstreams. One LAN device that sends many unique names could
+hold thousands of goroutines, sockets, and upstream connections, and the
+plain-TCP listener had no connection cap (only DoT had one). **Shipped in
+CL 102:** at most 512 queries wait for an upstream at the same time; a query
+over the cap gets SERVFAIL at once and counts in `shole_forward_limited_total`.
+The plain-TCP listener uses the DoT connection limiter (256 connections).
+
+A rate limit for each client is not planned. A token bucket for each client
+would keep raw client addresses in memory, which the first design rule does
+not allow without a need. Revisit it only if a real deployment needs it.
 
 ## Pending decisions
 

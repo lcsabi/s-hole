@@ -353,6 +353,7 @@ func main() {
 	apiServer.SetUpstreamTransportFailures(dnsserver.UpstreamTransportFailures)
 	apiServer.SetPlaintextFallbacks(dnsserver.PlaintextFallbacks)
 	apiServer.SetRefusedQueries(dnsserver.RefusedQueries)
+	apiServer.SetForwardLimited(dnsserver.ForwardLimited)
 	if fileLog != nil {
 		apiServer.SetFileLogDropped(fileLog.Dropped)
 	}

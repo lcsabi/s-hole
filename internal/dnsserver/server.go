@@ -9,15 +9,24 @@ import (
 	"github.com/miekg/dns"
 )
 
-// The DoT server's read deadlines. The first read on a connection, which also
-// covers the TLS handshake, gets dotReadTimeout; each later read gets
-// dotIdleTimeout. They bound how long a silent or idle client holds one of the
-// maxDoTConns slots. These match the miekg/dns defaults, set here so that a
-// change of those defaults cannot remove the bound.
+// The read deadlines of the plain-TCP and DoT servers. The first read on a
+// connection (for DoT, this also covers the TLS handshake) gets
+// tcpReadTimeout; each later read gets tcpIdleTimeout. They bound how long a
+// silent or idle client holds one of the maxTCPConns or maxDoTConns slots.
+// These match the miekg/dns defaults, set here so that a change of those
+// defaults cannot remove the bound.
 const (
-	dotReadTimeout = 2 * time.Second
-	dotIdleTimeout = 8 * time.Second
+	tcpReadTimeout = 2 * time.Second
+	tcpIdleTimeout = 8 * time.Second
 )
+
+// maxTCPConns caps concurrent plain-TCP DNS connections. A client uses TCP
+// only when a UDP reply is truncated, and it closes the connection after the
+// answer, so a home LAN needs few at a time. Without a cap, one device could
+// open idle connections until s-hole runs out of file descriptors. When the
+// cap is reached, a new connection waits in the kernel's accept queue until a
+// slot is free. Like maxDoTConns, it is a constant, not a config setting.
+const maxTCPConns = 256
 
 // Server wraps the miekg/dns servers: UDP and TCP on the plain listen
 // address, plus an optional DNS-over-TLS server. Every listener dispatches to
@@ -33,7 +42,8 @@ type Server struct {
 // Listen binds UDP and TCP on addr (host:port) for plain DNS. main calls it
 // right after config validation, like ListenDoT, so a port conflict (often the
 // systemd-resolved stub on port 53) stops startup at once with a clear error.
-// If the TCP bind fails, the UDP socket is closed again.
+// If the TCP bind fails, the UDP socket is closed again. The TCP listener caps
+// concurrent connections at maxTCPConns.
 func Listen(addr string) (net.PacketConn, net.Listener, error) {
 	pc, err := net.ListenPacket("udp", addr)
 	if err != nil {
@@ -44,7 +54,7 @@ func Listen(addr string) (net.PacketConn, net.Listener, error) {
 		_ = pc.Close()
 		return nil, nil, fmt.Errorf("dns: %w", err) // err names tcp and addr
 	}
-	return pc, ln, nil
+	return pc, newLimitListener(ln, maxTCPConns), nil
 }
 
 // NewServer constructs the UDP and TCP servers on the sockets from Listen.
@@ -56,8 +66,15 @@ func Listen(addr string) (net.PacketConn, net.Listener, error) {
 // bound and served until the process exited (b/063).
 func NewServer(pc net.PacketConn, ln net.Listener, handler dns.Handler) *Server {
 	return &Server{
-		udp:     &dns.Server{Addr: pc.LocalAddr().String(), Net: "udp", PacketConn: pc, Handler: handler},
-		tcp:     &dns.Server{Addr: ln.Addr().String(), Net: "tcp", Listener: ln, Handler: handler},
+		udp: &dns.Server{Addr: pc.LocalAddr().String(), Net: "udp", PacketConn: pc, Handler: handler},
+		tcp: &dns.Server{
+			Addr:        ln.Addr().String(),
+			Net:         "tcp",
+			Listener:    ln,
+			Handler:     handler,
+			ReadTimeout: tcpReadTimeout,
+			IdleTimeout: func() time.Duration { return tcpIdleTimeout },
+		},
 		handler: handler,
 	}
 }
@@ -72,8 +89,8 @@ func (s *Server) EnableDoT(ln net.Listener) {
 		Net:         "tcp-tls",
 		Listener:    ln,
 		Handler:     s.handler,
-		ReadTimeout: dotReadTimeout,
-		IdleTimeout: func() time.Duration { return dotIdleTimeout },
+		ReadTimeout: tcpReadTimeout,
+		IdleTimeout: func() time.Duration { return tcpIdleTimeout },
 	}
 }
 

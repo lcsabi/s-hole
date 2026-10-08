@@ -1,0 +1,73 @@
+name: Weekly vulnerability scan
+
+# A new Go or module advisory can affect code that has not changed. The CI
+# vuln job runs only on a push or a pull request, so this workflow scans
+# master and the binaries of the latest release once a week. A finding fails
+# the run, and GitHub notifies the maintainer of the failed scheduled run.
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Monday, 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    name: govulncheck / master
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Same scan as the CI vuln job. A scheduled run checks out the default
+      # branch (master); a manual run scans the branch that you select.
+      - uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
+        with:
+          go-version-input: "1.26"
+          repo-checkout: false
+
+  release:
+    name: govulncheck / latest release binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+          cache: false
+      - name: Install govulncheck
+        # A fixed release of the scanner. The advisories come from the live
+        # database (vuln.go.dev) on each run, so the pin does not age the scan.
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+      - name: Download the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir release
+          cd release
+          # Without a tag, gh picks the latest release (not a pre-release).
+          gh release download --repo "$REPO" --pattern 's-hole_*' --pattern SHA256SUMS
+          sha256sum -c SHA256SUMS
+          shopt -s nullglob
+          for f in s-hole_*.tar.gz; do tar -xzf "$f"; done
+          for f in s-hole_*.zip; do unzip -q "$f"; done
+      - name: Scan each binary
+        # -mode=binary reads the Go version and the module list from the
+        # binary itself, so it sees the toolchain that built the release.
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          bins=(release/s-hole_*/s-hole release/s-hole_*/s-hole.exe)
+          if [ "${#bins[@]}" -eq 0 ]; then
+            echo "no s-hole binary found in the release archives" >&2
+            exit 1
+          fi
+          status=0
+          for bin in "${bins[@]}"; do
+            echo "::group::${bin}"
+            govulncheck -mode=binary "$bin" || status=1
+            echo "::endgroup::"
+          done
+          exit "$status"

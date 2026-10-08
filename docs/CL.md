@@ -121,6 +121,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 105](cls/CL-105.md) | Purge overwrites the query files with zeros: the query log file before it is emptied or deleted, and, when s-hole is stopped, the database, `-wal`, and `-shm` files before they are deleted; links are refused |
 | [CL 106](cls/CL-106.md) | Linux and Docker deploy hardening: a systemd sandbox in the unit (`AF_NETLINK` kept for the LAN check), hardened `docker run` examples, and why the bridge example publishes port 53 on an IPv4 address |
 | [CL 107](cls/CL-107.md) | Windows service access list: the binary in `C:\Program Files\s-hole`, the config and data in `C:\ProgramData\s-hole`; the service writes only the files that it creates; `-service install` refuses a binary that the service can change and a config folder item that another account owns; the Windows purge counts hard links (b/104) and empties the query log file (b/105) |
+| [CL 108](cls/CL-108.md) | CI and release supply chain: every action pinned to a commit SHA, least-privilege workflow tokens, signed build provenance for the archives and the image, an image SBOM, base images pinned by digest, the Go version in the release notes, a weekly `govulncheck` of `master` and the latest release binaries |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

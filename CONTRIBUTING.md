@@ -20,7 +20,9 @@ guide explains the conventions that keep it that way.
 
 - Go 1.26 or later.
 - Optional: `golangci-lint` for `make lint` / `make check`, and `shellcheck`
-  for `make lint-sh` (both run by `make check`). Install golangci-lint via:
+  for `make lint-sh` (both run by `make check`). Install golangci-lint via
+  the command below. It installs the release that `GOLANGCI_LINT_VERSION` in
+  the `Makefile` names, which is also the release that CI runs:
 
   ```bash
   make tools-install
@@ -47,7 +49,8 @@ thing plus a race-enabled test run (which also runs the goroutine-leak
 check via `go.uber.org/goleak`), a `shellcheck` run on the deploy
 scripts (`make lint-sh` locally), a `govulncheck` scan (`make vuln`
 locally), and cross-compile for `linux/{amd64,arm64,armv7}` and
-`windows/amd64`.
+`windows/amd64`. A weekly workflow also runs `govulncheck` on `master` and on
+the binaries of the latest release.
 
 ### Running the binary
 
@@ -232,6 +235,18 @@ archive plus `SHA256SUMS` to a GitHub Release (notes drawn from the matching
 `ghcr.io/lcsabi/s-hole` image. The version is the tag name, so `s-hole
 -version` on a released build reports it instead of `dev`.
 
+The workflow also signs a build provenance attestation for each archive, the
+binary in it, and the image, and pushes an SBOM with the image. The release
+notes end with a "Build" section that names the Go version of the archives
+and of the image. The image uses the Go version that the Dockerfile pins, so
+it can be one patch behind the archives until the Dependabot update for the
+`golang` image merges.
+
+The repository makes a published release immutable: its assets and its tag
+cannot change. A tag ruleset also refuses to move or delete a final `v*` tag.
+A pre-release tag (with a `-` suffix) can be deleted after its release is
+deleted, but GitHub does not let you use the same tag name again.
+
 The procedure:
 
 1. **Graduate the CHANGELOG first, as a normal CL.** Rename `## [Unreleased]`
@@ -241,24 +256,35 @@ The procedure:
 2. **Dry-run with a pre-release tag.** Run `git tag -a vX.Y.Z-rc1 -m … && git
    push origin vX.Y.Z-rc1`. A tag with a `-` suffix is published as a GitHub
    pre-release and does not move the Docker `:latest`, so a mistake costs
-   nothing.
-3. **Verify the rc.** Confirm the per-target archives and `SHA256SUMS` are attached,
-   `sha256sum -c SHA256SUMS` passes on a downloaded archive, a downloaded binary
-   reports the tag under `-version`, `docker pull
-   ghcr.io/lcsabi/s-hole:X.Y.Z-rc1` runs and reports the same version, and the
-   Release notes render the `[X.Y.Z]` CHANGELOG section (not a placeholder).
+   only the rc number. A tag name can be used once only: if `-rc1` was used
+   before, use the next number (`-rc2`).
+3. **Verify the rc.** Make sure that:
+   - the per-target archives and `SHA256SUMS` are attached, and
+     `sha256sum -c SHA256SUMS` passes on a downloaded archive;
+   - a downloaded binary reports the tag under `-version`, and `docker pull
+     ghcr.io/lcsabi/s-hole:X.Y.Z-rc1` runs and reports the same version;
+   - the Release notes show the `[X.Y.Z]` CHANGELOG section (not a
+     placeholder) and the "Build" section with the Go versions;
+   - `gh attestation verify <file> --repo lcsabi/s-hole` passes for each
+     archive and for the unpacked binary;
+   - `gh attestation verify oci://ghcr.io/lcsabi/s-hole:X.Y.Z-rc1 --repo
+     lcsabi/s-hole` passes;
+   - `docker buildx imagetools inspect ghcr.io/lcsabi/s-hole:X.Y.Z-rc1
+     --format '{{ json .SBOM }}'` shows an SBOM for each platform.
 4. **Tear down the rc.** Run `gh release delete vX.Y.Z-rc1 --yes --cleanup-tag`
-   (removes the Release and the tag) and `git tag -d vX.Y.Z-rc1`. Delete the rc
-   image from the `ghcr` package too if you want a clean package page.
+   (removes the Release and the tag) and `git tag -d vX.Y.Z-rc1`. For a clean
+   package page, also delete the rc image and its untagged attestation
+   versions from the `ghcr` package.
 5. **Cut the final tag.** Run `git tag -a vX.Y.Z -m … && git push origin
    vX.Y.Z`. This tag has no `-`, so the Release is marked Latest and `:latest`
    moves to it.
 6. **Confirm.** `gh release view vX.Y.Z` shows `isPrerelease=false`,
-   `docker manifest inspect ghcr.io/lcsabi/s-hole:latest` resolves, and the
-   `ghcr` package is public.
+   `docker manifest inspect ghcr.io/lcsabi/s-hole:latest` resolves,
+   `gh attestation verify oci://ghcr.io/lcsabi/s-hole:X.Y.Z --repo
+   lcsabi/s-hole` passes, and the `ghcr` package is public.
 
-A published final tag is immutable. Never move or delete it once it is out;
-ship a fix as the next patch (`vX.Y.Z+1`).
+A published final tag is immutable, and the repository settings enforce it.
+Ship a fix as the next patch (`vX.Y.Z+1`).
 
 ## Project structure
 

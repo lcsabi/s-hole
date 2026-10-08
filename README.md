@@ -139,6 +139,20 @@ sha256sum -c SHA256SUMS --ignore-missing   # confirm the download
 tar -xzf s-hole_v2.0.1_linux_amd64.tar.gz  # Linux (unzip the .zip on Windows)
 ```
 
+`SHA256SUMS` comes from the same place as the archives. It shows that the
+download is complete, but not who built it. From v2.1.0, each archive and the
+binary in it also have a signed build provenance attestation. It shows that the
+release workflow of this repository built the file from the release tag. To
+check the attestation, use the [GitHub CLI](https://cli.github.com/):
+
+```bash
+gh attestation verify s-hole_v2.1.0_linux_amd64.tar.gz --repo lcsabi/s-hole
+```
+
+The same command checks the unpacked binary (`s-hole` or `s-hole.exe`). The
+release notes name the Go versions that built the archives and the container
+image.
+
 Each archive contains the binary, a sample `config.yaml`, `LICENSE`, `README.md`, `PRIVACY.md`,
 and (on Linux) the `deploy/` install scripts and systemd unit. The same tag also
 publishes a container image. See [Docker](#docker) for the pull command.
@@ -650,6 +664,14 @@ docker build -t s-hole .
 #   docker pull ghcr.io/lcsabi/s-hole:2.0.1   (and use that name in step 4)
 ```
 
+From 2.1.0, a released image has a signed build provenance attestation and an
+SBOM (the list of the packages in the image). To check the image before you
+run it, use the GitHub CLI:
+
+```bash
+gh attestation verify oci://ghcr.io/lcsabi/s-hole:2.1.0 --repo lcsabi/s-hole
+```
+
 **4. Run with host networking** (recommended on Linux):
 
 Set `dns.listen` to the LAN IP in `data/config.yaml`. Most Linux hosts run `systemd-resolved`, which already holds `127.0.0.53:53`, so `":53"` (every interface) fails with *"address already in use"*; the LAN IP does not collide. (To use `":53"`, free the stub first, as shown below.)
@@ -894,6 +916,7 @@ $env:GOOS=""; $env:GOARCH=""
 - **A bug tracker with priorities and structured root-cause/fix records** ([`docs/BUGS.md`](docs/BUGS.md)), including entries deliberately marked *Won't Fix (by design)*.
 - **Documentation drift is treated as a bug.** Code and docs are updated in the same change.
 - **CI gate on every push**: `gofmt`, `go vet`, `golangci-lint`, race-enabled tests, `govulncheck`, and a cross-compile of every release target. The core `internal/` packages meet the coverage targets (see the [targets under Development](#development)).
+- **Verifiable releases**: every action pinned to a commit SHA, least-privilege workflow tokens, signed build provenance for each archive and the container image, an image SBOM, and a weekly `govulncheck` of the latest release's binaries.
 
 ---
 
@@ -1042,7 +1065,7 @@ s-hole v2.0.1
 
 `s-hole -purge -config <path>` deletes everything s-hole stored (see [Delete the query history](#delete-the-query-history)). `s-hole -healthcheck -config <path>` exits `0` when the running s-hole answers `/readyz`; the Docker image uses it.
 
-CI runs lint + `go mod verify` + race-enabled tests + `shellcheck` (deploy scripts) + `govulncheck` + cross-compile for `linux/{amd64,arm64,armv7}` and `windows/amd64` on every push and PR; see `.github/workflows/ci.yml`. The race-enabled run also exercises `go.uber.org/goleak`, which fails the goroutine-heavy packages (cache, querylog, dnsserver) if any goroutine outlives its tests. Dependabot keeps Go modules, GitHub Actions, and the Docker base image up to date.
+CI runs lint + `go mod verify` + race-enabled tests + `shellcheck` (deploy scripts) + `govulncheck` + cross-compile for `linux/{amd64,arm64,armv7}` and `windows/amd64` on every push and PR; see `.github/workflows/ci.yml`. The race-enabled run also exercises `go.uber.org/goleak`, which fails the goroutine-heavy packages (cache, querylog, dnsserver) if any goroutine outlives its tests. Each workflow pins every action to a full commit SHA and gives each job only the token rights it needs. The Dockerfile pins both base images by digest. Dependabot keeps Go modules, GitHub Actions, and the Docker base images up to date. A weekly workflow (`.github/workflows/vulncheck.yml`) runs `govulncheck` on `master` and on the binaries of the latest release, so a new advisory for a published release shows up without a code change.
 
 Fuzz tests live alongside the unit tests for `blocklist.ValidDomain`, `blocklist.parseHostsFormat`, and `blocklist.cacheFilename`. Run them ad-hoc with `go test -fuzz=FuzzValidDomain -fuzztime=30s ./internal/blocklist/`.
 

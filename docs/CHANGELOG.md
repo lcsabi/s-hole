@@ -162,6 +162,17 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   follow "Upgrade from an install in `C:\s-hole`" in the README. On
   Windows, the purge now also refuses a file with more than one hard link.
   (CL 107, b/104)
+- **Signed releases.** Each release archive, the binary in it, and the
+  container image now have a signed build provenance attestation. It shows
+  that the release workflow of `lcsabi/s-hole` built the file from the
+  release tag. Check it with `gh attestation verify <file> --repo
+  lcsabi/s-hole` (see "Install a pre-built release" in the README). The image
+  also has an SBOM, and the release notes name the Go versions that built the
+  archives and the image. A published release and its tag cannot change.
+  The workflows pin every action to a commit SHA and give each job only the
+  token rights that it needs, and the Dockerfile pins its base images by
+  digest. A weekly scan runs `govulncheck` on the binaries of the latest
+  release. (CL 108)
 
 ## [2.0.1] - 2026-10-08
 

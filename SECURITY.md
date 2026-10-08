@@ -202,6 +202,15 @@ Out of scope:
   client install.
 - **No CGO.** The binary is statically linked, so a libc or
   `libsystemd` vulnerability cannot reach the s-hole process.
+- **Build and release.** The workflows pin every action to a full commit
+  SHA, and each job gets only the token rights that it needs. A release
+  builds from a clean Go cache. Each release archive, the binary in it, and
+  the container image have a signed build provenance attestation (check it
+  with `gh attestation verify`, see the README), and the image has an SBOM.
+  The Dockerfile pins its base images by digest. A weekly scan runs
+  `govulncheck` on `master` and on the binaries of the latest release, and
+  the release notes name the Go versions that built the archives and the
+  image.
 - **Client name labels are read-only and privacy-bounded.** The optional
   `client_names` map adds device labels to the admin API, so it is device-
   identity PII on the unauthenticated read surface. The label is resolved from

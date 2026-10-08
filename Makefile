@@ -10,6 +10,11 @@ LDFLAGS     = -ldflags="-s -w \
                 -X '$(VERSION_PKG).Commit=$(COMMIT)' \
                 -X '$(VERSION_PKG).BuildDate=$(DATE)'"
 
+# The golangci-lint release that `make tools-install` installs and the CI lint
+# job runs (CI reads this line). Move it on purpose: a new linter release can
+# add findings.
+GOLANGCI_LINT_VERSION ?= v2.14.0
+
 # On Windows use: $env:GOOS="linux"; $env:GOARCH="arm64"; go build ...
 # or run these targets from WSL / Git Bash.
 
@@ -74,14 +79,17 @@ lint-sh:
 ## vuln: scan dependencies + code for known CVEs (govulncheck)
 vuln:
 	# go run keeps govulncheck out of the module's require set; CI runs the
-	# same tool via the golang/govulncheck-action job.
+	# same tool through the golang/govulncheck-action job, and the weekly
+	# vulncheck workflow also scans the latest release binaries. @latest is
+	# deliberate: the advisories come from the live database, so the scanner
+	# release does not change which findings appear.
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
 ## tools-install: install developer tools (golangci-lint) into $GOBIN
 tools-install:
 	# v2 module path: the un-versioned path installs golangci-lint v1,
 	# which cannot parse the version:"2" schema in .golangci.yml.
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 	@echo "tools installed; ensure \$$(go env GOBIN) (or \$$GOPATH/bin) is on \$$PATH"
 
 ## check: fmt + vet + lint + lint-sh + test (what CI does)

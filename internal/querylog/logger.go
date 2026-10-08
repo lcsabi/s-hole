@@ -51,6 +51,7 @@ var logger = logging.For("querylog")
 type FileLogger struct {
 	w          io.Writer
 	closer     io.Closer // nil for standard output, which outlives the process
+	path       string    // the file path; "" for standard output
 	logQueries string
 	ch         chan string
 	done       chan struct{}
@@ -83,7 +84,7 @@ func NewFileLogger(dest, logQueries string) (*FileLogger, error) {
 		if err != nil {
 			return nil, err
 		}
-		l.w, l.closer = f, f
+		l.w, l.closer, l.path = f, f, dest
 	}
 	l.wg.Add(1)
 	go l.run()
@@ -165,8 +166,13 @@ func (l *FileLogger) run() {
 // cannot change.
 var ErrStdoutNotPurgeable = errors.New("query lines go to standard output; s-hole cannot delete them from the system journal or the container log")
 
-// Purge discards the queued lines and empties the log file. It runs in the
-// writer goroutine, so no queued line is written after it.
+// ErrNotOverwritten is returned by Purge when it emptied the log file but
+// could not overwrite it with zeros first.
+var ErrNotOverwritten = errors.New("emptied, but not overwritten with zeros")
+
+// Purge discards the queued lines, overwrites the log file with zeros (see
+// ZeroFile), and empties it. It runs in the writer goroutine, so no queued
+// line is written after it.
 func (l *FileLogger) Purge(ctx context.Context) error {
 	reply := make(chan error, 1)
 	select {
@@ -197,7 +203,22 @@ func (l *FileLogger) truncate() error {
 	if !ok || l.closer == nil {
 		return ErrStdoutNotPurgeable
 	}
-	return f.Truncate(0)
+	// The file is open for append, which writes only at the end, so the
+	// zeros go through a second handle on the same file. A failed overwrite
+	// still empties the file, and Purge reports the failure.
+	var zerr error
+	if fi, err := f.Stat(); err != nil {
+		zerr = err
+	} else {
+		zerr = zeroFile(l.path, fi)
+	}
+	if err := f.Truncate(0); err != nil {
+		return err
+	}
+	if zerr != nil {
+		return fmt.Errorf("%w: %w", ErrNotOverwritten, zerr)
+	}
+	return nil
 }
 
 // Close writes the queued lines, stops the writer, and closes the file. It

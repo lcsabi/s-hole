@@ -108,9 +108,15 @@ Out of scope:
 - **Stored data** is owner-only: s-hole creates its files with mode `600`
   (umask `077`, and `UMask=0077` in the unit), the data directory is `700`,
   and the query database is opened with `secure_delete`, so a pruned or
-  purged row is overwritten in the file. On Windows the service runs as a
-  virtual account (`NT SERVICE\s-hole`), and install gives the config folder
-  an owner-only access list. The Docker image runs as UID 65532.
+  purged row is overwritten in the file. A purge also overwrites the query
+  log file with zeros before it empties or deletes it, and a purge while
+  s-hole is stopped overwrites the database files with zeros before it
+  deletes them. The overwrite refuses a symbolic link, a file that is not a
+  regular file, and (on Unix) a file with more than one hard link: the
+  uninstaller runs the purge as root in a directory that the `s-hole` user
+  owns. On Windows the service runs as a virtual account
+  (`NT SERVICE\s-hole`), and install gives the config folder an owner-only
+  access list. The Docker image runs as UID 65532.
 - **The application log** carries no query name, no client address, and no
   total query count (the failure summaries count failed queries only). The
   one exception is the allowlist audit line: it names the domain, and the

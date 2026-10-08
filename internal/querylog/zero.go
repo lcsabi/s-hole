@@ -1,0 +1,86 @@
+package querylog
+
+import (
+	"errors"
+	"fmt"
+	"os"
+)
+
+// ErrRefused matches the error of ZeroFile for a path that it refuses: a
+// symbolic link, a file that is not a regular file, a file with more than
+// one hard link, or a file that is not the one it should overwrite.
+var ErrRefused = errors.New("refused")
+
+// refusedError is a refusal; its text names the path and the reason.
+type refusedError string
+
+func (e refusedError) Error() string        { return string(e) }
+func (e refusedError) Is(target error) bool { return target == ErrRefused }
+
+// refused returns a refusedError for path with reason.
+func refused(path, reason string) error {
+	return refusedError(path + ": " + reason)
+}
+
+// zeroChunk is the size of each zero write in ZeroFile.
+const zeroChunk = 64 << 10
+
+// ZeroFile overwrites the file at path with zeros up to its current size and
+// syncs it to the disk. It does not truncate or remove the file: the caller
+// does that next, so the blocks the file frees hold zeros, not query data.
+// On flash storage and on a copy-on-write file system the overwrite can go to
+// new blocks, so it is best effort (see PRIVACY.md).
+//
+// The offline purge can run as root in the data directory, which the s-hole
+// user owns. So ZeroFile refuses a symbolic link, a file that is not a
+// regular file, and (on Unix) a file with more than one hard link: the
+// overwrite would otherwise reach a file that another name points to. A missing file returns
+// an error that matches fs.ErrNotExist.
+func ZeroFile(path string) error {
+	return zeroFile(path, nil)
+}
+
+// zeroFile is ZeroFile. When want is not nil, it also refuses a file that is
+// not want: the online purge holds the query log open and must not overwrite
+// another file that took its name.
+func zeroFile(path string, want os.FileInfo) error {
+	lfi, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !lfi.Mode().IsRegular() {
+		return refused(path, "not a regular file; not overwritten")
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|openFlags, 0)
+	if err != nil {
+		return err
+	}
+	err = writeZeros(f, path, lfi, want)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+func writeZeros(f *os.File, path string, lfi, want os.FileInfo) error {
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	switch {
+	case !fi.Mode().IsRegular() || !os.SameFile(fi, lfi):
+		return refused(path, "changed while it was opened; not overwritten")
+	case want != nil && !os.SameFile(fi, want):
+		return refused(path, "is not the open query log file; not overwritten")
+	case linkCount(fi) > 1:
+		return refused(path, fmt.Sprintf("has %d hard links; not overwritten", linkCount(fi)))
+	}
+	zeros := make([]byte, zeroChunk)
+	for off := int64(0); off < fi.Size(); off += zeroChunk {
+		n := min(fi.Size()-off, zeroChunk)
+		if _, err := f.WriteAt(zeros[:n], off); err != nil {
+			return err
+		}
+	}
+	return f.Sync()
+}

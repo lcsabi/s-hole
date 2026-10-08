@@ -118,8 +118,9 @@ fi
 # 3. With --purge, let s-hole delete what it stored before the binary and the
 #    config go: the query database and log file can sit outside $DATA_DIR
 #    when the config names an absolute path. The service is stopped, so
-#    s-hole deletes the files itself. Relative paths in the config start from
-#    the service's working directory, so run it there.
+#    s-hole overwrites the query files with zeros and deletes them itself.
+#    Relative paths in the config start from the service's working
+#    directory, so run it there.
 if $PURGE && [[ -x "$INSTALL_BIN" && -f "$CONFIG_DIR/config.yaml" && -d "$DATA_DIR" ]]; then
   echo "==> deleting the stored data (s-hole -purge)"
   (cd "$DATA_DIR" && "$INSTALL_BIN" -purge -config "$CONFIG_DIR/config.yaml") || true

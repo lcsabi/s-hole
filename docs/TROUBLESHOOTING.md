@@ -64,7 +64,9 @@ query count. (The failure summaries count failed queries only.) The one
 exception is the allowlist audit line (`allowlist entry added` or `removed`):
 it names the domain. It has the address of the device that made the change
 only while `query_log.mode` records queries, masked by `query_log.clients`.
-Under the defaults it has no address.
+Under the defaults it has no address. The lines that the admin web server
+writes on its own (`admin HTTP server error`) have `client` in place of each
+IP address.
 
 ### Show only problems
 
@@ -401,6 +403,13 @@ The answer shows the block entry that matched. To allow the domain now, add
 it to the allowlist on the dashboard. This entry is lost when s-hole restarts.
 To keep it, also add it to `blocking.allowlist` in the config file.
 
+The dashboard can refuse an entry:
+
+| You see | What it means | What to do |
+|---|---|---|
+| `s-hole refused "co.uk": it looks like a public suffix...` | The entry has two labels, and the first is `co`, `com`, `org`, `net`, `gov`, `ac`, or `edu`. Such a name is a public suffix, and the entry would unblock every site under it. | Add the site's own name, such as `example.co.uk`. |
+| `s-hole refused "...": the allowlist is full: it holds 1000 entries added through the dashboard or the API` | The allowlist holds 1,000 entries that the dashboard or the API added since s-hole started. The entries in `blocking.allowlist` do not count. | Remove an entry that you do not need. To keep an entry, add it to `blocking.allowlist` in the config file, then restart s-hole. A restart also removes the entries that the dashboard added. |
+
 ## The dashboard does not open
 
 | You see | What it means | What to do |
@@ -408,6 +417,8 @@ To keep it, also add it to `blocking.allowlist` in the config file.
 | `msg="admin UI failed to bind; DNS still serving"` | Another program uses the `admin.listen` port. DNS still works. | Read `err`. Stop the other program, or change `admin.listen`. |
 | `msg="admin UI listening" url=http://127.0.0.1:8080` | The dashboard runs, but only on the s-hole host. | Open it through an SSH tunnel: `ssh -L 8080:127.0.0.1:8080 <host>`. |
 | The browser shows `421` and `s-hole answers only requests addressed to its IP address...` | You opened the dashboard by a name that is not the machine's own hostname, such as a name from your router (`pi.lan`). s-hole refuses other names, to stop DNS rebinding. | Open it by IP address, `localhost`, or the machine's hostname, such as `http://raspberrypi.local:8080`. |
+| The browser shows `403` and `s-hole refused a request from another site` | A page on another site, or a web app on another port of the same host, sent the request. s-hole refuses such requests, so a web page cannot use your browser to reach the admin server. | Open the dashboard directly: type its address, or use a bookmark. |
+| `level=ERROR msg="admin HTTP server error" pkg=api` | The admin web server wrote an error line of its own. If `detail` starts with `http: panic serving client`, one dashboard or API request failed because of a program error in s-hole. DNS and the other requests still work. | This is a bug. Report it with the `detail` and `stack` fields. They hold no IP address. |
 | **Delete history** says `the query history can be deleted only from the s-hole host` | A purge is accepted only from the s-hole host itself. | Open the dashboard on the s-hole host, or run `s-hole -purge -config <config>` there. In a Docker bridge network, run `docker exec <container> s-hole -purge -config /app/config.yaml`. |
 
 ## DNS over TLS

@@ -645,6 +645,9 @@ func TestAllowlistAudit_ClientFollowsQueryLog(t *testing.T) {
 					}
 					for _, r := range logs.records(t) {
 						for k, v := range r {
+							if k == "time" {
+								continue // slog's timestamp can hold "5555" by chance
+							}
 							s := fmt.Sprint(v)
 							if strings.Contains(s, "5555") {
 								t.Errorf("attribute %s = %q holds the source port", k, s)

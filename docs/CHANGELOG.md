@@ -59,6 +59,14 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   be another host or a plain `http://` URL. Now a redirect is a failed
   attempt: s-hole tries the next upstream, and the failure summary shows
   `redirect refused`. (CL 102, b/102)
+- **The admin web server's own error lines hold no address.** When a
+  dashboard or API request failed with a program error, Go's web server wrote
+  a line with the device's IP address and port, at INFO, outside the `api`
+  logger. Now this line, and every other line the web server writes on its
+  own, goes to the `api` logger at ERROR as `admin HTTP server error`, with
+  each IP address replaced by `client`. No request is known to cause this
+  error. (CL 104,
+  b/103)
 
 ### Security
 
@@ -85,6 +93,27 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   check ran only for a valid source address. The DNS listeners always give
   one, so no query reached this case; the check now fails closed. (CL 101,
   b/100)
+- **The admin server refuses requests from another site.** A web page could
+  not read the admin API through your browser, but it could send GET requests
+  to it: time a `/api/queries?domain=` reply to guess whether the history
+  holds a name, or start exports. Now a request that the browser marks as
+  sent from another site (`Sec-Fetch-Site: cross-site` or `same-site`) gets
+  403 on every route. A link from another page still opens the dashboard.
+  `curl`, Prometheus, and the healthcheck send no such header and are not
+  affected. Browsers send the header only to `localhost`, a loopback address,
+  or HTTPS, so this protects the default `127.0.0.1:8080` bind, not a
+  dashboard opened by its LAN address over plain HTTP. (CL 104)
+- **The allowlist API has limits.** `POST /api/allowlist` refuses a
+  two-label entry that starts with `co`, `com`, `org`, `net`, `gov`, `ac`, or
+  `edu`, such as `co.uk`, with 400: the entry would unblock every site under
+  that public suffix. The allowlist keeps at most 1,000 entries added through
+  the API; when it is full, a new entry gets 409 until you remove one. The
+  entries in `blocking.allowlist` do not count and have no limit. The
+  dashboard shows the reason. (CL 104)
+- **The dashboard runs no inline script.** The dashboard script is now a
+  separate file, and the Content-Security-Policy no longer allows inline
+  script. If an injection ever got into the page, the browser would not run
+  it. (CL 104)
 
 ## [2.0.1] - 2026-10-08
 

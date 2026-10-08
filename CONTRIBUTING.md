@@ -169,12 +169,14 @@ router-setup banner. Then, in a second terminal:
 3. **Dashboard.** Open `http://localhost:8080`; the stat cards and
    recent-queries table should reflect step 2 within one poll (~3 s).
    The header shows `recording all queries`, the PER-DEVICE HISTORY ON
-   badge, and the warnings panel.
+   badge, and the warnings panel. The browser console shows no
+   Content-Security-Policy error.
 4. **Allowlist round-trip.** Query a blocked domain,
    `curl -X POST -H 'Content-Type: application/json' -d '{"domain":"…"}' localhost:8080/api/allowlist`,
    query again (now resolves), `curl -X DELETE 'localhost:8080/api/allowlist?domain=…'`,
    query again (blocked again). Do one add via the dashboard's actions panel
-   to cover the UI path.
+   to cover the UI path. Add `co.uk` in the actions panel: the panel shows
+   the refusal.
 5. **Reload single-flight.** Two immediate
    `curl -X POST localhost:8080/api/reload` calls: the first returns
    `"reload triggered"`, the second `"reload queued"`. The log shows

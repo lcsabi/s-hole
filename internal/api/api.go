@@ -4,13 +4,13 @@
 // 127.0.0.1:8080, localhost only; set admin.listen to "0.0.0.0:8080" to
 // expose to the LAN) and exposes JSON endpoints backed by the stats,
 // querylog, and blocklist subsystems. The server is unauthenticated and
-// intended for LAN-only deployment. Every route passes a Host check and,
-// for a state-changing request, a cross-origin check (security.go), which
-// stop a web page in the operator's browser from reading or changing the
-// server through DNS rebinding or a cross-site request. Conservative HTTP
-// server timeouts and a per-request body size cap defend against slowloris
-// and memory-exhaustion attacks. None of this is a substitute for proper
-// access control on a multi-user network.
+// intended for LAN-only deployment. Every route passes a Host check, a
+// Fetch Metadata check, and, for a state-changing request, a cross-origin
+// check (security.go), which stop a web page in the operator's browser from
+// using the server through DNS rebinding or a cross-site request.
+// Conservative HTTP server timeouts and a per-request body size cap defend
+// against slowloris and memory-exhaustion attacks. None of this is a
+// substitute for proper access control on a multi-user network.
 //
 // Routes:
 //
@@ -20,8 +20,8 @@
 //	GET    /api/queries/export   stream the filtered query log (?format=csv|json, default csv; same filters as /api/queries; optional ?limit=N, else all)
 //	GET    /api/top-blocked      most-blocked domains in the stored history (SQLite) (?limit=N, default 50, max 1000)
 //	GET    /api/history          per-bucket query volume (?window=24h&bucket=1h; up to 24h from in-memory counts that follow query_log.mode, longer from SQLite; bucket count capped at 1000)
-//	GET    /api/allowlist        runtime allowlist (sorted)
-//	POST   /api/allowlist        add a domain (JSON body, ValidDomain-gated, 64 KiB cap)
+//	GET    /api/allowlist        the allowlist: config and runtime entries (sorted)
+//	POST   /api/allowlist        add a domain (JSON body, ValidDomain-gated, 64 KiB cap; a two-label co/com/org/net/gov/ac/edu public suffix gets 400; a new entry past 1,000 runtime entries gets 409)
 //	DELETE /api/allowlist        remove a domain
 //	POST   /api/reload           reload the DoT certificate (if on) and refresh blocklists (single-flight)
 //	POST   /api/purge            delete the query history and other stored data ({"confirm": true}; from this machine only)
@@ -29,7 +29,7 @@
 //	GET    /readyz               readiness probe (200 once blocklist > 0)
 //	GET    /metrics              Prometheus text exposition (queries, blocked, local_ptr, local_names, cache, failures, forward limit, refused, plaintext fallbacks, query-log drops, blocklist, allowlist, DoT certificate, runtime gauges)
 //	GET    /debug/pprof/*        net/http/pprof handlers (/symbol also POST); opt-in via EnablePprof
-//	GET    /                     embedded SPA from internal/api/static/
+//	GET    /                     embedded SPA from internal/api/static/ (index.html, app.js)
 package api
 
 import (
@@ -333,6 +333,9 @@ func (s *Server) Serve(ln net.Listener) error {
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
 		IdleTimeout:       idleTimeout,
+		// net/http's own lines (a handler panic, for example) name the
+		// client's address; newErrorLog removes it (b/103).
+		ErrorLog: newErrorLog(),
 	}
 	s.httpServer.Store(hs)
 	// Double-check against a Shutdown that ran before the Store above (b/054).
@@ -997,9 +1000,44 @@ func (s *Server) handleAllowlistAdd(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid domain (max 253 chars, must contain a dot, alphanumerics/hyphen/underscore only, no empty label, no label that starts or ends with a hyphen)", http.StatusBadRequest)
 		return
 	}
-	s.store.AddToAllowlist(domain)
+	if publicSuffixLike(domain) {
+		http.Error(w, "s-hole refused "+strconv.Quote(domain)+": it looks like a public suffix, "+
+			"so the entry would unblock every site under it. Add the site's own name, for example example."+
+			strings.ToLower(strings.TrimSuffix(domain, ".")), http.StatusBadRequest)
+		return
+	}
+	if !s.store.AddToAllowlistLimited(domain, maxAllowlistEntries) {
+		http.Error(w, fmt.Sprintf("s-hole refused %q: the allowlist is full: it holds %d entries added through the dashboard or the API. "+
+			"Remove an entry first, or add the domain to blocking.allowlist in the config file and restart s-hole",
+			domain, maxAllowlistEntries), http.StatusConflict)
+		return
+	}
 	logger.Info("allowlist entry added", s.auditAttrs(r, domain)...)
 	writeJSON(w, map[string]string{"domain": domain, "status": "allowlisted"})
+}
+
+// maxAllowlistEntries caps the entries that POST /api/allowlist can add
+// (SEC-11). The admin API has no login, so without a cap any client that
+// reaches it could grow the allowlist (and the audit lines in the system
+// journal) without limit. The config allowlist does not count: only the
+// operator can edit it.
+const maxAllowlistEntries = 1000
+
+// secondLevelLabels are common labels that registries put under a country
+// code: co.uk, com.au, org.br, gov.in, ac.jp, edu.au. A two-label allowlist
+// entry that starts with one of them is almost always a public suffix, and
+// the suffix walk in blocklist.Store would unblock every site under it. This
+// is a small built-in guard, not the Public Suffix List (no extra dependency):
+// a suffix such as github.io still passes.
+var secondLevelLabels = map[string]bool{
+	"co": true, "com": true, "org": true, "net": true, "gov": true, "ac": true, "edu": true,
+}
+
+// publicSuffixLike reports whether domain has exactly two labels and the
+// first is one of secondLevelLabels (SEC-11).
+func publicSuffixLike(domain string) bool {
+	first, rest, ok := strings.Cut(strings.ToLower(strings.TrimSuffix(domain, ".")), ".")
+	return ok && !strings.Contains(rest, ".") && secondLevelLabels[first]
 }
 
 func (s *Server) handleAllowlistRemove(w http.ResponseWriter, r *http.Request) {

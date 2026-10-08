@@ -63,7 +63,8 @@ COPY --from=builder /build/s-hole /usr/local/bin/s-hole
 
 # s-hole runs as an unprivileged user (65532), not root (b/087). The binary
 # carries the file capability from the build stage; NET_BIND_SERVICE is in
-# Docker's default capability set.
+# Docker's default capability set. With --cap-drop ALL, add it back with
+# --cap-add NET_BIND_SERVICE, or the exec fails.
 RUN addgroup -S -g 65532 s-hole \
  && adduser -S -D -H -u 65532 -G s-hole -s /sbin/nologin s-hole
 

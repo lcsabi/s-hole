@@ -113,6 +113,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 97](cls/CL-97.md) | DNS answer integrity: the cache key holds the CD and DO bits, upstream replies must match the question, a one-day cache lifetime cap, RD=0 queries refused (b/096) |
 | [CL 98](cls/CL-98.md) | Blocklist downloads do not follow a redirect from HTTPS to a non-HTTPS URL (b/097) |
 | [CL 99](cls/CL-99.md) | No activity data or query names in the application log; the per-minute graph follows `query_log.mode` (b/098, b/099) |
+| [CL 100](cls/CL-100.md) | Graduate the CHANGELOG to v2.0.1 |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

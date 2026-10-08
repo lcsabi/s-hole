@@ -95,7 +95,11 @@ Out of scope:
 - **Blocklist downloads** use a dedicated `http.Client` with a 60-second
   timeout and a 256 MiB `io.LimitReader` cap. Non-200 responses fall back
   to the stale cache rather than poisoning it. Files are written
-  atomically via `.tmp` + `os.Rename`.
+  atomically via `.tmp` + `os.Rename`. An HTTPS download does not follow a
+  redirect to a URL that is not HTTPS (b/097): the download fails, s-hole
+  logs a warning, and the stale cache is used if there is one. A redirect to
+  another HTTPS host is followed. A download stops after 10 requests (9
+  redirects), as with Go's default policy.
 - **Domain inputs** (blocklist lines, `blocking.allowlist` entries, and the
   allowlist API) are validated by `blocklist.ValidDomain`: length ≤ 253, an
   interior dot, letters, digits, and `.-_` only, no empty label, and no label

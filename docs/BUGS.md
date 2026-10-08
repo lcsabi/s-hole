@@ -2896,3 +2896,30 @@ The cache key holds the query's CD and DO bits as well as the name, type,
 and class. `Cache.Get` and `Cache.Set` take the client's query, so a caller
 cannot leave the bits out. The AD bit is not in the key: it only asks the
 upstream to report the AD bit.
+
+## b/097: blocklist: an HTTPS list download followed a redirect to plain HTTP
+
+**Priority:** P2
+**Component:** blocklist
+**Status:** Fixed in CL 98
+**Filed:** 2026-10-08
+
+### Description
+
+The blocklist HTTP client used Go's default redirect policy, which follows up
+to 10 redirects with no check on the scheme. When an `https://` list
+redirected to an `http://` URL, s-hole downloaded the list in plain text with
+no warning. The config warning for a plain HTTP list checks only the
+configured URL, so it did not fire. Anyone on the network path could then
+change the list: remove tracker domains, add domains to block, or send a list
+near the 256 MiB cap. A scratch program with the same client confirmed it: an
+HTTPS test server that redirected to an HTTP server gave status 200 and the
+HTTP server's body.
+
+### Fix
+
+The client has a redirect policy, `checkRedirect`. It refuses a redirect from
+an HTTPS request to a non-HTTPS URL and keeps Go's limit of 10 requests. The
+refused request is not sent, and the download fails, so the stale-cache
+fallback applies. A WARN, `blocklist redirect refused`, names both URLs
+through `redact.URL`. A redirect to another HTTPS host is still followed.

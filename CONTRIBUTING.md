@@ -335,8 +335,9 @@ sending a PR; if your change drops a number, please either add the
 missing test or note in the CL why the drop is acceptable.
 
 A few packages expose a package-level `var` as a test seam (for example
-`blocklist.maxBodyBytes`, and the `swapLogger` and `captureLogs` helpers that
-redirect the `blocklist` package logger). Production never writes these; only tests lower
+`blocklist.maxBodyBytes`, the `swapLogger` and `captureLogs` helpers that
+redirect the `blocklist` package logger, and the `trustTLS` helper that swaps
+`blocklist.httpClient.Transport`). Production never writes these; only tests lower
 and restore them. This is safe only because the tests in each package run
 sequentially: no test calls `t.Parallel`. If you add `t.Parallel` to a package
 that mutates such a global, either stop mutating the global (pass the value in)

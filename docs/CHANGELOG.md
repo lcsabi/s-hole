@@ -37,6 +37,12 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 - **The cache keeps an answer for one day at most.** An answer leaves the cache
   after 86,400 seconds (Unbound's default `cache-max-ttl`), whatever TTL the
   upstream gave. A cached answer never has a TTL longer than that. (CL 97)
+- **An HTTPS blocklist download no longer follows a redirect to plain HTTP.**
+  Before, a list URL that redirected from `https://` to `http://` was
+  downloaded in plain text with no warning, so anyone on the network path
+  could change the list. s-hole now refuses such a redirect, logs
+  `blocklist redirect refused` with both URLs, and uses its cached copy of the
+  list if it has one. Without a copy, the list does not load. A redirect to another HTTPS host still works. (CL 98, b/097)
 
 ## [2.0.0] - 2026-10-07
 

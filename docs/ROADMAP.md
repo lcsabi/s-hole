@@ -381,6 +381,9 @@ Decisions settled in the CL:
 Rated Low: invisible to the user, but removes constant upstream chatter
 and an information leak.
 
+**Extended in CL 101:** the rest of the RFC 6303 zones, the RFC 6598 shared
+address space (`100.64.0.0/10`), and the LAN's own global IPv6 prefix.
+
 ## 10. Blocklist size in `/api/stats` + dashboard (done, CL 28)
 
 Companion to the Cache Hit Rate card (CL 25), which was free because
@@ -1768,7 +1771,7 @@ Design decisions to settle in the CL:
   surface.
 - **Reuse the handler and its invariants.** The encrypted paths call the same
   `ServeDNS`, so the blocklist, cache, stats, query log, and the CL 72 masking
-  choke point apply unchanged. Confirm `clientAddr` reads the right source address
+  choke point apply unchanged. Confirm `remoteIP` reads the right source address
   for a TLS or HTTP connection, and decide how, or whether, to trust a
   forwarded-for header for DoH behind a proxy.
 - **Timeouts and connection limits.** The DoH endpoint reuses the slowloris
@@ -1789,7 +1792,7 @@ default) turns it on, and `tls_cert` / `tls_key` name the operator's PEM files.
 `main` binds the port right after config validation and hands the pre-bound TLS
 listener to miekg/dns as a third `dns.Server` (`Net: "tcp-tls"`) on the shared
 handler, so blocking, the cache, stats, the query log, and the CL 72 mask apply
-unchanged (`clientAddr` sees the `*net.TCPAddr` under the `tls.Conn`).
+unchanged (`remoteIP` sees the `*net.TCPAddr` under the `tls.Conn`).
 `Server.Start` was generalized from two listeners to N with an exact drain.
 
 **Validation status: Automatic mode tested; strict mode partly tested.** CL 86 was
@@ -2059,7 +2062,8 @@ Names that are local by definition went upstream too. **Shipped in CL 94:**
   and the new `dns.local_domains` setting for router suffixes such as
   `fritz.box`. With no LAN upstream, s-hole answers NXDOMAIN. `localhost`
   names get the loopback address, and `.onion`, `.invalid`, and `.alt` get
-  NXDOMAIN without a query anywhere.
+  NXDOMAIN without a query anywhere. `fritz.box` became a built-in local
+  domain in CL 101.
 - **EDNS padding (RFC 8467):** DoH queries to 128-byte blocks; DoT replies to
   468-byte blocks when the client padded its query.
 - **Localhost names are never blocked:** the blocklist parser skips

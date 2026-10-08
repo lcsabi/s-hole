@@ -2975,3 +2975,57 @@ addresses from a reply-write error (`writeErr`, b/078), but the API did not.
 underlying error of a `*net.OpError` (`write: connection reset by peer`) and
 removes the addresses, also when other text wraps the error. Every
 write-error log in `internal/api` and the DNS failed-reply summary use it.
+
+## b/100: dns: the LAN check was skipped for a source address it could not read
+
+**Priority:** P3
+**Component:** dnsserver
+**Status:** Fixed in CL 101
+**Filed:** 2026-10-08
+
+### Description
+
+`ServeDNS` ran the LAN check only when `remoteIP` returned a valid address.
+`remoteIP` returns the zero address for a nil address, a typed nil
+`*net.UDPAddr` or `*net.TCPAddr`, and an address type whose text is not
+`ip:port`. Such a query skipped the check and was answered, counted, and
+recorded with the client `unknown`, or with the raw text of the address. Both DNS transports give a
+`*net.UDPAddr` or `*net.TCPAddr` today, so no query reached this branch. A
+later change, such as a new transport or a wrapped connection, would have
+answered a source outside the LAN. The privacy rules say that an unknown case
+fails closed.
+
+### Fix
+
+`ServeDNS` refuses a query whose source address is not valid, before the
+stats, the cache, and the query log see it, and counts it in
+`shole_refused_total`. The stored client comes from the same checked address
+(with no IPv6 zone), so the `unknown` value and the separate `clientAddr`
+parser are gone.
+
+## b/101: querylog: subnet masking kept a client value that it could not parse
+
+**Priority:** P3
+**Component:** querylog
+**Status:** Fixed in CL 101
+**Filed:** 2026-10-08
+
+### Description
+
+Under `query_log.clients: "subnet"`, `MaskClientIP` returned its input
+unchanged when `net.ParseIP` could not read it. The DNS handler passed an
+address without a zone. The admin API did not: the allowlist audit line masks
+the host part of the request's remote address, and for a link-local IPv6
+requester that is `fe80::1%eth0`. With `query_log.mode` recording queries,
+`query_log.clients: "subnet"`, and `admin.listen` on an IPv6 address, the
+audit line logged that full address to the system log, which s-hole cannot
+delete. An EUI-64 IPv6 address holds the device's MAC address. Each of the
+three settings gives a privacy warning. The privacy rules say that masking
+fails closed.
+
+### Fix
+
+`MaskClientIP` returns an empty value under `subnet` when it cannot parse the
+address, the same result as `drop`. The audit line then has no `client`
+attribute for such a requester. `StaleRows` under `subnet` now also reports a
+stored value that it cannot parse.

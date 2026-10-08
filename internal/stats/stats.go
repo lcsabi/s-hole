@@ -214,9 +214,10 @@ func (c *Counter) RecordCacheHit() {
 }
 
 // RecordLocalPTR increments the local-PTR counter. Called from the DNS
-// handler after RecordQuery when a PTR query for an RFC 6303 private-range
-// zone is answered locally instead of being forwarded upstream. The caller
-// must invoke RecordQuery first so that total ≥ localPTR at all times.
+// handler after RecordQuery when a PTR query for a private reverse zone or
+// the LAN's own IPv6 prefix is answered locally instead of being forwarded
+// upstream. The caller must invoke RecordQuery first so that total ≥
+// localPTR at all times.
 func (c *Counter) RecordLocalPTR() {
 	c.localPTR.Add(1)
 }

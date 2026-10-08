@@ -71,23 +71,29 @@ dns:
   # 2000 to 5000 suits a Raspberry Pi.
   cache_entries: 2000
 
-  # Answer reverse lookups (PTR) for private address ranges (10/8, 172.16/12,
-  # 192.168/16, fc00::/7, fe80::/10) here, with "no such name", instead of
-  # sending them upstream. No public resolver has records for these addresses,
-  # and forwarding them tells the upstream which addresses your LAN uses.
-  # Set to false only if you run a private reverse DNS zone on your LAN.
-  # s-hole warns while this is false.
+  # Answer reverse lookups (PTR) here, with "no such name", instead of
+  # sending them upstream, for: the private and special address ranges
+  # (10/8, 172.16/12, 192.168/16, 100.64/10, 127/8, 169.254/16, fc00::/7,
+  # fe80::/10, and others; RFC 6303 and RFC 6598), and the public IPv6
+  # prefix of this host's own LAN. No public resolver has records for the
+  # private addresses, and forwarding a reverse lookup tells the upstream
+  # which addresses your devices use. Set to false only if you run a reverse
+  # DNS zone for these addresses on your LAN. s-hole warns while this is
+  # false.
   local_ptr: true
 
   # Local names stay on the LAN. s-hole sends a single-label name (such as
   # "printer") and a name under .lan, .home, .local, .internal, home.arpa,
-  # .localdomain, and a few others only to an upstream with a LAN address,
-  # such as your router. If no upstream is on the LAN, s-hole answers "no
-  # such name". To resolve local names, add the router after the DoH entries
-  # in upstreams, for example "192.168.1.1:53".
-  # If your router uses another domain for its devices, add it here.
+  # .localdomain, fritz.box, and a few others only to an upstream with a LAN
+  # address, such as your router. If no upstream is on the LAN, s-hole
+  # answers "no such name". To resolve local names, add the router after the
+  # DoH entries in upstreams, for example "192.168.1.1:53".
+  # If your router uses another domain for its devices, add it here. At
+  # startup, s-hole logs an INFO line for each search domain of this host
+  # that is not a local domain. Do not add a public domain: its names then
+  # get "no such name" when the router cannot answer them.
   local_domains:
-    # - "fritz.box"
+    # - "home.example"
 
 blocking:
   # Blocklist URLs: hosts-file format, one domain per line, or *.example.com

@@ -42,16 +42,33 @@ var neverResolvedSuffixes = []string{"invalid.", "onion.", "alt."}
 // (home.arpa, RFC 8375), .internal (reserved by ICANN for private use), .test
 // (RFC 6761), and the private TLDs that RFC 6762 Appendix G lists as in common
 // use (.intranet, .private, .corp, .home, .lan), plus .localdomain, the domain
-// of many hosts files and routers.
+// of many hosts files and routers, and fritz.box, the domain of AVM FRITZ!Box
+// routers (AVM owns it, so no public name is under it).
 var lanOnlySuffixes = []string{
 	"local.", "home.arpa.", "internal.", "test.",
 	"intranet.", "private.", "corp.", "home.", "lan.", "localdomain.",
+	"fritz.box.",
 }
 
 // classify returns the class of a query name. name is lowercase with the
 // trailing root dot, as ServeDNS records it. localDomains are the extra
 // suffixes from dns.local_domains, in the same form.
 func classify(qtype uint16, name string, localDomains []string) nameClass {
+	if c := suffixClass(name, localDomains); c != publicName {
+		return c
+	}
+	if dns.CountLabel(name) == 1 && !zoneType(qtype) {
+		// A single-label name such as "printer" or "wpad" is a LAN host
+		// name: no public resolver has an address for it.
+		return lanOnlyName
+	}
+	return publicName
+}
+
+// suffixClass returns the class that the local suffixes give name, or
+// publicName when name is under none of them. It does not apply the
+// single-label rule of classify.
+func suffixClass(name string, localDomains []string) nameClass {
 	if underSuffix(name, "localhost.") {
 		return localhostName
 	}
@@ -70,12 +87,14 @@ func classify(qtype uint16, name string, localDomains []string) nameClass {
 			return lanOnlyName
 		}
 	}
-	if dns.CountLabel(name) == 1 && !zoneType(qtype) {
-		// A single-label name such as "printer" or "wpad" is a LAN host
-		// name: no public resolver has an address for it.
-		return lanOnlyName
-	}
 	return publicName
+}
+
+// KeepsLocal reports whether s-hole keeps the names under domain on the LAN:
+// domain is under a built-in local suffix or a dns.local_domains entry. main
+// uses it to check the host's search domains at startup.
+func (h *Handler) KeepsLocal(domain string) bool {
+	return suffixClass(dns.Fqdn(strings.ToLower(domain)), h.localDomains) != publicName
 }
 
 // zoneType reports whether qtype is a type that a stub or a validating
@@ -99,7 +118,7 @@ func underSuffix(name, suffix string) bool {
 	return name == suffix || (strings.HasSuffix(name, suffix) && name[len(name)-len(suffix)-1] == '.')
 }
 
-// localSuffixes turns the dns.local_domains entries ("fritz.box") into the
+// localSuffixes turns the dns.local_domains entries ("home.example") into the
 // form classify matches: lowercase with the trailing root dot.
 func localSuffixes(domains []string) []string {
 	out := make([]string, 0, len(domains))
@@ -136,8 +155,9 @@ func upstreamIP(upstream string) (netip.Addr, bool) {
 
 // lanUpstreams returns the upstreams whose address is on the LAN, by the same
 // rule the DNS server uses for its clients (see lanACL): a private, loopback,
-// or link-local address, or one inside a subnet of this host's interfaces.
-// The order of the upstream list is kept. A LAN upstream (usually the router)
+// or link-local address, or one inside an IPv6 subnet of this host's
+// interfaces (an IPv4 interface subnet counts only inside the private
+// ranges). The order of the upstream list is kept. A LAN upstream (usually the router)
 // decides on its own what it forwards; s-hole cannot see that.
 func (h *Handler) lanUpstreams() []string {
 	var out []string

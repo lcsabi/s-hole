@@ -60,8 +60,13 @@ Out of scope:
   its default gives a WARN that repeats with every stats line. `PRIVACY.md`
   lists every place s-hole keeps or sends data.
 - **LAN only.** The DNS server answers loopback, private, link-local, and
-  unique-local sources and the subnets of the host's interfaces, and refuses
-  every other source before it touches the stats, the cache, or the query log.
+  unique-local sources and the IPv6 subnets of the host's interfaces, and
+  refuses every other source before it touches the stats, the cache, or the
+  query log. A public or CGNAT IPv4 subnet on an interface is not admitted
+  (s-hole logs a WARN that names it). A source address that s-hole cannot
+  read is refused. If s-hole cannot read the interface addresses (for
+  example, a sandbox without `AF_NETLINK`), it logs a WARN at most once an
+  hour.
 - **DNS answers.** The cache keeps a separate answer for each combination of
   the CD and DO bits, so one client's DNSSEC choice does not reach another
   client. An upstream reply must match the query's name, type, and class, or

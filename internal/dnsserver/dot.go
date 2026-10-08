@@ -236,7 +236,7 @@ func (l *limitListener) Close() error {
 
 // limitConn frees its listener slot exactly once, however many times Close is
 // called. It embeds net.Conn, so RemoteAddr still returns the *net.TCPAddr
-// that clientAddr expects, including under the tls.Conn that wraps it.
+// that remoteIP expects, including under the tls.Conn that wraps it.
 type limitConn struct {
 	net.Conn
 	once    sync.Once

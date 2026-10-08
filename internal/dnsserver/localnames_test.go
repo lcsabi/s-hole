@@ -159,7 +159,6 @@ func TestServeDNS_NameClasses(t *testing.T) {
 
 		// An ordinary public name.
 		{"www.example.com.", dns.TypeA, routePublic},
-		{"fritz.box.", dns.TypeA, routePublic}, // no dns.local_domains yet
 	}
 	for _, tc := range cases {
 		got, _ := f.route(t, tc.name, tc.qtype)
@@ -469,8 +468,6 @@ func TestHandler_HasLANUpstream(t *testing.T) {
 		{"https://192.168.1.1/dns-query", true},
 		{"https://10.0.0.1:8443/dns-query", true},
 		{"https://[fd12::1]/dns-query", true},
-		{"203.0.113.53:53", true}, // inside the interface subnet below
-		{"https://203.0.113.53/dns-query", true},
 
 		{"8.8.8.8:53", false},
 		{"1.1.1.1:53", false},
@@ -636,6 +633,110 @@ func TestServeDNS_LocalAnswerWritesNoAppLog(t *testing.T) {
 		}
 		if recs := app.records(t); len(recs) != 0 {
 			t.Errorf("mode %s: application log got %d lines: %v", mode, len(recs), recs)
+		}
+	}
+}
+
+func TestHandler_HasLANUpstreamIgnoresPublicIPv4Subnets(t *testing.T) {
+	// CL 101: an upstream is on the LAN by the client rule, so an upstream in
+	// a public or CGNAT on-link IPv4 subnet is not a LAN upstream. An upstream
+	// in an on-link global IPv6 subnet still is.
+	ifaces := []net.Addr{
+		ipnet(t, "203.0.113.5/24"),
+		ipnet(t, "100.64.0.5/10"),
+		&net.IPNet{IP: net.ParseIP("198.51.100.9"), Mask: net.CIDRMask(120, 128)},
+		ipnet(t, "3fff:0:aa:bb::5/64"),
+	}
+	cases := []struct {
+		upstream string
+		want     bool
+	}{
+		{"203.0.113.53:53", false},
+		{"https://203.0.113.53/dns-query", false},
+		{"100.64.0.53:53", false},
+		{"100.100.100.100:53", false},
+		{"198.51.100.53:53", false},
+		{"[::ffff:203.0.113.53]:53", false},
+		{"[3fff:0:aa:bb::53]:53", true},
+		{"https://[3fff:0:aa:bb::53]/dns-query", true},
+		{"[3fff:0:aa:bc::53]:53", false},
+		{"192.168.1.1:53", true},
+	}
+	for _, tc := range cases {
+		h := NewHandler(blocklist.NewStore(), stats.New(), []string{tc.upstream}, nullLogger{}, "zero", 60, nil, false, "drop")
+		h.lan = testACL(newFakeAddrs(ifaces...))
+		if got := h.HasLANUpstream(); got != tc.want {
+			t.Errorf("HasLANUpstream([%s]) = %v, want %v", tc.upstream, got, tc.want)
+		}
+	}
+}
+
+func TestServeDNS_FritzBoxIsLANOnly(t *testing.T) {
+	// CL 101: fritz.box, the domain of AVM FRITZ!Box routers, is a built-in
+	// LAN-only suffix. Names under it, in any letter case, go only to the LAN
+	// upstream. A name that only looks like it stays public.
+	f := newRouteFixture(t)
+	cases := []struct {
+		name string
+		want routeResult
+	}{
+		{"fritz.box.", routeLAN},
+		{"x.fritz.box.", routeLAN},
+		{"X.FRITZ.BOX.", routeLAN},
+		{"Laptop.Fritz.Box.", routeLAN},
+		{"a.b.fritz.box.", routeLAN},
+		{"xfritz.box.", routePublic},
+		{"fritz.box.example.", routePublic},
+		{"x.fritz.boxes.", routePublic},
+		{"box.", routeLAN}, // a single-label name, not the suffix
+	}
+	for _, tc := range cases {
+		if got, _ := f.route(t, tc.name, dns.TypeA); got != tc.want {
+			t.Errorf("%s: %s, want %s", tc.name, routeNames[got], routeNames[tc.want])
+		}
+	}
+}
+
+func TestServeDNS_FritzBoxWithoutLANUpstream(t *testing.T) {
+	// CL 101: with no LAN upstream, a fritz.box name gets an authoritative
+	// NXDOMAIN from s-hole and reaches no public upstream.
+	pub, pubHits := udpSink(t)
+	counter := stats.New()
+	h := NewHandler(blocklist.NewStore(), counter, []string{pub}, nullLogger{}, "zero", 60, nil, false, "drop")
+	h.lan = testACL(newFakeAddrs())
+	markPublic(h, 0)
+	for _, name := range []string{"x.fritz.box", "LAPTOP.FRITZ.BOX", "fritz.box"} {
+		w := fakeClient()
+		h.ServeDNS(w, buildReq(name))
+		if r := w.written; r == nil || r.Rcode != dns.RcodeNameError || !r.Authoritative {
+			t.Errorf("%s: reply %v, want authoritative NXDOMAIN", name, r)
+		}
+	}
+	if pubHits.Load() != 0 {
+		t.Errorf("public upstream got %d packets, want 0", pubHits.Load())
+	}
+	if s := counter.Snapshot(0); s.LocalNameCount != 3 {
+		t.Errorf("local names = %d, want 3", s.LocalNameCount)
+	}
+}
+
+func TestHandler_KeepsLocal(t *testing.T) {
+	// CL 101: KeepsLocal reports whether names under a domain stay on the LAN:
+	// the domain is under a built-in local suffix or a dns.local_domains
+	// entry. Case and a trailing dot do not matter.
+	h := testHandler(nil, nil)
+	h.SetLocalDomains([]string{"corp.example"})
+	cases := map[string]bool{
+		"lan": true, "LAN.": true, "home.arpa": true, "fritz.box": true,
+		"Fritz.Box.": true, "x.fritz.box": true, "office.lan": true,
+		"localdomain": true, "internal": true,
+		"corp.example": true, "CORP.EXAMPLE.": true, "eu.corp.example": true,
+		"example.org": false, "xfritz.box": false, "fritz.box.example": false,
+		"lan.example.com": false, "example": false, "my-isp.net": false,
+	}
+	for d, want := range cases {
+		if got := h.KeepsLocal(d); got != want {
+			t.Errorf("KeepsLocal(%q) = %v, want %v", d, got, want)
 		}
 	}
 }

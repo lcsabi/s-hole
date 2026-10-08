@@ -408,7 +408,8 @@ func (d *DBLogger) StaleRows(ctx context.Context, clients string) (StaleReport, 
 }
 
 // unmaskedClients returns the distinct stored client values that subnet
-// masking would change, that is, full addresses. A home has a few dozen.
+// masking would change: full addresses, and values it cannot read. A home
+// has a few dozen.
 func (d *DBLogger) unmaskedClients(ctx context.Context) ([]string, error) {
 	rows, err := d.db.QueryContext(ctx, "SELECT DISTINCT client_ip FROM queries WHERE client_ip != ''")
 	if err != nil {

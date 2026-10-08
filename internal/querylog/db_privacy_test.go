@@ -421,3 +421,49 @@ func TestDBLogger_StaleRowsNone(t *testing.T) {
 		t.Errorf("masked rows under subnet: report = %+v (%v), want the zero report", rep, err)
 	}
 }
+
+func TestDBLogger_StaleRowsCountsUnreadableClients(t *testing.T) {
+	// b/101 (CL 101): under clients "subnet", a stored client value that
+	// subnet masking cannot read counts as a stale row, like a full address.
+	// A masked value does not.
+	path := filepath.Join(t.TempDir(), "q.db")
+	seed, err := NewDBLogger(path, "all", time.Hour, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().UTC().Truncate(time.Second)
+	rows := []struct {
+		client string
+		stale  bool
+	}{
+		{"192.168.1.0", false},
+		{"fe80::", false},
+		{"", false},
+		{"fe80::1%eth0", true},
+		{"garbage", true},
+		{"unknown", true},
+		{"192.168.1.77", true},
+	}
+	var want int64
+	for i, r := range rows {
+		ts := base.Add(-time.Duration(len(rows)-i) * time.Minute)
+		if _, err := seed.db.Exec("INSERT INTO queries(ts,client_ip,domain,blocked) VALUES(?,?,?,?)",
+			ts.Format(time.RFC3339), r.client, "d.example.", 0); err != nil {
+			t.Fatal(err)
+		}
+		if r.stale {
+			want++
+		}
+	}
+	rep, err := seed.StaleRows(context.Background(), "subnet")
+	seed.Close()
+	if err != nil {
+		t.Fatalf("StaleRows = %v", err)
+	}
+	if rep.Rows != want {
+		t.Errorf("stale rows = %d, want %d", rep.Rows, want)
+	}
+	if newest := base.Add(-time.Minute); !rep.Newest.Equal(newest) {
+		t.Errorf("newest = %s, want %s", rep.Newest, newest)
+	}
+}

@@ -61,10 +61,12 @@ Per-query hot path (one goroutine per query, spawned by miekg/dns):
 
 ```
 ServeDNS (internal/dnsserver/handler.go)
-  → lanACL.allows                  not a LAN source → REFUSED; not in the stats or the query log, only shole_refused_total (lan.go)
+  → lanACL.allows                  not a LAN source, or no readable source → REFUSED; not in the stats or the query log,
+                                   only shole_refused_total (lan.go); IPv4 interface subnets count only inside the private ranges
   → one question, opcode QUERY     else SERVFAIL / NOTIMP through send; not counted or logged
   → RD=1                           else REFUSED through send (RD=0 reads only the cache); not counted or logged
-  → querylog.MaskClientIP          once, per query_log.clients (fail closed)
+  → querylog.MaskClientIP          once, per query_log.clients (fail closed, also for a value it cannot parse)
+  → local PTR                      dns.local_ptr: RFC 6303/6598 reverse zones and the own global IPv6 prefix → NXDOMAIN
   → classify (localnames.go)       localhost → loopback; .onion/.invalid/.alt → NXDOMAIN;
                                    LAN-only name → LAN upstreams only, NXDOMAIN when none
   → blocklist.Store.IsBlocked      O(labels) suffix walk over two O(1) sets; allowlist overrides

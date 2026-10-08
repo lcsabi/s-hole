@@ -8,6 +8,61 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 
 ## [Unreleased]
 
+### Changed
+
+- **More reverse lookups stay on the LAN.** With `dns.local_ptr: true` (the
+  default), s-hole now answers "no such name" itself for the reverse lookups
+  of `127/8`, `0/8`, `169.254/16`, `100.64/10` (CGNAT and Tailscale), the
+  IPv4 and IPv6 documentation ranges, `255.255.255.255`, `::`, and `::1`
+  (RFC 6303, RFC 6598), and for the public IPv6 prefix of the s-hole host's
+  own LAN. An IPv6 address made from a device's MAC address names the device,
+  so these lookups no longer go to the upstream. (CL 101)
+- **`fritz.box` is a built-in local domain.** Names under it, such as
+  `laptop.fritz.box`, go only to an upstream on the LAN, like `.lan` and
+  `home.arpa`. If you added `fritz.box` to `dns.local_domains`, you can
+  remove it. The entry does no harm. (CL 101)
+- **A search domain that is not local is reported.** At startup, s-hole logs
+  an INFO line, `a search domain of this host is not a local domain`, for
+  each `search` or `domain` entry in the host's resolver files
+  (`/etc/resolv.conf` and `/run/systemd/resolve/resolv.conf`) that is not a
+  local domain. If the router uses that domain for the devices on the LAN,
+  add it to `dns.local_domains`. s-hole does not add it on its own. (CL 101)
+- **A failed read of the interface addresses is logged.** When s-hole cannot
+  read the addresses of its network interfaces, for example under a systemd
+  sandbox without `AF_NETLINK`, it keeps the last list it read. With no list,
+  it refuses devices that use a public IPv6 address, and reverse lookups for
+  the LAN's own IPv6 prefix go upstream. s-hole now logs a WARN, `interface
+  address read failed`, at most once an hour, with a hint. (CL 101)
+
+### Fixed
+
+- **Subnet masking fails closed.** Under `query_log.clients: "subnet"`, a
+  client value that s-hole cannot parse is now stored or logged empty, not
+  unchanged. The allowlist audit line was affected: for a requester with a
+  link-local IPv6 address (with a zone, such as `fe80::1%eth0`) it logged the
+  full address, while `query_log.mode` recorded queries and `admin.listen`
+  was on an IPv6 address. It now logs no address for such a requester.
+  (CL 101, b/101)
+
+### Security
+
+- **A public or CGNAT IPv4 subnet on an interface is no longer LAN.** s-hole
+  answered every device in a subnet of its own interfaces. On a host with a
+  public IPv4 address (a rented server) or a CGNAT address (`100.64.0.0/10`),
+  that let the neighbors in the provider's network use s-hole and probe its
+  cache. Now an IPv4 interface subnet counts only inside the private ranges.
+  s-hole logs a WARN, `an interface subnet is not treated as LAN`, that names
+  each such subnet. A VPN interface address, such as a Tailscale
+  `100.x.y.z/32`, also gives this WARN. An upstream in such a subnet, such as
+  an internet provider's router at a CGNAT address, no longer counts as an
+  upstream on the LAN, so s-hole does not send local names to it. IPv6
+  interface subnets are LAN as before. There is no setting to change this.
+  (CL 101)
+- **A query whose source address s-hole cannot read gets REFUSED.** The LAN
+  check ran only for a valid source address. The DNS listeners always give
+  one, so no query reached this case; the check now fails closed. (CL 101,
+  b/100)
+
 ## [2.0.1] - 2026-10-08
 
 A patch release with privacy and security fixes. The config format and the

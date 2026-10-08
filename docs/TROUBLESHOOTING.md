@@ -294,8 +294,19 @@ To resolve local names, add your router to `dns.upstreams`, after the DoH
 entries, for example `"192.168.1.1:53"`. Then restart s-hole. See
 [Local names](../README.md#local-names-printer-naslan) in the README.
 
-If the router uses its own domain for its devices, such as `fritz.box`, add
-the domain to `dns.local_domains`. Names under it then go to the router only.
+If the router uses its own domain for its devices, add the domain to
+`dns.local_domains`. Names under it then go to the router only. `fritz.box`
+is built in. At startup, s-hole writes this line for each search domain of
+the s-hole host (from `/etc/resolv.conf` and
+`/run/systemd/resolve/resolv.conf`) that is not a local domain:
+
+```
+level=INFO msg="a search domain of this host is not a local domain" pkg=main domain=home.example hint="s-hole sends names under this domain to every upstream. ..."
+```
+
+If the router uses that domain for the devices on the LAN, add it to
+`dns.local_domains`. Do not add a public domain: when the router cannot
+answer a name under it, the device gets NXDOMAIN.
 
 s-hole answers these names itself and never sends them upstream:
 `localhost` and the names under it get the loopback address, and names under
@@ -328,10 +339,39 @@ s-hole at all.
 
 If the warnings line says `queries from outside the LAN were refused`, s-hole
 answers only loopback, private, link-local, and unique-local addresses and the
-subnets of its own interfaces. A device on a routed subnet with public IPv6
-addresses, or behind a VPN with its own address range (such as Tailscale's
-100.64.0.0/10), gets REFUSED. Give the device an address in a private range
-or in one of the s-hole host's subnets.
+IPv6 subnets of its own interfaces. A device on a routed subnet with public
+IPv6 addresses, on a public or shared IPv4 subnet, or behind a VPN with its
+own address range (such as Tailscale's 100.64.0.0/10), gets REFUSED. Give the
+device an address in a private range or in one of the s-hole host's IPv6
+subnets.
+
+If an interface of the s-hole host has a public or shared (CGNAT) IPv4
+subnet, s-hole writes this line at startup, and at the next read of the
+interface addresses after the subnet appears:
+
+```
+level=WARN msg="an interface subnet is not treated as LAN" pkg=dns subnet=100.64.0.0/10 hint="s-hole refuses queries from this subnet. ..."
+```
+
+s-hole refuses the devices in that subnet. There is no setting to change
+this. A VPN interface address, such as a Tailscale `100.x.y.z/32`, also gives
+this line. This is expected: s-hole does not answer queries that come in
+over the VPN.
+
+If s-hole cannot read the addresses of its network interfaces, it writes this
+line, at most once an hour:
+
+```
+level=WARN msg="interface address read failed" pkg=dns err="..." hint="s-hole cannot see the subnets of this host's interfaces. ..."
+```
+
+s-hole keeps the last list that it read. If no read has worked since
+startup, s-hole refuses devices that use a public IPv6 address, and reverse
+lookups for the LAN's own IPv6 prefix go upstream. Under systemd, the usual
+cause is a unit or drop-in with a `RestrictAddressFamilies=` line that does
+not list `AF_NETLINK`. The unit that s-hole installs has no such line. If
+your unit has one, add `AF_NETLINK` to it, then run
+`sudo systemctl daemon-reload` and `sudo systemctl restart s-hole`.
 
 If a test query from a LAN device gets REFUSED, make sure that the query asks
 for recursion. s-hole refuses a query with the RD bit clear, such as
@@ -417,7 +457,7 @@ cannot turn them off: they go away when you change the setting back.
 | `query_log.database` | the database holds rows written under a less private setting, such as client addresses from before a switch to `"drop"` | wait for retention (the line gives the date), or run `s-hole -purge` |
 | `admin.listen` | the dashboard listens on more than this machine | `admin.listen: "127.0.0.1:8080"` |
 | `admin.pprof` | the profiler is exposed | `admin.pprof: false` |
-| `dns.local_ptr` | reverse lookups for private addresses go upstream | `dns.local_ptr: true` |
+| `dns.local_ptr` | reverse lookups for LAN addresses go upstream | `dns.local_ptr: true` |
 | `dns.upstreams` | every upstream is plain DNS, or queries were sent unencrypted because every DoH upstream failed | put a DoH upstream first; for a fallback, read [Some names do not resolve](#some-names-do-not-resolve) |
 | `blocking.lists` | a list is downloaded over plain HTTP | use the `https://` URL |
 | `dns.listen` | queries from outside the LAN were refused | read [A device's queries do not reach s-hole](#a-devices-queries-do-not-reach-s-hole) |

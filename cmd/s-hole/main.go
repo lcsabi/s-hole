@@ -295,6 +295,7 @@ func main() {
 	handler := dnsserver.NewHandler(store, counter, cfg.DNS.Upstreams, logger, cfg.Blocking.Reply, cfg.Blocking.ReplyTTLSeconds, dnsCache, cfg.DNS.LocalPTR, cfg.QueryLog.Clients)
 	handler.SetQueryLogMode(cfg.QueryLog.Mode)
 	handler.SetLocalDomains(cfg.DNS.LocalDomains)
+	logSearchDomains(mainLog, searchDomains(resolvFiles), handler.KeepsLocal)
 	if !handler.HasLANUpstream() {
 		mainLog.Info("no upstream on the LAN",
 			"hint", "s-hole sends local names, such as printer or nas.lan, only to an upstream on the LAN. No upstream is on the LAN, so s-hole answers them with NXDOMAIN. To resolve them, add your router to dns.upstreams after the DoH entries, for example 192.168.1.1:53")

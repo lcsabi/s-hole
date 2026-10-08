@@ -114,6 +114,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 98](cls/CL-98.md) | Blocklist downloads do not follow a redirect from HTTPS to a non-HTTPS URL (b/097) |
 | [CL 99](cls/CL-99.md) | No activity data or query names in the application log; the per-minute graph follows `query_log.mode` (b/098, b/099) |
 | [CL 100](cls/CL-100.md) | Graduate the CHANGELOG to v2.0.1 |
+| [CL 101](cls/CL-101.md) | LAN scope and local names: more local reverse zones, built-in `fritz.box`, public and CGNAT IPv4 interface subnets not LAN, fail-closed source check and subnet masking (b/100, b/101) |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

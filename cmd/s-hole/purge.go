@@ -87,9 +87,6 @@ func (t purgeTargets) purge(ctx context.Context) api.PurgeReport {
 		t.dnsCache.Flush()
 		add("DNS response cache", "emptied", false)
 	}
-	if t.cfg.QueryLog.Mode == config.ModeAll {
-		add("system log", "s-hole cannot delete its own log lines. With query_log.mode \"all\", a warning line can name a domain", false)
-	}
 	return rep
 }
 

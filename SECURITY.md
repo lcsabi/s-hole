@@ -86,9 +86,13 @@ Out of scope:
   purged row is overwritten in the file. On Windows the service runs as a
   virtual account (`NT SERVICE\s-hole`), and install gives the config folder
   an owner-only access list. The Docker image runs as UID 65532.
-- **The application log** carries no query name and no client address, except
-  a warning about one failed query under `query_log.mode: "all"` and the
-  allowlist audit line. A write error is logged without socket addresses.
+- **The application log** carries no query name, no client address, and no
+  total query count (the failure summaries count failed queries only). The
+  one exception is the allowlist audit line: it names the domain, and the
+  requester's address only while `query_log.mode` records queries, masked by
+  `query_log.clients` (no address under the defaults). An error from a client connection (a
+  DNS reply or an admin API response that could not be sent) is logged
+  without socket addresses.
 - **URLs that s-hole shows** (logs, `/metrics` labels, `/api/stats`) hide
   user info and the query string, where a private list or DoH endpoint can
   keep a token.

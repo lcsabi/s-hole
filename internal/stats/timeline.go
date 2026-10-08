@@ -23,11 +23,13 @@ type minuteBucket struct {
 // timeline is the in-memory source of the dashboard's "Queries over time"
 // graph: per-minute counts for the last 24 hours, in a ring. It holds counts
 // only, never a domain or a client, is never written to disk, and is empty
-// after a restart or a purge, so the graph works under every query_log
-// setting, "none" included. It is lock-free: each bucket's fields are
-// atomic, and the first event of a new minute claims the bucket with a
-// compare-and-swap and zeroes it. An event that races that claim at the very
-// start of a minute can be lost or zeroed, which a graph tolerates.
+// after a restart or a purge. The counts over time show when the household is
+// active, so the graph follows query_log.mode like the Top lists: it records
+// nothing under "none", the blocked queries under "blocked", and every query
+// under "all" (see Counter.SetQueryLogMode). It is lock-free: each bucket's
+// fields are atomic, and the first event of a new minute claims the bucket
+// with a compare-and-swap and zeroes it. An event that races that claim at
+// the very start of a minute can be lost or zeroed, which a graph tolerates.
 type timeline struct {
 	buckets [timelineMinutes]minuteBucket
 }
@@ -56,6 +58,43 @@ func (t *timeline) reset() {
 		t.buckets[i].cached.Store(0)
 		t.buckets[i].unresolved.Store(0)
 		t.buckets[i].upstreamError.Store(0)
+	}
+}
+
+// SetQueryLogMode sets query_log.mode ("none", "blocked", or "all"), which
+// decides what the per-minute graph records: nothing, the blocked queries
+// only (no cache hits or failures, which are allowed queries), or every query.
+// Call it before the first query. Until it is called, or for any other value,
+// the graph records nothing, the most private choice. The counters and the
+// Top lists do not depend on it.
+func (c *Counter) SetQueryLogMode(mode string) {
+	switch mode {
+	case "all", "blocked":
+		c.graphMode = mode
+	default:
+		c.graphMode = "none"
+	}
+}
+
+// GraphMode returns the query_log.mode that the per-minute graph follows:
+// "none", "blocked", or "all".
+func (c *Counter) GraphMode() string {
+	if c.graphMode == "" {
+		return "none"
+	}
+	return c.graphMode
+}
+
+// graphs reports whether the per-minute graph records a query with this
+// outcome, the same rule the query loggers apply.
+func (c *Counter) graphs(blocked bool) bool {
+	switch c.graphMode {
+	case "all":
+		return true
+	case "blocked":
+		return blocked
+	default:
+		return false
 	}
 }
 

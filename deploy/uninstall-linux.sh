@@ -206,9 +206,10 @@ if ! $PURGE && [[ -d "$DATA_DIR" ]]; then
   echo "Query history and caches remain in $DATA_DIR (owned by root, readable by root only)."
   echo "Remove them with: sudo rm -rf $DATA_DIR"
 fi
-# s-hole cannot delete what went to the system journal. With the 2.0
-# defaults the journal holds no query data; with query_log.file "stdout" it
-# held query lines. Print the command; clearing the journal deletes the logs
-# of every service, so the operator decides.
+# s-hole cannot delete what went to the system journal. With the defaults
+# of s-hole 2.0.1 and later the journal holds no query data. s-hole 2.0.0
+# and earlier logged the query counts every 5 minutes, and with
+# query_log.file "stdout" (any version) the journal holds query lines. Print the command; clearing the journal
+# deletes the logs of every service, so the operator decides.
 echo "s-hole's lines in the system journal stay. To clear the whole journal (every service's logs):"
 echo "  sudo journalctl --rotate && sudo journalctl --vacuum-time=1s"

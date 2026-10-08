@@ -16,6 +16,29 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   TTL of a cached answer showed when another device queried the name. s-hole
   now refuses such a query, as Unbound does by default, and does not count or
   record it. Stub resolvers always set RD, so devices see no change. (CL 97)
+- **The "Queries over time" graph follows `query_log.mode`.** Under the
+  default `query_log.mode: "none"` the graph is now empty, and the panel says
+  why: the counts per minute show when the household is active, so s-hole no
+  longer keeps them by default. Under `"blocked"` the graph shows the blocked
+  queries only; under `"all"` it shows every line, as before. The counters
+  since startup (Total Queries, Blocked, Block Rate, Cache Hit Rate) do not
+  change. To get the graph back, set `query_log.mode` to `"blocked"` or
+  `"all"`. (CL 99)
+- **No query names in the application log.** Under `query_log.mode: "all"`, a
+  failed reply write logged one WARN with the domain, and the once-a-minute
+  `queries could not be resolved` line had a `last_domain` field. Both are
+  gone: the domain stays in the query log, which retention and purge reach. A
+  reply that s-hole cannot send now goes into a once-a-minute summary,
+  `replies could not be sent`, with the count and the errors. The WARN for
+  each failed write (`write response failed`, `write sinkhole reply failed`,
+  and the other `write ... failed` lines) is gone under every mode. (CL 99)
+- **The allowlist audit line follows the query log settings.** `allowlist
+  entry added` and `allowlist entry removed` still name the domain. The line
+  has the address of the device that made the change only while
+  `query_log.mode` is `"blocked"` or `"all"`, masked like a query-log row by
+  `query_log.clients`: no `client` field under `"drop"`, the subnet under
+  `"subnet"`, the address under `"full"`. Under the defaults the line has no
+  address. (CL 99)
 
 ### Fixed
 
@@ -25,6 +48,17 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   unvalidated answer, including a name that fails DNSSEC validation. After a
   DO=0 query, a client that asked for DNSSEC records got none. The cache key
   now holds both bits. (CL 97, b/096)
+- **The stats line no longer writes the query counts to the system log.**
+  Every 5 minutes, the `msg=stats` line logged the counts since startup, also
+  under the default settings. The difference between two lines showed how
+  many queries the household made in each 5 minutes, and s-hole cannot delete
+  the system journal. The line now holds the uptime only. The dashboard and
+  `/metrics` still show the counts. The warnings line still follows the stats
+  line. (CL 99, b/098)
+- **An admin API write error no longer logs the client's address.** When a
+  browser or script closed the connection during a response or an export,
+  the WARN held both socket addresses. The error is now logged without them.
+  (CL 99, b/099)
 
 ### Security
 

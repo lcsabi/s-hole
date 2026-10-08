@@ -279,14 +279,14 @@ func stepByWhat(rep api.PurgeReport) map[string]api.PurgeStep {
 func TestPurgeTargets_PurgesEveryStore(t *testing.T) {
 	// M2: the purge reports a step for each store and empties each one: the
 	// database, the log file, the downloaded blocklists, the Top lists, the
-	// graph, and the DNS cache. Under mode "all" it adds a system-log note.
+	// graph, and the DNS cache.
 	f := newPurgeFixture(t, "all")
 	rep := f.targets.purge(context.Background())
 	if rep.Failed() {
 		t.Fatalf("purge failed: %+v", rep)
 	}
 	steps := stepByWhat(rep)
-	for _, what := range []string{"query database", "query log file", "downloaded blocklists", "Top Domains and Top Clients", "per-minute graph", "DNS response cache", "system log"} {
+	for _, what := range []string{"query database", "query log file", "downloaded blocklists", "Top Domains and Top Clients", "per-minute graph", "DNS response cache"} {
 		if _, ok := steps[what]; !ok {
 			t.Errorf("no %q step in %+v", what, rep.Steps)
 		}
@@ -316,16 +316,6 @@ func TestPurgeTargets_PurgesEveryStore(t *testing.T) {
 	}
 	if _, ok := f.targets.dnsCache.Get(cacheQuery(f.q)); ok {
 		t.Error("the DNS cache still answers after the purge")
-	}
-}
-
-func TestPurgeTargets_SystemLogNoteOnlyUnderModeAll(t *testing.T) {
-	// M2: the system-log note appears only under mode "all".
-	for _, mode := range []string{"none", "blocked"} {
-		f := newPurgeFixture(t, mode)
-		if _, ok := stepByWhat(f.targets.purge(context.Background()))["system log"]; ok {
-			t.Errorf("mode %q: purge has a system log note", mode)
-		}
 	}
 }
 
@@ -851,4 +841,25 @@ func TestPrivacyReport_CheckStale(t *testing.T) {
 // cacheQuery returns a client query for q, the form the DNS cache keys by.
 func cacheQuery(q dns.Question) *dns.Msg {
 	return &dns.Msg{MsgHdr: dns.MsgHdr{RecursionDesired: true}, Question: []dns.Question{q}}
+}
+
+func TestPurgeTargets_NoSystemLogStep(t *testing.T) {
+	// PRIV-03: the application log names no domain under any query_log.mode,
+	// so the purge report has no "system log" step in any mode.
+	for _, mode := range []string{"none", "blocked", "all"} {
+		t.Run(mode, func(t *testing.T) {
+			rep := newPurgeFixture(t, mode).targets.purge(context.Background())
+			if rep.Failed() {
+				t.Fatalf("purge failed: %+v", rep)
+			}
+			if len(rep.Steps) == 0 {
+				t.Fatal("the purge reported no steps")
+			}
+			for _, s := range rep.Steps {
+				if strings.Contains(strings.ToLower(s.What), "system log") || strings.Contains(strings.ToLower(s.Result), "system log") {
+					t.Errorf("purge under mode %q has a system log step: %+v", mode, s)
+				}
+			}
+		})
+	}
 }

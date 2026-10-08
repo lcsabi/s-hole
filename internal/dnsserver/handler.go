@@ -136,10 +136,11 @@ type Handler struct {
 	localPTR     bool         // when true, answer RFC 6303 private PTR queries locally
 	queryPrivacy string       // "drop", "subnet", or "full"; how the client IP is stored
 	// logMode is query_log.mode: which queries are recorded. It decides what
-	// reaches the Top Domains and Top Clients tallies and whether a WARN line
-	// may name the query. The zero value records nothing.
+	// reaches the Top Domains and Top Clients tallies. The zero value records
+	// nothing.
 	logMode  string
 	failures *failureLog
+	replies  *replyLog
 	lan      *lanACL
 	// upstreamIPs holds the address of each entry of upstreams, at the same
 	// index, to find the LAN upstreams for a LAN-only name.
@@ -181,6 +182,7 @@ func NewHandler(
 		localPTR:     localPTR,
 		queryPrivacy: queryPrivacy,
 		failures:     newFailureLog(),
+		replies:      newReplyLog(),
 		lan:          newLANACL(),
 		upstreamIPs:  ips,
 	}
@@ -224,19 +226,6 @@ func (h *Handler) tally(clientIP, domain string, blocked bool) (string, string) 
 	return clientIP, domain
 }
 
-// warnAttrs builds the attributes of a WARN line about one query: the safe
-// part of the error (see writeErr), and the domain only when the query log
-// records every query. A WARN line never holds the client address.
-func (h *Handler) warnAttrs(err error, domain string) []any {
-	attrs := []any{"err", writeErr(err)}
-	if h.logMode == "all" {
-		// Lowercase, as the query log records it (b/082); the reply writers
-		// pass the name as sent.
-		attrs = append(attrs, "domain", strings.ToLower(domain))
-	}
-	return attrs
-}
-
 // ServeDNS satisfies miekg/dns.Handler. It intercepts private-range PTR
 // queries (when localPTR is enabled) and local-only names, returns a sinkhole
 // reply for blocked domains, and otherwise serves from cache or forwards
@@ -249,13 +238,13 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 	if len(req.Question) != 1 {
-		h.writeRcode(w, req, dns.RcodeServerFailure, "")
+		h.writeRcode(w, req, dns.RcodeServerFailure)
 		return
 	}
 	if req.Opcode != dns.OpcodeQuery {
 		// s-hole forwards a fresh QUERY (see upstreamQuery), so it cannot
 		// pass on another opcode, such as NOTIFY or UPDATE.
-		h.writeRcode(w, req, dns.RcodeNotImplemented, "")
+		h.writeRcode(w, req, dns.RcodeNotImplemented)
 		return
 	}
 	if !req.RecursionDesired {
@@ -265,7 +254,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		// device looked the name up. Unbound refuses such a query by default,
 		// and a stub resolver always sets RD, so s-hole refuses it too, before
 		// the stats, the cache, and the query log see it.
-		h.writeRcode(w, req, dns.RcodeRefused, "")
+		h.writeRcode(w, req, dns.RcodeRefused)
 		return
 	}
 
@@ -293,7 +282,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		h.counter.RecordQuery(ptrClient, ptrDomain, false)
 		h.counter.RecordLocalPTR()
 		h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Rcode: dns.RcodeNameError, Synthesized: true})
-		h.writeLocalNXDOMAIN(w, req, "write local PTR reply failed")
+		h.writeLocalNXDOMAIN(w, req)
 		return
 	}
 
@@ -316,7 +305,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			return
 		}
 		h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Rcode: dns.RcodeNameError, Synthesized: true})
-		h.writeLocalNXDOMAIN(w, req, "write local name reply failed")
+		h.writeLocalNXDOMAIN(w, req)
 		return
 	}
 
@@ -348,7 +337,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			// Relayed from cache, not synthesized. The cache stores only
 			// NOERROR-with-answers replies, so cached.Rcode is NOERROR.
 			h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, CacheHit: true, Rcode: cached.Rcode})
-			h.send(w, req, cached, "write cached response failed", domain)
+			h.send(w, req, cached)
 			return
 		}
 	}
@@ -365,16 +354,12 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		// Unresolved: every upstream failed at the transport level or the
 		// deadline hit, so s-hole synthesizes the SERVFAIL.
 		// The failure goes into the once-a-minute summary (RunFailureReport),
-		// not a per-query WARN, so an outage does not write every failed name
-		// to the system log.
-		failedDomain := ""
-		if h.logMode == "all" {
-			failedDomain = domain
-		}
-		h.failures.record(err, failedDomain)
+		// not a per-query WARN, and the summary holds no name, so the system
+		// log gets no query data.
+		h.failures.record(err)
 		h.counter.RecordForwardFailure()
 		h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Rcode: dns.RcodeServerFailure, Synthesized: true})
-		h.writeRcode(w, req, dns.RcodeServerFailure, domain)
+		h.writeRcode(w, req, dns.RcodeServerFailure)
 		return
 	}
 
@@ -392,7 +377,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	if h.cache != nil {
 		h.cache.Set(req, resp)
 	}
-	h.send(w, req, resp, "write response failed", domain)
+	h.send(w, req, resp)
 }
 
 func (h *Handler) writeSinkhole(w dns.ResponseWriter, req *dns.Msg, q dns.Question) {
@@ -402,7 +387,7 @@ func (h *Handler) writeSinkhole(w dns.ResponseWriter, req *dns.Msg, q dns.Questi
 
 	if h.blockMode == "nxdomain" {
 		resp.SetRcode(req, dns.RcodeNameError)
-		h.send(w, req, resp, "write sinkhole reply failed", q.Name)
+		h.send(w, req, resp)
 		return
 	}
 
@@ -420,28 +405,28 @@ func (h *Handler) writeSinkhole(w dns.ResponseWriter, req *dns.Msg, q dns.Questi
 		})
 	}
 	// For MX, TXT, etc. return NOERROR with no answer; clients won't retry.
-	h.send(w, req, resp, "write sinkhole reply failed", q.Name)
+	h.send(w, req, resp)
 }
 
 // writeRcode sends an empty reply with rcode: SERVFAIL for an unresolved or
 // malformed query, NOTIMP for an opcode s-hole does not forward, and REFUSED
 // for a query with RD=0. It goes through send like every reply except refuse
 // (lan.go), so the client keeps its OPT record and a DoT client its padding.
-func (h *Handler) writeRcode(w dns.ResponseWriter, req *dns.Msg, rcode int, domain string) {
+func (h *Handler) writeRcode(w dns.ResponseWriter, req *dns.Msg, rcode int) {
 	resp := new(dns.Msg)
 	resp.SetRcode(req, rcode)
-	h.send(w, req, resp, "write error reply failed", domain)
+	h.send(w, req, resp)
 }
 
 // writeLocalNXDOMAIN sends an authoritative NXDOMAIN reply for a name that
 // s-hole answers locally: a private-range PTR query (RFC 6303) or a local-only
-// name (see localnames.go). warnMsg is logged if the write fails.
-func (h *Handler) writeLocalNXDOMAIN(w dns.ResponseWriter, req *dns.Msg, warnMsg string) {
+// name (see localnames.go).
+func (h *Handler) writeLocalNXDOMAIN(w dns.ResponseWriter, req *dns.Msg) {
 	resp := new(dns.Msg)
 	resp.SetReply(req)
 	resp.Authoritative = true
 	resp.SetRcode(req, dns.RcodeNameError)
-	h.send(w, req, resp, warnMsg, req.Question[0].Name)
+	h.send(w, req, resp)
 }
 
 // clientAddr returns the query source IP (no port) for the stats top-clients

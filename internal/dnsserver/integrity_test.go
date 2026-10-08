@@ -375,8 +375,8 @@ func TestServeDNS_MismatchedTCPRetryKeepsTruncatedReply(t *testing.T) {
 
 func TestServeDNS_MismatchErrorNamesNoQuery(t *testing.T) {
 	// SEC-17: the error for a mismatching reply reaches the once-a-minute
-	// failure summary. Its text does not hold the queried name. The summary
-	// names a domain only under query_log.mode "all", in its own field.
+	// failure summary. Its text does not hold the queried name, and the
+	// summary names no domain under any query_log.mode.
 	for _, mode := range []string{"none", "blocked", "all"} {
 		t.Run(mode, func(t *testing.T) {
 			addr, _ := startRecordingUpstream(t, mismatchReply(net.IPv4(6, 6, 6, 6), mismatches[0].mutate), false)

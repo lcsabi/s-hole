@@ -19,7 +19,7 @@
 //	GET    /api/queries          recent rows from SQLite (?limit=N, default 50, max 1000; filter ?domain= substring, ?client= exact, ?blocked=true/false, ?outcome=unresolved/upstream-error)
 //	GET    /api/queries/export   stream the filtered query log (?format=csv|json, default csv; same filters as /api/queries; optional ?limit=N, else all)
 //	GET    /api/top-blocked      most-blocked domains in the stored history (SQLite) (?limit=N, default 50, max 1000)
-//	GET    /api/history          per-bucket query volume (?window=24h&bucket=1h; up to 24h from in-memory counts, longer from SQLite; bucket count capped at 1000)
+//	GET    /api/history          per-bucket query volume (?window=24h&bucket=1h; up to 24h from in-memory counts that follow query_log.mode, longer from SQLite; bucket count capped at 1000)
 //	GET    /api/allowlist        runtime allowlist (sorted)
 //	POST   /api/allowlist        add a domain (JSON body, ValidDomain-gated, 64 KiB cap)
 //	DELETE /api/allowlist        remove a domain
@@ -102,8 +102,9 @@ type Server struct {
 	shutdownRequested atomic.Bool
 	enablePprof       bool
 	// privacy describes the active query_log settings for /api/stats and the
-	// export headers. It is display metadata only: the client IP is masked in
-	// the DNS handler, so the API never sees an unmasked address to leak here.
+	// export headers. Its Mode and Clients also decide what the allowlist
+	// audit line keeps of the requester (auditAttrs). DNS queries are masked
+	// in the DNS handler.
 	privacy PrivacyInfo
 	// warnings returns the privacy and security warnings in effect, the same
 	// list the stats line repeats (see main's privacyReport). nil means none.
@@ -184,7 +185,8 @@ func (s *Server) EnablePprof(on bool) {
 	s.enablePprof = on
 }
 
-// PrivacyInfo describes what s-hole records, for the dashboard: the
+// PrivacyInfo describes what s-hole records, for the dashboard and the
+// allowlist audit line: the
 // query_log mode and client setting, whether the database and the log file
 // are on, and the retention. An empty Mode reads as "none" and an empty
 // Clients as "drop", the values the DNS handler applies when they are unset.
@@ -196,9 +198,9 @@ type PrivacyInfo struct {
 	RetentionDays int    `json:"retention_days"`
 }
 
-// SetPrivacy records the active query_log settings for /api/stats and the
-// export. It is metadata only and does not affect masking, which happens in
-// the DNS handler. Call before Serve.
+// SetPrivacy records the active query_log settings for /api/stats, the
+// export, and the allowlist audit line, which masks the requester with them
+// (auditAttrs). DNS queries are masked in the DNS handler. Call before Serve.
 func (s *Server) SetPrivacy(p PrivacyInfo) {
 	s.privacy = p
 }
@@ -701,12 +703,12 @@ func (s *Server) exportCSV(w http.ResponseWriter, r *http.Request, f querylog.Qu
 			return nil
 		})
 		if err != nil {
-			logger.Warn("query export failed", "format", "csv", "err", err)
+			logger.Warn("query export failed", "format", "csv", "err", redact.NetError(err))
 		}
 	}
 	cw.Flush()
 	if err := cw.Error(); err != nil {
-		logger.Warn("query export flush failed", "format", "csv", "err", err)
+		logger.Warn("query export flush failed", "format", "csv", "err", redact.NetError(err))
 	}
 }
 
@@ -740,7 +742,7 @@ func (s *Server) exportJSON(w http.ResponseWriter, r *http.Request, f querylog.Q
 	// Splice the streamed array into the envelope: drop the meta object's closing
 	// '}', open the queries array, and re-close after the last row.
 	if _, err := w.Write(append(head[:len(head)-1], []byte(`,"queries":[`)...)); err != nil {
-		logger.Warn("query export failed", "format", "json", "err", err)
+		logger.Warn("query export failed", "format", "json", "err", redact.NetError(err))
 		return
 	}
 
@@ -765,12 +767,12 @@ func (s *Server) exportJSON(w http.ResponseWriter, r *http.Request, f querylog.Q
 			return nil
 		})
 		if err != nil {
-			logger.Warn("query export failed", "format", "json", "err", err)
+			logger.Warn("query export failed", "format", "json", "err", redact.NetError(err))
 			return // leave the JSON unterminated as the failure signal
 		}
 	}
 	if _, err := io.WriteString(w, "]}"); err != nil {
-		logger.Warn("query export failed", "format", "json", "err", err)
+		logger.Warn("query export failed", "format", "json", "err", redact.NetError(err))
 	}
 }
 
@@ -894,12 +896,12 @@ func parseFlexDuration(s string) (time.Duration, error) {
 // (unresolved and upstream-error) over the requested window.
 //
 // A window up to 24 hours comes from the in-memory per-minute counts
-// (stats.Counter.Timeline): counts only, never a domain or a client, so the
-// graph works under every query_log setting. A longer window comes from the
-// stored query history when the database is on and records queries; under
-// mode "blocked" that history holds blocked rows only. Without one, the
-// window is cut to 24 hours from memory. Source and Logging tell the
-// dashboard which lines it can draw.
+// (stats.Counter.Timeline): counts only, never a domain or a client. They
+// follow query_log.mode like the stored history: nothing under "none" (the
+// series is all zeros), blocked queries only under "blocked". A longer window
+// comes from the stored query history when the database is on and records
+// queries. Without one, the window is cut to 24 hours from memory. Source and
+// Logging tell the dashboard which lines it can draw.
 func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	window, bucket := parseHistoryParams(r)
 
@@ -908,9 +910,9 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		Bucket int64 `json:"bucket"` // effective bucket, seconds
 		// Source is "memory" or "database" (see handleHistory).
 		Source string `json:"source"`
-		// Logging is the query_log.mode the series reflects: "all" for the
-		// in-memory counts, which count every query, and the database's mode
-		// for a stored series.
+		// Logging is the query_log.mode the series reflects: the mode the
+		// in-memory counts follow, or the database's mode for a stored series.
+		// Under "none" the series is all zeros.
 		Logging string `json:"logging"`
 		Series  any    `json:"series"`
 	}
@@ -927,7 +929,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 			Window:  int64(window / time.Second),
 			Bucket:  int64(bucket / time.Second),
 			Source:  "memory",
-			Logging: "all",
+			Logging: s.counter.GraphMode(),
 			Series:  s.counter.Timeline(window, bucket, time.Now()),
 		})
 		return
@@ -985,7 +987,7 @@ func (s *Server) handleAllowlistAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.store.AddToAllowlist(domain)
-	logger.Info("allowlist entry added", "domain", domain, "client", clientIP(r))
+	logger.Info("allowlist entry added", s.auditAttrs(r, domain)...)
 	writeJSON(w, map[string]string{"domain": domain, "status": "allowlisted"})
 }
 
@@ -996,13 +998,13 @@ func (s *Server) handleAllowlistRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.store.RemoveFromAllowlist(domain)
-	logger.Info("allowlist entry removed", "domain", domain, "client", clientIP(r))
+	logger.Info("allowlist entry removed", s.auditAttrs(r, domain)...)
 	writeJSON(w, map[string]string{"domain": domain, "status": "removed"})
 }
 
 func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
-	// No client address: the log keeps only the allowlist audit lines'
-	// (see PRIVACY.md), and a reload changes no data.
+	// No client address: only the allowlist audit lines name the requester
+	// (see auditAttrs), and a reload changes no data.
 	logger.Info("reload requested via API")
 	if !s.reloadFn() {
 		writeJSON(w, map[string]string{"status": "reload queued"})
@@ -1017,8 +1019,27 @@ func writeJSON(w http.ResponseWriter, v any) {
 		// Body may be half-written at this point; we cannot fix that, but
 		// at least surface the failure to the operator instead of letting
 		// the client see a silent truncation.
-		logger.Warn("JSON response write failed", "err", err)
+		logger.Warn("JSON response write failed", "err", redact.NetError(err))
 	}
+}
+
+// auditAttrs builds the attributes of an allowlist audit line: the domain,
+// and the requester masked with query_log.clients (querylog.MaskClientIP), the
+// same as a query-log row. Under the default "drop" the line holds no address;
+// "subnet" logs the subnet and "full" the address. Under query_log.mode "none"
+// (or a mode that is not set) the line holds no address either: clients then
+// gives no privacy warning (config.Warnings), so it must not record more. The
+// line links a device to a domain and a time, and the system journal keeps it
+// where purge cannot reach it, so it holds no more than the query log would.
+func (s *Server) auditAttrs(r *http.Request, domain string) []any {
+	attrs := []any{"domain", domain}
+	if s.privacy.Mode != "all" && s.privacy.Mode != "blocked" {
+		return attrs
+	}
+	if client := querylog.MaskClientIP(clientIP(r), s.privacy.Clients); client != "" {
+		attrs = append(attrs, "client", client)
+	}
+	return attrs
 }
 
 // clientIP returns the requester address for an audit-log line. It drops

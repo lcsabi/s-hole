@@ -59,9 +59,12 @@ The log also has two other kinds of lines:
 - **The startup banner.** The "Router setup" box shows the address to enter
   in your router.
 
-The application log holds no queried domain and no client address, except a
-warning about one failed query under `query_log.mode: "all"` and the allowlist
-audit lines.
+The application log holds no queried domain, no client address, and no total
+query count. (The failure summaries count failed queries only.) The one
+exception is the allowlist audit line (`allowlist entry added` or `removed`):
+it names the domain. It has the address of the device that made the change
+only while `query_log.mode` records queries, masked by `query_log.clients`.
+Under the defaults it has no address.
 
 ### Show only problems
 
@@ -79,15 +82,28 @@ docker logs s-hole 2>&1 | grep -E 'level=(WARN|ERROR)'
 
 ### Read the counters
 
+The dashboard shows the counters since startup: Total Queries, Blocked, Block
+Rate, and Cache Hit Rate. `/metrics` has all of them, for example
+`shole_queries_total`, `shole_forward_failures_total`, and
+`shole_upstream_errors_total`:
+
+```bash
+curl -s http://127.0.0.1:8080/metrics | grep '^shole_'
+```
+
+If `shole_forward_failures_total` or `shole_upstream_errors_total` increases,
+read [Some names do not resolve](#some-names-do-not-resolve).
+
 Every 5 minutes (`stats_interval`), s-hole writes one `msg=stats` line with
-its counters:
+its uptime only:
 
 ```
-level=INFO msg=stats pkg=stats uptime=2h5m0s queries=5120 blocked=812 blocked_pct=15.9 local_ptr=40 local_names=12 cache_hits=2310 cache_hit_pct=54.0 forward_failures=3 upstream_errors=0
+level=INFO msg=stats pkg=stats uptime=2h5m0s
 ```
 
-If `forward_failures` or `upstream_errors` increases, read
-[Some names do not resolve](#some-names-do-not-resolve).
+The line has no query counts: the difference between two lines would show
+when the household is active, and s-hole cannot delete the line from the
+journal. s-hole 2.0.0 and earlier logged the counts in this line.
 
 After the stats line, s-hole writes one `msg="privacy and security warnings in
 effect"` line when a setting is less private than its default. Read
@@ -222,8 +238,7 @@ journalctl -u s-hole | grep 'queries could not be resolved'
 
 `msg="queries could not be resolved"` comes once a minute while queries fail.
 `queries` is how many failed, and `causes` gives the last error of each
-upstream. The clients got SERVFAIL. The line names no domain, except
-`last_domain` under `query_log.mode: "all"`.
+upstream. The clients got SERVFAIL. The line names no domain and no client.
 
 - If `hint` names the system clock, an upstream's TLS certificate looks
   expired or not yet valid. The DoH upstreams use HTTPS, so a wrong clock
@@ -253,6 +268,12 @@ succeed, check the `dns.upstreams` setting.
 s-hole sent these queries to a plain upstream. Correct the DoH problem as
 above. For DoH only, remove the plain upstreams from `dns.upstreams`.
 
+`msg="replies could not be sent"` comes once a minute while s-hole cannot send
+replies to clients. `replies` is how many failed, and `errors` gives the
+errors, without addresses. A few failures are normal: a client closed the
+connection or left the network before s-hole replied. If there are many,
+check the network of the s-hole host. The line names no domain and no client.
+
 At startup, s-hole writes a note about the upstream list: `single upstream
 configured; no forwarding fallback if it fails`, that every upstream is DoH
 (no fallback if TLS fails), or, with the default list, `plain upstreams are a
@@ -278,15 +299,16 @@ the domain to `dns.local_domains`. Names under it then go to the router only.
 
 s-hole answers these names itself and never sends them upstream:
 `localhost` and the names under it get the loopback address, and names under
-`.onion`, `.invalid`, and `.alt` get NXDOMAIN. The counter `local_names` in
-the stats line counts these answers, and the NXDOMAIN answers while no
-upstream is on the LAN.
+`.onion`, `.invalid`, and `.alt` get NXDOMAIN. The counter
+`shole_local_names_total` on `/metrics` counts these answers, and the
+NXDOMAIN answers while no upstream is on the LAN.
 
 ## A device's queries do not reach s-hole
 
 By default s-hole records no query lines, so look at the counters. Send a
-query from the device, then read the next `msg=stats` line: `queries` goes up
-for every query that reaches s-hole. To see the device's own queries for a
+query from the device, then look at the Total Queries card on the dashboard,
+or at `shole_queries_total` on `/metrics`: it goes up for every query that
+reaches s-hole. To see the device's own queries for a
 short time, set `query_log.mode: "all"`, `query_log.clients: "full"`, and
 `query_log.file: "stdout"`, restart s-hole, and search for the device's IP
 address:
@@ -351,6 +373,10 @@ To keep it, also add it to `blocking.allowlist` in the config file.
 The query history is off by default. It needs `query_log.database` set to a
 file and `query_log.mode` set to `"blocked"` or `"all"`. The dashboard header
 shows `stored history off` while it is off.
+
+The "Queries over time" graph follows `query_log.mode` too, also without a
+database. Under the default `"none"` the graph is off and the panel says so.
+Under `"blocked"` it shows the blocked queries only.
 
 | You see | What it means | What to do |
 |---|---|---|

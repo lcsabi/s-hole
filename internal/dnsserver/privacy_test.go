@@ -140,119 +140,6 @@ func sameEntries(a, b []stats.Entry) bool {
 	return true
 }
 
-// writeFailure is the error a reply write to a gone client returns: its
-// text holds both socket addresses.
-func writeFailure() error {
-	return &net.OpError{
-		Op:     "write",
-		Net:    "udp",
-		Source: &net.UDPAddr{IP: net.IPv4(192, 168, 1, 2), Port: 53},
-		Addr:   &net.UDPAddr{IP: net.IPv4(192, 168, 1, 100), Port: 33333},
-		Err:    errors.New("sendto: broken pipe"),
-	}
-}
-
-func TestServeDNS_WriteFailureWarnings(t *testing.T) {
-	// D3 and b/082: a WARN about one query carries the domain only under mode
-	// "all", never the client address. Under "all" the domain is in
-	// lowercase, the form the query log records, also when the client sent
-	// mixed case (as a dns-0x20 forwarder does). The error is shown as the
-	// operation and the underlying error, without the socket addresses.
-	upstream, _ := startMockUpstream(t, net.IPv4(4, 4, 4, 4))
-	// The cache key keeps the case of the name (b/037), so the cached path
-	// stores the answer under the mixed-case name the client sends.
-	const cachedName = "CaChEd.Example.COM."
-	paths := []struct {
-		name      string
-		blockMode string
-		sent      string
-		qtype     uint16
-		want      string
-	}{
-		{"sinkhole zero_ip", "zero", "Ads.EXAMPLE.com.", dns.TypeA, "ads.example.com."},
-		{"sinkhole nxdomain", "nxdomain", "ADS.Example.Com.", dns.TypeAAAA, "ads.example.com."},
-		{"cache", "zero", cachedName, dns.TypeA, "cached.example.com."},
-		{"forward", "zero", "FrEsH.Example.COM.", dns.TypeA, "fresh.example.com."},
-		{"local PTR", "zero", "5.1.168.192.IN-ADDR.Arpa.", dns.TypePTR, "5.1.168.192.in-addr.arpa."},
-	}
-	for _, mode := range []string{"all", "blocked", "none"} {
-		for _, p := range paths {
-			t.Run(mode+"/"+p.name, func(t *testing.T) {
-				store := blocklist.NewStore()
-				store.Replace([]string{"ads.example.com"})
-				c := cache.New(10)
-				defer c.Close()
-				q := dns.Question{Name: cachedName, Qtype: dns.TypeA, Qclass: dns.ClassINET}
-				c.Set(asQuery(q), buildResp(q, net.IPv4(1, 2, 3, 4), 300))
-				qlog := &captureLogger{}
-				h := NewHandler(store, stats.New(), []string{upstream}, qlog, p.blockMode, 60, c, true, "full")
-				h.SetQueryLogMode(mode)
-				app := captureAppLog(t)
-
-				w := fakeClient()
-				w.writeError = writeFailure()
-				req := new(dns.Msg)
-				req.SetQuestion(p.sent, p.qtype)
-				h.ServeDNS(w, req)
-				if p.name == "cache" && !qlog.last.CacheHit {
-					t.Fatalf("the query did not hit the cache: %+v", qlog.last)
-				}
-
-				var warns []map[string]any
-				for _, r := range app.records(t) {
-					if r["level"] == "WARN" {
-						warns = append(warns, r)
-					}
-				}
-				if len(warns) != 1 {
-					t.Fatalf("got %d WARN lines, want 1:\n%s", len(warns), app.text())
-				}
-				if got := warns[0]["err"]; got != "write: sendto: broken pipe" {
-					t.Errorf("err = %v, want \"write: sendto: broken pipe\"", got)
-				}
-				domain, hasDomain := warns[0]["domain"].(string)
-				if mode == "all" {
-					if !hasDomain || domain != p.want {
-						t.Errorf("domain = %v, want %q (lowercase) under mode all", warns[0]["domain"], p.want)
-					}
-					if qlog.last.Domain != domain {
-						t.Errorf("WARN domain %q differs from the query log domain %q", domain, qlog.last.Domain)
-					}
-					if strings.Contains(app.text(), strings.TrimSuffix(p.sent, ".")) {
-						t.Errorf("application log holds the mixed-case name %q:\n%s", p.sent, app.text())
-					}
-				} else if _, ok := warns[0]["domain"]; ok {
-					t.Errorf("WARN carries the domain under mode %q: %v", mode, warns[0])
-				}
-				text := strings.ToLower(app.text())
-				for _, leak := range []string{"192.168.1.100", "33333", "192.168.1.2:53"} {
-					if strings.Contains(text, leak) {
-						t.Errorf("application log holds %q:\n%s", leak, app.text())
-					}
-				}
-				if mode != "all" && strings.Contains(text, strings.TrimSuffix(p.want, ".")) {
-					t.Errorf("application log names the query under mode %q:\n%s", mode, app.text())
-				}
-			})
-		}
-	}
-}
-
-func TestWriteErr(t *testing.T) {
-	// D3: only the operation and the underlying error of a *net.OpError are
-	// kept; other errors are shown as they are.
-	if got := writeErr(writeFailure()); got != "write: sendto: broken pipe" {
-		t.Errorf("writeErr(OpError) = %q", got)
-	}
-	wrapped := fmt.Errorf("reply: %w", writeFailure())
-	if got := writeErr(wrapped); strings.Contains(got, "192.168.1.100") {
-		t.Errorf("writeErr(wrapped OpError) = %q, holds the client address", got)
-	}
-	if got := writeErr(errors.New("plain")); got != "plain" {
-		t.Errorf("writeErr(plain) = %q, want plain", got)
-	}
-}
-
 // bigAnswerDoH starts a DoH upstream that answers every A query with n
 // records, more than 512 bytes for n = 40.
 func bigAnswerDoH(t *testing.T, n int) (endpoint string, hits interface{ Load() int64 }) {
@@ -463,5 +350,169 @@ func TestExchangeDoH_ErrorsHideURLSecrets(t *testing.T) {
 				t.Errorf("error %q does not show the redacted URL", err)
 			}
 		})
+	}
+}
+
+// replyWriteError is the error a reply write to a gone client returns: its
+// text holds the server's socket address and the client's.
+func replyWriteError() error {
+	return &net.OpError{
+		Op:     "write",
+		Net:    "udp",
+		Source: &net.UDPAddr{IP: net.IPv4(192, 168, 1, 2), Port: 53},
+		Addr:   &net.UDPAddr{IP: net.IPv4(192, 168, 1, 100), Port: 33333},
+		Err:    errors.New("sendto: broken pipe"),
+	}
+}
+
+// assertNoQueryData fails when the application log holds the query name
+// (in any case) or a part of the client's or the server's socket address.
+func assertNoQueryData(t *testing.T, app *appLog, name string) {
+	t.Helper()
+	text := strings.ToLower(app.text())
+	if n := strings.ToLower(strings.TrimSuffix(name, ".")); strings.Contains(text, n) {
+		t.Errorf("application log names the query %q:\n%s", name, app.text())
+	}
+	for _, leak := range []string{"192.168.1.100", "33333", "192.168.1.2"} {
+		if strings.Contains(text, leak) {
+			t.Errorf("application log holds the address part %q:\n%s", leak, app.text())
+		}
+	}
+	for _, r := range app.records(t) {
+		for _, key := range []string{"domain", "last_domain", "client", "name"} {
+			if _, ok := r[key]; ok {
+				t.Errorf("log record has a %q attribute: %v", key, r)
+			}
+		}
+	}
+}
+
+func TestServeDNS_FailedReplyWriteLogsNoQuery(t *testing.T) {
+	// PRIV-03: a failed reply write writes no log line at the time of the
+	// write, under every query_log.mode and on every reply path. The
+	// once-a-minute summary from RunFailureReport counts it, and neither the
+	// summary nor any other line names the query (also when the client sent
+	// it in mixed case) or holds the client address or port. The error is
+	// shown without the socket addresses (PRIV-04).
+	upstream, _ := startMockUpstream(t, net.IPv4(4, 4, 4, 4))
+	failing, _ := startFailingUpstream(t)
+	// The cache key keeps the case of the name (b/037), so the cached path
+	// stores the answer under the mixed-case name the client sends.
+	const cachedName = "CaChEd.Zqxv-Example.COM."
+	paths := []struct {
+		name      string
+		blockMode string
+		upstreams []string
+		sent      string
+		qtype     uint16
+		noRD      bool
+	}{
+		{"sinkhole zero_ip", "zero", []string{upstream}, "Ads.ZQXV-Tracker.com.", dns.TypeA, false},
+		{"sinkhole nxdomain", "nxdomain", []string{upstream}, "ADS.Zqxv-Tracker.Com.", dns.TypeAAAA, false},
+		{"cache", "zero", []string{upstream}, cachedName, dns.TypeA, false},
+		{"forward", "zero", []string{upstream}, "FrEsH.Zqxv-Example.COM.", dns.TypeA, false},
+		{"unresolved", "zero", []string{failing}, "DeAd.Zqxv-Example.COM.", dns.TypeA, false},
+		{"local PTR", "zero", []string{upstream}, "5.1.168.192.IN-ADDR.Arpa.", dns.TypePTR, false},
+		{"localhost", "zero", []string{upstream}, "Zqxv.LocalHost.", dns.TypeA, false},
+		{"never resolved", "zero", []string{upstream}, "Zqxv-Secret.ONION.", dns.TypeA, false},
+		{"LAN-only name", "zero", nil, "NAS.Zqxv.Home.Arpa.", dns.TypeA, false},
+		{"RD=0 refused", "zero", []string{upstream}, "NoRd.Zqxv-Example.COM.", dns.TypeA, true},
+	}
+	for _, mode := range []string{"all", "blocked", "none", "unset"} {
+		for _, p := range paths {
+			t.Run(mode+"/"+p.name, func(t *testing.T) {
+				store := blocklist.NewStore()
+				store.Replace([]string{"ads.zqxv-tracker.com"})
+				c := cache.New(10)
+				defer c.Close()
+				q := dns.Question{Name: cachedName, Qtype: dns.TypeA, Qclass: dns.ClassINET}
+				c.Set(asQuery(q), buildResp(q, net.IPv4(1, 2, 3, 4), 300))
+				qlog := &captureLogger{}
+				h := NewHandler(store, stats.New(), p.upstreams, qlog, p.blockMode, 60, c, true, "full")
+				if mode != "unset" {
+					h.SetQueryLogMode(mode)
+				}
+				app := captureAppLog(t)
+
+				w := fakeClient()
+				w.writeError = replyWriteError()
+				req := new(dns.Msg)
+				req.SetQuestion(p.sent, p.qtype)
+				req.RecursionDesired = !p.noRD
+				h.ServeDNS(w, req)
+				if w.written == nil {
+					t.Fatal("no reply was written")
+				}
+				if p.name == "cache" && !qlog.last.CacheHit {
+					t.Fatalf("the query did not hit the cache: %+v", qlog.last)
+				}
+				if recs := app.records(t); len(recs) != 0 {
+					t.Fatalf("the failed write logged %d lines at once, want 0:\n%s", len(recs), app.text())
+				}
+
+				reportNow(h)
+				sums := app.withMsg(t, "replies could not be sent")
+				if len(sums) != 1 {
+					t.Fatalf("got %d failed-reply summaries, want 1:\n%s", len(sums), app.text())
+				}
+				if sums[0]["level"] != "WARN" || sums[0]["replies"] != float64(1) {
+					t.Errorf("summary = %v, want a WARN with replies=1", sums[0])
+				}
+				if errs, _ := sums[0]["errors"].(string); !strings.Contains(errs, "broken pipe") {
+					t.Errorf("summary errors = %q, want the underlying error", errs)
+				}
+				assertNoQueryData(t, app, p.sent)
+			})
+		}
+	}
+}
+
+func TestReplySummary_ErrorsHoldNoAddress(t *testing.T) {
+	// PRIV-03 and PRIV-04: the failed-reply summary counts every failed write
+	// and shows each error without a socket address: a UDP and a TCP
+	// *net.OpError over IPv4 and IPv6, a wrapped one, and a plain error. A
+	// second report in the same interval logs nothing.
+	app := captureAppLog(t)
+	store := blocklist.NewStore()
+	store.Replace([]string{"ads.zqxv-tracker.com"})
+	h := NewHandler(store, stats.New(), nil, nullLogger{}, "zero", 60, nil, false, "full")
+	h.SetQueryLogMode("all")
+	v6 := &net.OpError{
+		Op:     "write",
+		Net:    "tcp",
+		Source: &net.TCPAddr{IP: net.ParseIP("fd12:3456::2"), Port: 853},
+		Addr:   &net.TCPAddr{IP: net.ParseIP("fd12:3456::77"), Port: 44444},
+		Err:    errors.New("connection reset by peer"),
+	}
+	errs := []error{
+		replyWriteError(),
+		v6,
+		fmt.Errorf("dot: %w", v6),
+		errors.New("plain write failure"),
+	}
+	for _, e := range errs {
+		w := &fakeWriter{remote: &net.TCPAddr{IP: net.ParseIP("fd12:3456::77"), Port: 44444}, writeError: e}
+		h.ServeDNS(w, buildReq("Ads.Zqxv-Tracker.COM"))
+	}
+	reportNow(h)
+	sums := app.withMsg(t, "replies could not be sent")
+	if len(sums) != 1 || sums[0]["replies"] != float64(len(errs)) {
+		t.Fatalf("summaries = %v, want one with replies=%d", sums, len(errs))
+	}
+	text, _ := sums[0]["errors"].(string)
+	for _, want := range []string{"broken pipe", "connection reset by peer", "plain write failure"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("summary errors = %q, lack %q", text, want)
+		}
+	}
+	all := strings.ToLower(app.text())
+	for _, leak := range []string{"fd12:3456::77", "44444", "fd12:3456::2", "192.168.1.100", "33333", "zqxv-tracker"} {
+		if strings.Contains(all, leak) {
+			t.Errorf("application log holds %q:\n%s", leak, app.text())
+		}
+	}
+	reportNow(h)
+	if n := len(app.withMsg(t, "replies could not be sent")); n != 1 {
+		t.Errorf("got %d summaries after an interval without failures, want still 1", n)
 	}
 }

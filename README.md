@@ -49,7 +49,7 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
 - **Local names stay local.** Names that only mean something on your network, such as `printer`, `nas.lan`, or `router.home.arpa`, go only to an upstream on the LAN (your router), never to a public resolver. `localhost` gets the loopback address, and `.onion`, `.invalid`, and `.alt` names get "no such name", without a query upstream.
 - **Minimal upstream query.** s-hole sends the upstream a new query with only the question and a few flags. The device's own query ID and EDNS options, such as a cookie that identifies the device, or a Client Subnet (part of its address), stay on the LAN. DoH queries are padded, so their size does not show the name.
 - **Optional query history.** When you turn it on, a SQLite database keeps the queries for 7 days by default (retention erases the rows from the file, not only from the table), and an optional text log suits `grep` and `tail`. One command, or a dashboard button on the s-hole host, deletes everything s-hole stored.
-- **Admin web UI.** Live stats, a queries-over-time graph (counts only, kept in memory), what s-hole records and the warnings in effect, top blocked domains, top clients, per-source blocklist health, and, with the history on, a searchable recent query log. Also allowlist management and a "why is this blocked?" domain check.
+- **Admin web UI.** Live stats, a queries-over-time graph (counts only, kept in memory, following `query_log.mode`), what s-hole records and the warnings in effect, top blocked domains, top clients, per-source blocklist health, and, with the history on, a searchable recent query log. Also allowlist management and a "why is this blocked?" domain check.
 - **REST API.** All UI data is available as JSON, ready for scripting and future integrations.
 - **Observability.** Serves Prometheus metrics at `/metrics` (query, cache, blocklist, upstream-failure, DoT-certificate, and Go-runtime health) and liveness and readiness probes at `/healthz` and `/readyz`, with no external metrics library. Ready-made Grafana dashboard and Prometheus scrape/alert examples ship under `deploy/`.
 - **Configurable sinkhole mode.** Returns `0.0.0.0` (the default, a silent failure) or `NXDOMAIN`.
@@ -88,7 +88,7 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
 
 s-hole sees every DNS query on your network, so it could hold the browsing history of everyone in the household. It is built to keep as little of that as possible:
 
-- **Nothing is recorded by default.** `query_log.mode` is `"none"`: s-hole keeps no query history, writes no query lines, and the Top Domains and Top Clients panels stay empty. The dashboard still shows the live counters and a per-minute graph of counts, which s-hole keeps in memory only.
+- **Nothing is recorded by default.** `query_log.mode` is `"none"`: s-hole keeps no query history, writes no query lines, and the Top Domains and Top Clients panels stay empty. The dashboard still shows the live counters since startup. The per-minute graph follows `query_log.mode` like the Top lists, so it is off under `"none"`.
 - **No device addresses by default.** `query_log.clients` is `"drop"`: when you turn the history on, s-hole still does not record which device asked.
 - **Limited history.** With the history on, rows older than 7 days are deleted (`query_log.retention_days`), and the database overwrites deleted rows.
 - **Encrypted upstreams.** The default upstreams are DoH (Quad9, then Cloudflare), so your internet provider cannot read the queries s-hole forwards.
@@ -249,13 +249,16 @@ router change above. Network-wide blocking begins only after DHCP hands
 out s-hole's address and clients renew their leases. Then devices are
 filtered without naming the server.
 
-If a query times out, look at the stats line that s-hole logs every
-5 minutes (`msg=stats`, or `journalctl -u s-hole -f` under systemd): the
-`queries` count goes up for every query that reaches s-hole. If it does not
-go up, the query never arrived: look at the network path (firewall, wrong
-IP, client tool) rather than at s-hole. To see each query for a short time,
-set `query_log.mode: "all"` and `query_log.file: "stdout"`, restart, and set
-them back when you are done (s-hole warns while they are on).
+If a query times out, look at the **Total Queries** card on the dashboard
+(or `shole_queries_total` on `/metrics`): it goes up for every query that
+reaches s-hole. If it does not go up, the query never arrived: look at the
+network path (firewall, wrong IP, client tool) rather than at s-hole. If it
+goes up but the query fails, look for the `queries could not be resolved`
+line, which s-hole logs once a minute while queries fail
+(`journalctl -u s-hole | grep 'could not be resolved'` under systemd). To
+see each query for a short time, set `query_log.mode: "all"` and
+`query_log.file: "stdout"`, restart, and set them back when you are done
+(s-hole warns while they are on).
 
 ---
 
@@ -283,7 +286,7 @@ All configuration lives in `config.yaml`, in four sections (`dns`, `blocking`, `
 | `blocking.refresh_interval` | `"24h"` | positive duration | How often to download the blocklists again | |
 | `blocking.cache_dir` | `"."` | directory | Where downloaded blocklists are kept, so a restart does not download them. s-hole creates the directory (mode `700`) if it does not exist | |
 | `query_log.mode` | `"none"` | `"none"`, `"blocked"`, `"all"` | Which queries s-hole records, in the database, the log file, and the Top lists | when not `"none"` |
-| `query_log.clients` | `"drop"` | `"drop"`, `"subnet"`, `"full"` | How much of the client address a recorded query keeps: nothing, IPv4 /24 and IPv6 /64, or all of it | when not `"drop"` and mode is not `"none"` |
+| `query_log.clients` | `"drop"` | `"drop"`, `"subnet"`, `"full"` | How much of the client address a recorded query keeps: nothing, IPv4 /24 and IPv6 /64, or all of it. While the mode records queries, the allowlist audit line masks the requester the same way | when not `"drop"` and mode is not `"none"` |
 | `query_log.database` | `"off"` | `"off"` or a file path | SQLite file for the query history (Recent Queries, Stored list, 7-day graph) | |
 | `query_log.file` | `"off"` | `"off"`, `"stdout"`, or a file path | Where one text line per recorded query goes. s-hole cannot delete lines on standard output, and does not shorten a file | when not `"off"` and mode is not `"none"` |
 | `query_log.retention_days` | `7` | whole number ≥ 0 | Delete database rows older than this; `0` keeps them forever | when `0` or more than `7`, with a database and mode not `"none"` |
@@ -291,7 +294,7 @@ All configuration lives in `config.yaml`, in four sections (`dns`, `blocking`, `
 | `query_log.client_names` | none | map of IP or CIDR to a label | Labels for clients on the dashboard. A label never shows more than `clients` keeps. An invalid key is dropped | |
 | `admin.listen` | `"127.0.0.1:8080"` | `host:port` | Address of the dashboard and API, which have no login | when not a loopback address |
 | `admin.pprof` | `false` | `true`, `false` | Expose the Go profiler under `/debug/pprof/` | when `true` |
-| `stats_interval` | `"5m"` | positive duration | How often the stats line (and the warnings line) is logged | |
+| `stats_interval` | `"5m"` | positive duration | How often the stats line (the uptime, no query counts) and the warnings line are logged | |
 
 Except where the table says otherwise, an invalid value gives a `config problem` WARN and the default. A duration uses Go syntax: `30s`, `5m`, `24h`, `168h`. A true/false value also accepts `yes`/`no` and `1`/`0`.
 
@@ -501,7 +504,7 @@ The server answers only requests addressed to an IP address, to `localhost`, or 
 | `GET` | `/api/queries?limit=N` | Last N stored queries, newest first (default: 50, max: 1000). Filter with `?domain=` (substring), `?client=` (exact match on the stored value), `?blocked=true`/`false`, or `?outcome=unresolved`/`upstream-error` (failed queries). Each row carries a computed `outcome` (`allowed`/`blocked`/`unresolved`/`upstream_error`) and an optional `client_names` `label`. Empty when `query_log.database` is off |
 | `GET` | `/api/queries/export?format=csv` | Download the stored queries. `?format=csv` (default) or `json`, streamed. Reuses the `/api/queries` filters; uncapped unless `?limit=N` is set. The `X-Shole-Query-Log-Clients` and `X-Shole-Query-Log-Mode` headers (and the JSON `clients` and `mode` fields) say what the rows hold. Empty (valid) file when `query_log.database` is off |
 | `GET` | `/api/top-blocked?limit=N` | Most-blocked domains in the stored history (default: 50, max: 1000); empty when `query_log.database` is off |
-| `GET` | `/api/history?window=24h&bucket=1h` | Per-bucket total, blocked, cached, unresolved, and upstream-error counts. A window up to 24 hours comes from per-minute counts kept in memory (`source: "memory"`), under every setting. A longer window comes from the stored history (`source: "database"`) when the database is on and records queries; under `query_log.mode: "blocked"` it holds blocked queries only (`logging: "blocked"`). Bucket count capped at 1000 |
+| `GET` | `/api/history?window=24h&bucket=1h` | Per-bucket total, blocked, cached, unresolved, and upstream-error counts. A window up to 24 hours comes from per-minute counts kept in memory (`source: "memory"`), which follow `query_log.mode` (`logging`): all zeros under `"none"`, blocked queries only under `"blocked"`. A longer window comes from the stored history (`source: "database"`) when the database is on and records queries; under `query_log.mode: "blocked"` it holds blocked queries only (`logging: "blocked"`). Bucket count capped at 1000 |
 | `GET` | `/api/allowlist` | List all runtime allowlist domains |
 | `POST` | `/api/allowlist` | Add a domain. Body: `{"domain": "example.com"}`, with `Content-Type: application/json` |
 | `DELETE` | `/api/allowlist?domain=…` | Remove a domain from the runtime allowlist |

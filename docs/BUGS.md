@@ -2923,3 +2923,55 @@ an HTTPS request to a non-HTTPS URL and keeps Go's limit of 10 requests. The
 refused request is not sent, and the download fails, so the stale-cache
 fallback applies. A WARN, `blocklist redirect refused`, names both URLs
 through `redact.URL`. A redirect to another HTTPS host is still followed.
+
+## b/098: stats: the periodic stats line wrote activity counts to the journal by default
+
+**Priority:** P1
+**Component:** stats
+**Status:** Fixed in CL 99
+**Filed:** 2026-10-08
+
+### Description
+
+Every `stats_interval` (5 minutes by default), the `msg=stats` line logged the
+counters since startup: `queries`, `blocked`, `local_ptr`, `local_names`,
+`cache_hits`, `forward_failures`, `upstream_errors`, and two percentages. It
+did this under every setting, also under the default `query_log.mode: "none"`.
+The difference between two lines is the number of queries in those 5 minutes,
+so the system journal held a timeline of when the household was awake and at
+home. `CLAUDE.md` names "the counts over time that show activity" as personal
+data, and s-hole does not write query data by default where it cannot delete
+it. The journal keeps the lines under its own retention, often for months,
+and a purge cannot reach them. `PRIVACY.md` ("Application log: startup,
+reloads, errors") and the uninstaller ("With the 2.0 defaults the journal
+holds no query data") were wrong.
+
+### Fix
+
+The stats line holds the uptime only. The counters stay on the dashboard,
+in `/api/stats`, and on `/metrics`. The "privacy and security warnings in
+effect" line still follows the stats line every `stats_interval`.
+
+## b/099: api: an admin API write error put the requester's address in the log
+
+**Priority:** P3
+**Component:** api
+**Status:** Fixed in CL 99
+**Filed:** 2026-10-08
+
+### Description
+
+When an HTTP client disconnected during a response, the write error was a
+`*net.OpError`, whose text holds both socket addresses, for example
+`write tcp 127.0.0.1:35987->127.0.0.1:57082: write: connection reset by
+peer`. The query export (CSV and JSON) and `writeJSON` logged this error
+unchanged. With `admin.listen` on the LAN, the journal recorded the address
+of the device that read the history. The DNS path already removed the
+addresses from a reply-write error (`writeErr`, b/078), but the API did not.
+
+### Fix
+
+`redact.NetError` replaces `writeErr`. It keeps the operation and the
+underlying error of a `*net.OpError` (`write: connection reset by peer`) and
+removes the addresses, also when other text wraps the error. Every
+write-error log in `internal/api` and the DNS failed-reply summary use it.

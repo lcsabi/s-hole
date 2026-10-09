@@ -129,6 +129,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 113](cls/CL-113.md) | Graduate the CHANGELOG to v2.1.0 |
 | [CL 114](cls/CL-114.md) | Update `golang.org/x/net` to v0.60.0, so `govulncheck -mode=binary` finds no advisory in the Linux binaries |
 | [CL 115](cls/CL-115.md) | Graduate the CHANGELOG to v2.1.1 |
+| [CL 116](cls/CL-116.md) | Publish the October 2026 privacy and security review summary (`docs/SECURITY-REVIEW-2026-10.md`), linked from `SECURITY.md` |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

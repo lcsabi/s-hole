@@ -992,7 +992,7 @@ $env:GOOS=""; $env:GOARCH=""
 ├── cmd/s-hole/        application entry point (main package)
 ├── internal/          implementation packages (not importable externally)
 ├── deploy/            systemd unit, Linux install/uninstall scripts, Prometheus/Grafana examples
-├── docs/              DESIGN, CHANGELOG, BUGS, ROADMAP, and CL.md (index)
+├── docs/              DESIGN, CHANGELOG, BUGS, ROADMAP, TROUBLESHOOTING, the 2026-10 security review, and CL.md (index)
 │   └── cls/           one file per CL (CL-01.md … CL-NN.md)
 ├── .github/           CI workflows, dependabot, CODEOWNERS, PR & issue templates
 ├── .golangci.yml      lint config

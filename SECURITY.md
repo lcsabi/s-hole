@@ -253,3 +253,12 @@ Out of scope:
 
 For the full design discussion of these mitigations, see
 `docs/DESIGN.md` ("Security Considerations").
+
+## Reviews
+
+In October 2026, s-hole 2.0.0 had a privacy and security review. 2.0.1,
+2.1.0, and 2.1.1 fix its issues, except two that the planned device pairing
+(ROADMAP #42) must fix: dashboard access by every account on the host, and
+plain HTTP for a dashboard on the LAN. For the findings, the changes, and
+what is still open, see
+[`docs/SECURITY-REVIEW-2026-10.md`](docs/SECURITY-REVIEW-2026-10.md).

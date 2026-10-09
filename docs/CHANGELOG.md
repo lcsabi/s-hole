@@ -8,6 +8,14 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-10-09
+
+A patch release. It updates one dependency so that a vulnerability scan of
+the release binaries is clean. s-hole's behavior, the config format, and the
+config defaults do not change. You do not need to change anything when you
+upgrade from 2.1.0. If you upgrade from 2.0.1 or earlier, first read the
+actions in the 2.1.0 notes.
+
 ### Security
 
 - **`golang.org/x/net` 0.60.0.** `govulncheck -mode=binary` reports five
@@ -17,8 +25,7 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   module it uses only the `ipv4` and `ipv6` packages and their helpers
   (through `miekg/dns`). Its HTTP/2 code is the copy in the Go standard
   library, which go1.26.9 already fixes. The update makes the binary scan
-  clean. No action is needed: the 2.1.1 binaries and image carry it.
-  (CL 114)
+  clean. The 2.1.1 binaries and image carry the update. (CL 114)
 
 ## [2.1.0] - 2026-10-09
 

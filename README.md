@@ -137,7 +137,7 @@ archive for your platform (`linux_amd64`, `linux_arm64`, `linux_armv7`, or
 
 ```bash
 sha256sum -c SHA256SUMS --ignore-missing   # confirm the download
-tar -xzf s-hole_v2.1.0_linux_amd64.tar.gz  # Linux (unzip the .zip on Windows)
+tar -xzf s-hole_v2.1.1_linux_amd64.tar.gz  # Linux (unzip the .zip on Windows)
 ```
 
 `SHA256SUMS` comes from the same place as the archives. It shows that the
@@ -147,7 +147,7 @@ release workflow of this repository built the file from the release tag. To
 check the attestation, use the [GitHub CLI](https://cli.github.com/):
 
 ```bash
-gh attestation verify s-hole_v2.1.0_linux_amd64.tar.gz --repo lcsabi/s-hole
+gh attestation verify s-hole_v2.1.1_linux_amd64.tar.gz --repo lcsabi/s-hole
 ```
 
 The same command checks the unpacked binary (`s-hole` or `s-hole.exe`). The
@@ -677,7 +677,7 @@ ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1   # for example
 ```bash
 docker build -t s-hole .
 # Or pull a tagged release instead of building:
-#   docker pull ghcr.io/lcsabi/s-hole:2.1.0   (and use that name in step 4)
+#   docker pull ghcr.io/lcsabi/s-hole:2.1.1   (and use that name in step 4)
 ```
 
 From 2.1.0, a released image has a signed build provenance attestation and an
@@ -685,7 +685,7 @@ SBOM (the list of the packages in the image). To check the image before you
 run it, use the GitHub CLI:
 
 ```bash
-gh attestation verify oci://ghcr.io/lcsabi/s-hole:2.1.0 --repo lcsabi/s-hole
+gh attestation verify oci://ghcr.io/lcsabi/s-hole:2.1.1 --repo lcsabi/s-hole
 ```
 
 **4. Run with host networking** (recommended on Linux):
@@ -1076,9 +1076,9 @@ The binary reports its build identity at any time:
 
 ```
 $ s-hole -version
-s-hole v2.1.0
+s-hole v2.1.1
   commit:  ab12cd3
-  built:   2026-10-09T12:00:00Z
+  built:   2026-10-09T16:00:00Z
   go:      go1.26.9
   os/arch: linux/amd64
 ```

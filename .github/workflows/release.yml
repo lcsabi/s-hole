@@ -28,9 +28,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Read the Go version
+        id: go
+        # The Go release of the golang image that the Dockerfile pins (see
+        # .github/go-version.sh).
+        run: |
+          version="$(sh .github/go-version.sh)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: ${{ steps.go.outputs.version }}
           # A release builds from a clean module and build cache. A cache that
           # another workflow saved cannot change the published binaries.
           cache: false
@@ -145,24 +152,19 @@ jobs:
           fi
 
           # Name the Go release that built the archives and the image. Every
-          # build job must report the same one. The image builder is the
-          # golang image that the Dockerfile pins by digest.
+          # build job must report the release of the golang image that the
+          # Dockerfile pins, so the archives and the image match.
+          go_image="go$(sh .github/go-version.sh)"
           go_archives="$(sort -u artifacts/goversion_*.txt)"
-          if [ "$(printf '%s\n' "$go_archives" | wc -l)" -ne 1 ] || [ -z "$go_archives" ]; then
-            echo "the build jobs used different Go versions: ${go_archives}" >&2
-            exit 1
-          fi
-          go_image="$(sed -n 's/^FROM .*golang:\([0-9][0-9.]*\)-.*/go\1/p' Dockerfile)"
-          if [ -z "$go_image" ]; then
-            echo "no golang builder image found in the Dockerfile" >&2
+          if [ "$go_archives" != "$go_image" ]; then
+            echo "the build jobs used ${go_archives}, want ${go_image} (the Dockerfile pin)" >&2
             exit 1
           fi
           {
             echo
             echo "### Build"
             echo
-            echo "- Archives: built with ${go_archives}."
-            echo "- Container image: built with ${go_image}."
+            echo "Built with ${go_image} (the archives and the container image)."
           } >> notes.md
       - name: Create release
         env:

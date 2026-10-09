@@ -1,8 +1,9 @@
 # Requires Go 1.26 (the go.mod go line). Both base images are pinned by
 # digest, so a rebuild of the same commit uses the same images. Dependabot
-# proposes the next Go patch and each new digest. The release archives build
-# with the newest Go 1.26 patch, so they can be one patch ahead of the image
-# until that Dependabot update merges; the release notes name both versions.
+# proposes the next Go patch and each new digest. The golang tag below is the
+# one Go pin of the project: CI, the weekly scan, and the release archives
+# read it through .github/go-version.sh, so the archives and the image build
+# with the same Go release. Keep the exact X.Y.Z form of the tag.
 
 # ── Build stage ───────────────────────────────────────────────
 # The builder runs on the build host's platform and cross-compiles for the

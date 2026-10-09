@@ -209,8 +209,8 @@ Out of scope:
   with `gh attestation verify`, see the README), and the image has an SBOM.
   The Dockerfile pins its base images by digest. A weekly scan runs
   `govulncheck` on `master` and on the binaries of the latest release, and
-  the release notes name the Go versions that built the archives and the
-  image.
+  the release notes name the Go release that built the archives and the
+  image. CI and the release use the Go release that the Dockerfile pins.
 - **Client name labels are read-only and privacy-bounded.** The optional
   `client_names` map adds device labels to the admin API, so it is device-
   identity PII on the unauthenticated read surface. The label is resolved from

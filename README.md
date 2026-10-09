@@ -150,7 +150,7 @@ gh attestation verify s-hole_v2.1.0_linux_amd64.tar.gz --repo lcsabi/s-hole
 ```
 
 The same command checks the unpacked binary (`s-hole` or `s-hole.exe`). The
-release notes name the Go versions that built the archives and the container
+release notes name the Go release that built the archives and the container
 image.
 
 Each archive contains the binary, a sample `config.yaml`, `LICENSE`, `README.md`, `PRIVACY.md`,
@@ -1027,7 +1027,7 @@ make test        # plain test run
 make test-race   # tests under the race detector (CGO toolchain required)
 make bench       # one iteration of each benchmark
 make lint        # golangci-lint
-make lint-sh     # shellcheck the deploy scripts
+make lint-sh     # shellcheck the deploy and CI scripts
 make vuln        # govulncheck: scan deps + code for known CVEs
 make fmt         # gofmt -s -w
 make install     # go install into $GOBIN

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -22,9 +24,10 @@ import (
 //     and no checkout keeps the token in .git/config.
 //   - SEC-06: the release signs provenance attestations for the archives and
 //     the image, the image gets an SBOM, and a release build restores no cache.
-//   - SEC-07: the Docker images are pinned by digest, the workflows follow the
-//     newest Go patch of the go.mod minor release, and a weekly scan checks
-//     master and the latest release binaries.
+//   - SEC-07: the Docker images are pinned by digest, every workflow builds
+//     with the one Go release that the Dockerfile's golang image pins (read
+//     with .github/go-version.sh), and a weekly scan checks master and the
+//     latest release binaries.
 //
 // The checks are functions that return a list of problems, so the negative
 // tests can feed them broken input without editing the repository files.
@@ -61,6 +64,9 @@ type wfStep struct {
 	Uses string               `yaml:"uses"`
 	Run  string               `yaml:"run"`
 	With map[string]yaml.Node `yaml:"with"`
+
+	Shell string            `yaml:"shell"`
+	Env   map[string]string `yaml:"env"`
 }
 
 // with returns the value of a `with:` input and whether the step sets it.
@@ -928,9 +934,9 @@ func TestRelease_NoRestoredCache(t *testing.T) {
 var (
 	fromImageRE   = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]*(?::[0-9]+)?(?:/[a-z0-9._-]+)*:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$`)
 	golangImageRE = regexp.MustCompile(`^golang:(\d+)\.(\d+)\.(\d+)-[A-Za-z0-9._-]*@sha256:[0-9a-f]{64}$`)
-	// releaseGoRE is the Go form of the sed expression in release.yml that
-	// reads the builder Go version for the release notes.
-	releaseGoRE = regexp.MustCompile(`^FROM .*golang:([0-9][0-9.]*)-`)
+	// releaseGoRE is the Go form of the sed expression in
+	// .github/go-version.sh that reads the builder Go release.
+	releaseGoRE = regexp.MustCompile(`^FROM .*golang:([0-9]+\.[0-9]+\.[0-9]+)-`)
 )
 
 // dockerfileProblems checks every FROM line: the image is name:tag pinned by
@@ -987,7 +993,7 @@ func dockerfileProblems(dockerfile string) (goVersion string, problems []string)
 		problems = append(problems, fmt.Sprintf("Dockerfile: want one golang builder image, found %d", golangs))
 	}
 	if sedHits != 1 {
-		problems = append(problems, fmt.Sprintf("Dockerfile: the release notes read the Go version from one FROM golang:X.Y.Z- line; %d lines match", sedHits))
+		problems = append(problems, fmt.Sprintf("Dockerfile: .github/go-version.sh reads the Go release from one FROM golang:X.Y.Z- line; %d lines match", sedHits))
 	}
 	return goVersion, problems
 }
@@ -1045,108 +1051,6 @@ func TestDockerfileProblems_RejectsUnpinned(t *testing.T) {
 		if _, p := dockerfileProblems(df); len(p) == 0 {
 			t.Errorf("%s: accepted, want a problem", name)
 		}
-	}
-}
-
-// TestRelease_GoVersionFromDockerfile pins SEC-07 (CL 108): the release notes
-// name the builder Go version, which the release job reads from the
-// Dockerfile with sed. When a POSIX shell is available, the test runs that
-// sed command against the Dockerfile.
-func TestRelease_GoVersionFromDockerfile(t *testing.T) {
-	want, problems := dockerfileProblems(readRepoFile(t, "Dockerfile"))
-	reportProblems(t, problems)
-
-	rel := repoWorkflow(t, "release.yml")
-	sedRE := regexp.MustCompile(`sed -n '([^']+)' Dockerfile`)
-	var exprs []string
-	for _, jn := range rel.sortedJobs() {
-		for _, s := range rel.Jobs[jn].Steps {
-			for _, m := range sedRE.FindAllStringSubmatch(s.Run, -1) {
-				exprs = append(exprs, m[1])
-			}
-		}
-	}
-	if len(exprs) != 1 {
-		t.Fatalf("release.yml: want one sed command that reads the Go version from the Dockerfile, found %d", len(exprs))
-	}
-
-	sh, err := exec.LookPath("sh")
-	if err != nil {
-		t.Skip("no POSIX shell; the sed command was not run")
-	}
-	cmd := exec.Command(sh, "-c", "sed -n '"+exprs[0]+"' Dockerfile")
-	cmd.Dir = filepath.Join("..", "..")
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("run the sed command: %v", err)
-	}
-	if got := strings.TrimSpace(string(out)); got != "go"+want {
-		t.Errorf("release.yml sed reads %q from the Dockerfile, want %q", got, "go"+want)
-	}
-}
-
-// goVersionProblems checks that every setup-go step and every
-// govulncheck-action step asks for the go.mod minor version as a quoted
-// string, with no patch, so each run gets the newest patch.
-func goVersionProblems(w *workflow, minor string) []string {
-	var problems []string
-	check := func(jn string, s wfStep, key string) {
-		n, ok := s.With[key]
-		switch {
-		case !ok:
-			problems = append(problems, fmt.Sprintf("%s: job %s: %s has no %s", w.file, jn, s.label(), key))
-		case n.Tag != "!!str" || n.Style&(yaml.DoubleQuotedStyle|yaml.SingleQuotedStyle) == 0:
-			problems = append(problems, fmt.Sprintf("%s: job %s: %s %s %s is not a quoted string (YAML reads 1.30 as 1.3)", w.file, jn, s.label(), key, n.Value))
-		case n.Value != minor:
-			problems = append(problems, fmt.Sprintf("%s: job %s: %s %s = %q, want %q (the minor release, no patch)", w.file, jn, s.label(), key, n.Value, minor))
-		}
-		if _, ok := s.With["go-version-file"]; ok {
-			problems = append(problems, fmt.Sprintf("%s: job %s: %s sets go-version-file", w.file, jn, s.label()))
-		}
-	}
-	for _, jn := range w.sortedJobs() {
-		for _, s := range w.Jobs[jn].Steps {
-			switch {
-			case s.usesAction("actions/setup-go"):
-				check(jn, s, "go-version")
-			case s.usesAction("golang/govulncheck-action"):
-				check(jn, s, "go-version-input")
-			}
-		}
-	}
-	return problems
-}
-
-// TestWorkflows_GoVersionMinorOnly pins SEC-07 (CL 108): the workflows keep
-// the minor version ("1.26"), so Go patches arrive without a change here.
-func TestWorkflows_GoVersionMinorOnly(t *testing.T) {
-	minor := goModMinor(t)
-	for _, w := range repoWorkflows(t) {
-		reportProblems(t, goVersionProblems(w, minor))
-	}
-}
-
-// TestGoVersionProblems_RejectsPatchPin is the negative test for
-// goVersionProblems.
-func TestGoVersionProblems_RejectsPatchPin(t *testing.T) {
-	head := "on: push\npermissions: {}\njobs:\n  a:\n    runs-on: x\n    steps:\n"
-	cases := map[string]string{
-		"patch":       head + "      - uses: actions/setup-go@x\n        with:\n          go-version: \"1.26.9\"\n",
-		"unquoted":    head + "      - uses: actions/setup-go@x\n        with:\n          go-version: 1.26\n",
-		"other minor": head + "      - uses: actions/setup-go@x\n        with:\n          go-version: \"1.25\"\n",
-		"missing":     head + "      - uses: actions/setup-go@x\n",
-		"file":        head + "      - uses: actions/setup-go@x\n        with:\n          go-version: \"1.26\"\n          go-version-file: go.mod\n",
-		"vulncheck":   head + "      - uses: golang/govulncheck-action@x\n        with:\n          go-version-input: \"1.26.9\"\n",
-		"stable":      head + "      - uses: actions/setup-go@x\n        with:\n          go-version: stable\n",
-	}
-	for name, raw := range cases {
-		if p := goVersionProblems(mustParseWorkflow(t, "x.yml", raw), "1.26"); len(p) == 0 {
-			t.Errorf("%s: accepted, want a problem", name)
-		}
-	}
-	ok := head + "      - uses: actions/setup-go@x\n        with:\n          go-version: \"1.26\"\n"
-	if p := goVersionProblems(mustParseWorkflow(t, "x.yml", ok), "1.26"); len(p) != 0 {
-		t.Errorf("good workflow: unexpected problems %q", p)
 	}
 }
 
@@ -1250,6 +1154,937 @@ func TestVulncheckProblems_RejectsMissingParts(t *testing.T) {
 	for name, raw := range cases {
 		if p := vulncheckProblems(mustParseWorkflow(t, "vulncheck.yml", raw)); len(p) == 0 {
 			t.Errorf("%s: accepted, want a problem", name)
+		}
+	}
+}
+
+// ---- SEC-07: one Go release, pinned in the Dockerfile ----
+
+// CL 108, SEC-07 (decided 2026-10-09): actions/setup-go resolves a minor
+// version such as "1.26" from GitHub's actions/go-versions list. That list
+// was a month behind go.dev (it ended at go1.26.8 while go1.26.9 had
+// security fixes), so a floating minor did not bring the Go security
+// patches. The Go release is now pinned once, in the tag of the Dockerfile's
+// golang builder image, and Dependabot moves it. .github/go-version.sh
+// prints that release, and every workflow reads it there. setup-go downloads
+// an exact release from go.dev when its list does not have it yet.
+
+// goVersionScript is the script that prints the Go release of the
+// Dockerfile pin, relative to the repository root.
+const goVersionScript = ".github/go-version.sh"
+
+// testDigest is a well-formed sha256 digest for the test Dockerfiles.
+const testDigest = "cdfd4fe2da6b225d8b40c6b7a105736e548e83ff56d5d8f9394446eeb5eb84e0"
+
+// testRuntime is a runtime stage, pinned by digest, for the test Dockerfiles.
+const testRuntime = "FROM alpine:3.24@sha256:" + testDigest + "\n"
+
+// testBuilder returns a builder FROM line for a golang image tag.
+func testBuilder(tag string) string {
+	return "FROM --platform=$BUILDPLATFORM golang:" + tag + "@sha256:" + testDigest + " AS builder\n"
+}
+
+var exactGoRE = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
+
+// repoGoVersion returns the X.Y.Z of the repository Dockerfile's builder
+// pin, read in Go (not with the script under test).
+func repoGoVersion(t *testing.T) string {
+	t.Helper()
+	v, problems := dockerfileProblems(readRepoFile(t, "Dockerfile"))
+	reportProblems(t, problems)
+	if !exactGoRE.MatchString(v) {
+		t.Fatalf("Dockerfile: builder Go release %q is not X.Y.Z", v)
+	}
+	return v
+}
+
+// repoRoot returns the absolute path of the repository root.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// lookShell returns the path of a shell, or skips the test when the host
+// has none (Windows without Git Bash).
+func lookShell(t *testing.T, name string) string {
+	t.Helper()
+	p, err := exec.LookPath(name)
+	if err != nil {
+		t.Skipf("no %s; the scripts were not run", name)
+	}
+	return p
+}
+
+func writeTestFile(t *testing.T, p, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// goVersionTree makes a directory with a copy of .github/go-version.sh and
+// the given Dockerfile, so a test can run a script or a step against a
+// Dockerfile that is not the repository's.
+func goVersionTree(t *testing.T, dockerfile string) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, filepath.FromSlash(goVersionScript)), readRepoFile(t, goVersionScript))
+	writeTestFile(t, filepath.Join(dir, "Dockerfile"), dockerfile)
+	return dir
+}
+
+// runGoVersionScript runs the repository's .github/go-version.sh with sh in
+// dir.
+func runGoVersionScript(t *testing.T, sh, dir string, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	script := filepath.Join(repoRoot(t), filepath.FromSlash(goVersionScript))
+	cmd := exec.Command(sh, append([]string{script}, args...)...)
+	cmd.Dir = dir
+	var o, e strings.Builder
+	cmd.Stdout, cmd.Stderr = &o, &e
+	err = cmd.Run()
+	return o.String(), e.String(), err
+}
+
+// TestGoVersionScript_PrintsDockerfilePin pins SEC-07 (CL 108): the script
+// prints the X.Y.Z of the repository Dockerfile's golang builder tag as one
+// line with no "go" prefix. It reads Dockerfile in the current directory by
+// default, or the Dockerfile given as the first argument.
+func TestGoVersionScript_PrintsDockerfilePin(t *testing.T) {
+	want := repoGoVersion(t)
+	first, _, _ := strings.Cut(readRepoFile(t, goVersionScript), "\n")
+	if strings.TrimSuffix(first, "\r") != "#!/bin/sh" {
+		t.Errorf("%s: first line %q, want #!/bin/sh (a POSIX sh script)", goVersionScript, first)
+	}
+
+	sh := lookShell(t, "sh")
+	root := repoRoot(t)
+	cases := []struct {
+		name, dir string
+		args      []string
+	}{
+		{"default Dockerfile", root, nil},
+		{"relative argument", root, []string{"Dockerfile"}},
+		{"absolute argument from another directory", t.TempDir(), []string{filepath.Join(root, "Dockerfile")}},
+	}
+	for _, c := range cases {
+		out, errOut, err := runGoVersionScript(t, sh, c.dir, c.args...)
+		if err != nil {
+			t.Errorf("%s: %v\n%s", c.name, err, errOut)
+			continue
+		}
+		if out != want+"\n" {
+			t.Errorf("%s: stdout %q, want %q (one line, no go prefix)", c.name, out, want+"\n")
+		}
+		if errOut != "" {
+			t.Errorf("%s: unexpected stderr %q", c.name, errOut)
+		}
+	}
+}
+
+// TestGoVersionScript_ReadsOtherPins checks that the script reads the pin
+// from the Dockerfile and does not print a fixed release: a Dependabot bump
+// of the tag changes what it prints.
+func TestGoVersionScript_ReadsOtherPins(t *testing.T) {
+	sh := lookShell(t, "sh")
+	cases := []struct{ name, dockerfile, want string }{
+		{"next release", testBuilder("1.27.3-alpine3.25") + testRuntime, "1.27.3"},
+		{"two-digit parts", testBuilder("1.30.12-bookworm") + testRuntime, "1.30.12"},
+		{"no platform flag", "FROM golang:1.26.10-alpine3.24@sha256:" + testDigest + " AS builder\n" + testRuntime, "1.26.10"},
+		{"other tag in a comment", "# FROM golang:1.25.1-alpine3.22\n" + testBuilder("1.26.9-alpine3.24") + "FROM builder AS test\n" + testRuntime, "1.26.9"},
+	}
+	for _, c := range cases {
+		dir := goVersionTree(t, c.dockerfile)
+		for _, run := range []struct {
+			how, dir string
+			args     []string
+		}{
+			{"default", dir, nil},
+			{"argument", t.TempDir(), []string{filepath.Join(dir, "Dockerfile")}},
+		} {
+			out, errOut, err := runGoVersionScript(t, sh, run.dir, run.args...)
+			if err != nil || out != c.want+"\n" {
+				t.Errorf("%s (%s): stdout %q, err %v, stderr %q; want %q", c.name, run.how, out, err, errOut, c.want+"\n")
+			}
+		}
+	}
+}
+
+// wantScriptFailure checks that the script exited non-zero with a message on
+// stderr and printed nothing on stdout, so a caller cannot read a partial
+// or wrong release.
+func wantScriptFailure(t *testing.T, name, stdout, stderr string, err error) {
+	t.Helper()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Errorf("%s: err %v, want a non-zero exit status", name, err)
+	}
+	if stdout != "" {
+		t.Errorf("%s: stdout %q, want nothing", name, stdout)
+	}
+	if strings.TrimSpace(stderr) == "" {
+		t.Errorf("%s: no message on stderr", name)
+	}
+}
+
+// TestGoVersionScript_RejectsNoExactPin is the negative test for the script:
+// with no golang:X.Y.Z- builder line, more than one, or only a tag that is
+// not an exact release, it fails and prints no release.
+func TestGoVersionScript_RejectsNoExactPin(t *testing.T) {
+	sh := lookShell(t, "sh")
+	cases := map[string]string{
+		"no golang image":     testRuntime,
+		"empty Dockerfile":    "",
+		"minor only":          testBuilder("1.26-alpine3.24") + testRuntime,
+		"minor, no suffix":    testBuilder("1.26") + testRuntime,
+		"latest":              testBuilder("latest") + testRuntime,
+		"alpine":              testBuilder("alpine") + testRuntime,
+		"release, no suffix":  testBuilder("1.26.9") + testRuntime,
+		"release candidate":   testBuilder("1.27rc1-alpine3.24") + testRuntime,
+		"two releases":        testBuilder("1.26.9-alpine3.24") + testBuilder("1.26.8-alpine3.24") + testRuntime,
+		"same release twice":  testBuilder("1.26.9-alpine3.24") + testBuilder("1.26.9-alpine3.24") + testRuntime,
+		"pin in comment only": "# FROM golang:1.26.9-alpine3.24\n" + testRuntime,
+	}
+	for name, df := range cases {
+		dir := goVersionTree(t, df)
+		out, errOut, err := runGoVersionScript(t, sh, dir)
+		wantScriptFailure(t, name, out, errOut, err)
+		out, errOut, err = runGoVersionScript(t, sh, t.TempDir(), filepath.Join(dir, "Dockerfile"))
+		wantScriptFailure(t, name+" (argument)", out, errOut, err)
+	}
+
+	out, errOut, err := runGoVersionScript(t, sh, t.TempDir())
+	wantScriptFailure(t, "no Dockerfile in the current directory", out, errOut, err)
+	out, errOut, err = runGoVersionScript(t, sh, t.TempDir(), filepath.Join("missing", "Dockerfile"))
+	wantScriptFailure(t, "missing argument file", out, errOut, err)
+}
+
+// goVersionKeyRE finds a go-version, go-version-input, or go-version-file
+// key in a raw workflow line, with its value.
+var goVersionKeyRE = regexp.MustCompile(`^\s*(?:-\s+)?(go-version(?:-input|-file)?)\s*:\s*(.*?)\s*$`)
+
+// goVersionCallRE finds a call of the script in a run script.
+var goVersionCallRE = regexp.MustCompile(`\bsh\s+\.github/go-version\.sh\b`)
+
+// goVersionStep is a step that writes the Go release for a setup-go or
+// govulncheck-action step.
+type goVersionStep struct {
+	where string // file, job, and step id, for messages
+	step  wfStep
+}
+
+// goVersionProblems checks SEC-07 for one workflow: every setup-go step sets
+// go-version, and every govulncheck-action step sets go-version-input, to
+// ${{ steps.<id>.outputs.version }}. The step <id> comes earlier in the same
+// job and after a checkout, runs sh .github/go-version.sh, and writes
+// version= to $GITHUB_OUTPUT. No go-version key names a release, and no step
+// uses go-version-file. It returns the version steps, so a test can run them.
+func goVersionProblems(w *workflow) ([]goVersionStep, []string) {
+	var problems []string
+	// The raw lines also find a key that the step structs do not parse, for
+	// example in the with: of a reusable workflow job.
+	for i, line := range strings.Split(w.raw, "\n") {
+		m := goVersionKeyRE.FindStringSubmatch(strings.TrimSuffix(line, "\r"))
+		if m == nil {
+			continue
+		}
+		if m[1] == "go-version-file" {
+			problems = append(problems, fmt.Sprintf("%s:%d: go-version-file; the Go release comes from %s only", w.file, i+1, goVersionScript))
+			continue
+		}
+		val := m[2]
+		if j := strings.Index(val, " #"); j >= 0 {
+			val = strings.TrimSpace(val[:j])
+		}
+		val = strings.Trim(val, `"'`)
+		if o := stepOutputRE.FindStringSubmatch(val); o == nil || o[2] != "version" {
+			problems = append(problems, fmt.Sprintf("%s:%d: %s %q names a Go release; want ${{ steps.<id>.outputs.version }} from %s", w.file, i+1, m[1], val, goVersionScript))
+		}
+	}
+
+	var steps []goVersionStep
+	seen := map[string]bool{}
+	for _, jn := range w.sortedJobs() {
+		js := w.Jobs[jn].Steps
+		checkout := -1
+		for i, s := range js {
+			if s.usesAction("actions/checkout") {
+				checkout = i
+				break
+			}
+		}
+		for i, s := range js {
+			where := fmt.Sprintf("%s: job %s: %s", w.file, jn, s.label())
+			if _, ok := s.With["go-version-file"]; ok {
+				problems = append(problems, where+": sets go-version-file")
+			}
+			var key string
+			switch {
+			case s.usesAction("actions/setup-go"):
+				key = "go-version"
+			case s.usesAction("golang/govulncheck-action"):
+				key = "go-version-input"
+			default:
+				continue
+			}
+			v, ok := s.with(key)
+			if !ok {
+				problems = append(problems, fmt.Sprintf("%s: no %s (the action then picks a Go release itself)", where, key))
+				continue
+			}
+			m := stepOutputRE.FindStringSubmatch(strings.TrimSpace(v))
+			if m == nil || m[2] != "version" {
+				problems = append(problems, fmt.Sprintf("%s: %s %q is not ${{ steps.<id>.outputs.version }}", where, key, v))
+				continue
+			}
+			src := -1
+			for k := 0; k < i; k++ {
+				if js[k].ID == m[1] {
+					src = k
+				}
+			}
+			if src < 0 {
+				problems = append(problems, fmt.Sprintf("%s: version step %q is not an earlier step of the job", where, m[1]))
+				continue
+			}
+			if checkout < 0 || checkout > src {
+				problems = append(problems, fmt.Sprintf("%s: version step %q does not come after actions/checkout (the script needs the repository)", where, m[1]))
+			}
+			r := js[src].Run
+			if !goVersionCallRE.MatchString(r) || !strings.Contains(r, "version=") || !strings.Contains(r, "GITHUB_OUTPUT") {
+				problems = append(problems, fmt.Sprintf("%s: version step %q does not run sh %s and write version= to $GITHUB_OUTPUT", where, m[1], goVersionScript))
+				continue
+			}
+			id := jn + "/" + m[1]
+			if !seen[id] {
+				seen[id] = true
+				steps = append(steps, goVersionStep{fmt.Sprintf("%s: job %s: step id %q", w.file, jn, m[1]), js[src]})
+			}
+		}
+	}
+	return steps, problems
+}
+
+// runStep runs a workflow run script the way a GitHub Linux runner runs it:
+// bash --noprofile --norc -eo pipefail by default, sh -e for shell: sh. It
+// returns the combined output.
+func runStep(t *testing.T, s wfStep, dir string, env ...string) (string, error) {
+	t.Helper()
+	var argv []string
+	switch s.Shell {
+	case "", "bash":
+		argv = []string{lookShell(t, "bash"), "--noprofile", "--norc", "-eo", "pipefail"}
+	case "sh":
+		argv = []string{lookShell(t, "sh"), "-e"}
+	default:
+		t.Fatalf("%s: shell %q; this test runs only bash and sh steps", s.label(), s.Shell)
+	}
+	script := filepath.Join(t.TempDir(), "step.sh")
+	writeTestFile(t, script, s.Run)
+	cmd := exec.Command(argv[0], append(argv[1:], script)...)
+	cmd.Dir = dir
+	for _, kv := range os.Environ() {
+		switch strings.SplitN(kv, "=", 2)[0] {
+		case "BASH_ENV", "ENV", "GITHUB_OUTPUT", "GITHUB_REF_NAME":
+		default:
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	cmd.Env = append(cmd.Env, env...)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// versionStepProblems runs a version step twice. In the repository root it
+// must write version=<want> to $GITHUB_OUTPUT. Next to a Dockerfile that the
+// script rejects, it must fail: a step that swallows the script's exit
+// status would hand setup-go an empty version.
+func versionStepProblems(t *testing.T, where string, s wfStep, want string) []string {
+	t.Helper()
+	var problems []string
+	out := filepath.Join(t.TempDir(), "github_output")
+	if log, err := runStep(t, s, repoRoot(t), "GITHUB_OUTPUT="+out); err != nil {
+		problems = append(problems, fmt.Sprintf("%s: the step fails in the repository: %v\n%s", where, err, log))
+	} else {
+		data, _ := os.ReadFile(out)
+		if got := strings.TrimSpace(string(data)); got != "version="+want {
+			problems = append(problems, fmt.Sprintf("%s: the step wrote %q to $GITHUB_OUTPUT, want %q", where, got, "version="+want))
+		}
+	}
+	for name, df := range map[string]string{
+		"no golang builder":   testRuntime,
+		"a minor-only tag":    testBuilder("1.26-alpine3.24") + testRuntime,
+		"two golang builders": testBuilder("1.26.9-alpine3.24") + testBuilder("1.26.8-alpine3.24") + testRuntime,
+	} {
+		dir := goVersionTree(t, df)
+		out := filepath.Join(t.TempDir(), "github_output")
+		if _, err := runStep(t, s, dir, "GITHUB_OUTPUT="+out); err == nil {
+			problems = append(problems, fmt.Sprintf("%s: the step succeeds with a Dockerfile that has %s; it swallows the exit status of %s", where, name, goVersionScript))
+		}
+	}
+	return problems
+}
+
+// TestWorkflows_GoVersionFromDockerfile pins SEC-07 (CL 108): every
+// workflow builds and scans with the Go release of the Dockerfile pin, read
+// with .github/go-version.sh, and names no Go release itself. When bash is
+// available, the test runs each version step: it must write the pin, and it
+// must fail when the script fails.
+func TestWorkflows_GoVersionFromDockerfile(t *testing.T) {
+	want := repoGoVersion(t)
+	var all []goVersionStep
+	uses := map[string]int{}
+	for _, w := range repoWorkflows(t) {
+		steps, problems := goVersionProblems(w)
+		reportProblems(t, problems)
+		all = append(all, steps...)
+		for _, j := range w.Jobs {
+			for _, s := range j.Steps {
+				if s.usesAction("actions/setup-go") || s.usesAction("golang/govulncheck-action") {
+					uses[w.file]++
+				}
+			}
+		}
+	}
+	for _, f := range []string{"ci.yml", "release.yml", "vulncheck.yml"} {
+		if uses[f] == 0 {
+			t.Errorf("%s: no setup-go or govulncheck-action step; the check ran on nothing", f)
+		}
+	}
+	if len(all) == 0 {
+		t.Fatal("no version step found")
+	}
+
+	for _, s := range all {
+		reportProblems(t, versionStepProblems(t, s.where, s.step, want))
+	}
+}
+
+// TestGoVersionProblems_RejectsOtherSources is the negative test for
+// goVersionProblems.
+func TestGoVersionProblems_RejectsOtherSources(t *testing.T) {
+	head := "  a:\n    runs-on: x\n    steps:\n"
+	other := "  b:\n    runs-on: x\n    steps:\n"
+	co := "      - uses: actions/checkout@x\n        with:\n          persist-credentials: false\n"
+	parse := func(jobs string) *workflow {
+		return mustParseWorkflow(t, "x.yml", "on: push\npermissions: {}\njobs:\n"+jobs)
+	}
+	vs := "      - id: go\n        run: |\n          version=\"$(sh .github/go-version.sh)\"\n          echo \"version=${version}\" >> \"$GITHUB_OUTPUT\"\n"
+	setup := func(v string) string {
+		return "      - uses: actions/setup-go@x\n        with:\n          go-version: " + v + "\n"
+	}
+	vuln := func(v string) string {
+		return "      - uses: golang/govulncheck-action@x\n        with:\n          go-version-input: " + v + "\n          repo-checkout: false\n"
+	}
+	ref := "${{ steps.go.outputs.version }}"
+
+	ok := head + co + vs + setup(ref) + vuln(ref)
+	steps, p := goVersionProblems(parse(ok))
+	if len(p) != 0 {
+		t.Fatalf("good workflow: unexpected problems %q", p)
+	}
+	if len(steps) != 1 || steps[0].step.ID != "go" {
+		t.Errorf("good workflow: version steps %v, want the one step id go", steps)
+	}
+
+	cases := map[string]string{
+		"minor, quoted":           head + co + vs + setup(`"1.26"`),
+		"minor, unquoted":         head + co + vs + setup("1.26"),
+		"release":                 head + co + vs + setup(`"1.26.9"`),
+		"go prefix":               head + co + vs + setup("go1.26.9"),
+		"stable":                  head + co + vs + setup("stable"),
+		"oldstable":               head + co + vs + setup("oldstable"),
+		"matrix":                  head + co + vs + setup("${{ matrix.go }}"),
+		"env":                     head + co + vs + setup("${{ env.GO_VERSION }}"),
+		"other output":            head + co + vs + setup("${{ steps.go.outputs.other }}"),
+		"vulncheck release":       head + co + vs + vuln(`"1.26.9"`),
+		"vulncheck stable":        head + co + vs + vuln("stable"),
+		"vulncheck no input":      head + co + "      - uses: golang/govulncheck-action@x\n        with:\n          repo-checkout: false\n",
+		"setup-go no input":       head + co + "      - uses: actions/setup-go@x\n",
+		"setup-go file":           head + co + "      - uses: actions/setup-go@x\n        with:\n          go-version-file: go.mod\n",
+		"file next to the output": head + co + vs + setup(ref) + "          go-version-file: go.mod\n",
+		"vulncheck file":          head + co + "      - uses: golang/govulncheck-action@x\n        with:\n          go-version-file: go.mod\n",
+		"unknown step":            head + co + vs + "      - uses: actions/setup-go@x\n        with:\n          go-version: ${{ steps.nope.outputs.version }}\n",
+		"step after":              head + co + setup(ref) + vs,
+		"step in other job":       head + co + vs + other + co + setup(ref),
+		"no checkout":             head + vs + setup(ref),
+		"checkout after":          head + vs + co + setup(ref),
+		"checkout in other job":   other + co + head + vs + setup(ref),
+		"fixed release":           head + co + "      - id: go\n        run: echo \"version=1.26.9\" >> \"$GITHUB_OUTPUT\"\n" + setup(ref),
+		"not run with sh":         head + co + "      - id: go\n        run: echo \"version=$(./.github/go-version.sh)\" >> \"$GITHUB_OUTPUT\"\n" + setup(ref),
+		"not to GITHUB_OUTPUT":    head + co + "      - id: go\n        run: echo \"version=$(sh .github/go-version.sh)\"\n" + setup(ref),
+		"reusable workflow input": head + co + vs + setup(ref) + "  b:\n    uses: o/r/.github/workflows/go.yml@x\n    with:\n      go-version: \"1.26\"\n",
+	}
+	for name, jobs := range cases {
+		if _, p := goVersionProblems(parse(jobs)); len(p) == 0 {
+			t.Errorf("%s: accepted, want a problem", name)
+		}
+	}
+}
+
+// TestVersionStepProblems_RejectsSwallowedFailure is the negative test for
+// versionStepProblems: a step that does not pass on the script's exit
+// status, or that writes a value other than the pin, is found.
+func TestVersionStepProblems_RejectsSwallowedFailure(t *testing.T) {
+	want := repoGoVersion(t)
+	lookShell(t, "bash")
+	lookShell(t, "sh")
+
+	good := map[string]wfStep{
+		"assignment":    {Run: "version=\"$(sh .github/go-version.sh)\"\necho \"version=${version}\" >> \"$GITHUB_OUTPUT\"\n"},
+		"bash pipefail": {Run: "sh .github/go-version.sh | sed 's/^/version=/' >> \"$GITHUB_OUTPUT\"\n"},
+		"sh assignment": {Shell: "sh", Run: "version=\"$(sh .github/go-version.sh)\"\necho \"version=${version}\" >> \"$GITHUB_OUTPUT\"\n"},
+	}
+	for name, s := range good {
+		if p := versionStepProblems(t, name, s, want); len(p) != 0 {
+			t.Errorf("%s: unexpected problems %q", name, p)
+		}
+	}
+
+	bad := map[string]wfStep{
+		"echo":          {Run: "echo \"version=$(sh .github/go-version.sh)\" >> \"$GITHUB_OUTPUT\"\n"},
+		"printf":        {Run: "printf 'version=%s\\n' \"$(sh .github/go-version.sh)\" >> \"$GITHUB_OUTPUT\"\n"},
+		"or true":       {Run: "version=\"$(sh .github/go-version.sh)\" || true\necho \"version=${version}\" >> \"$GITHUB_OUTPUT\"\n"},
+		"set +e":        {Run: "set +e\nversion=\"$(sh .github/go-version.sh)\"\necho \"version=${version}\" >> \"$GITHUB_OUTPUT\"\n"},
+		"local":         {Run: "f() { local version=\"$(sh .github/go-version.sh)\"; echo \"version=${version}\" >> \"$GITHUB_OUTPUT\"; }\nf\n"},
+		"sh pipe":       {Shell: "sh", Run: "sh .github/go-version.sh | sed 's/^/version=/' >> \"$GITHUB_OUTPUT\"\n"},
+		"fixed release": {Run: "echo \"version=" + want + "\" >> \"$GITHUB_OUTPUT\" # sh .github/go-version.sh\n"},
+		"go prefix":     {Run: "version=\"go$(sh .github/go-version.sh)\"\necho \"version=${version}\" >> \"$GITHUB_OUTPUT\"\n"},
+		"other key":     {Run: "version=\"$(sh .github/go-version.sh)\"\necho \"go=${version}\" >> \"$GITHUB_OUTPUT\"\n"},
+	}
+	for name, s := range bad {
+		if p := versionStepProblems(t, name, s, want); len(p) == 0 {
+			t.Errorf("%s: accepted, want a problem", name)
+		}
+	}
+}
+
+// releaseCreateStep returns the job and the index of the one step that
+// creates the GitHub Release.
+func releaseCreateStep(w *workflow) (job string, idx int, problems []string) {
+	n := 0
+	for _, jn := range w.sortedJobs() {
+		for i, s := range w.Jobs[jn].Steps {
+			if strings.Contains(s.Run, "gh release create") || s.usesAction("softprops/action-gh-release") {
+				job, idx = jn, i
+				n++
+			}
+		}
+	}
+	if n != 1 {
+		return "", -1, []string{fmt.Sprintf("%s: want one step that creates the GitHub Release, found %d", w.file, n)}
+	}
+	return job, idx, nil
+}
+
+var notesFileRE = regexp.MustCompile(`--notes-file\s+"?([^"\s]+)"?`)
+
+// releaseNotes is the step of the release job that writes the release notes.
+type releaseNotes struct {
+	step      wfStep
+	notesFile string // the file that the create step publishes
+	artifacts string // the directory that the build jobs' files are downloaded to
+}
+
+// releaseNotesProblems checks that the job that creates the GitHub Release
+// has one earlier step that reads the Go release with .github/go-version.sh
+// and the build jobs' goversion_<slug>.txt files, and writes the notes file
+// that the create step publishes. The build jobs' files are downloaded
+// before it.
+func releaseNotesProblems(w *workflow) (releaseNotes, []string) {
+	jn, ci, p := releaseCreateStep(w)
+	if len(p) != 0 {
+		return releaseNotes{}, p
+	}
+	j := w.Jobs[jn]
+	m := notesFileRE.FindStringSubmatch(j.Steps[ci].Run)
+	if m == nil {
+		return releaseNotes{}, []string{fmt.Sprintf("%s: job %s: the create step publishes no --notes-file", w.file, jn)}
+	}
+	found, n := -1, 0
+	for k := 0; k < ci; k++ {
+		r := j.Steps[k].Run
+		if goVersionCallRE.MatchString(r) && strings.Contains(r, "goversion_") {
+			found = k
+			n++
+		}
+	}
+	if n != 1 {
+		return releaseNotes{}, []string{fmt.Sprintf("%s: job %s: want one step before the release is created that reads %s and the goversion_<slug>.txt files, found %d", w.file, jn, goVersionScript, n)}
+	}
+	var problems []string
+	notes := releaseNotes{step: j.Steps[found], notesFile: m[1]}
+	if !strings.Contains(notes.step.Run, notes.notesFile) {
+		problems = append(problems, fmt.Sprintf("%s: job %s: %s does not write %s", w.file, jn, notes.step.label(), notes.notesFile))
+	}
+	dl := findStep(j, "actions/download-artifact")
+	if dl < 0 || dl > found {
+		problems = append(problems, fmt.Sprintf("%s: job %s: the build jobs' files are not downloaded before %s", w.file, jn, notes.step.label()))
+	} else {
+		notes.artifacts, _ = j.Steps[dl].with("path")
+	}
+	return notes, problems
+}
+
+var goEnvVersionRE = regexp.MustCompile(`go env GOVERSION\s*>>?\s*"?([^"\s;]+)"?`)
+
+// releaseBuildGoProblems checks that every job that runs go build writes
+// go env GOVERSION to a goversion_<slug>.txt file, after setup-go, inside
+// the path that the job uploads.
+func releaseBuildGoProblems(w *workflow) []string {
+	const slugExpr = "${{ matrix.target.slug }}"
+	var problems []string
+	builds := 0
+	for _, jn := range w.sortedJobs() {
+		j := w.Jobs[jn]
+		built := false
+		for _, s := range j.Steps {
+			if strings.Contains(s.Run, "go build") {
+				built = true
+			}
+		}
+		if !built {
+			continue
+		}
+		builds++
+		where := fmt.Sprintf("%s: job %s", w.file, jn)
+		rec, target := -1, ""
+		for i, s := range j.Steps {
+			if m := goEnvVersionRE.FindStringSubmatch(s.Run); m != nil {
+				rec, target = i, m[1]
+			}
+		}
+		if rec < 0 {
+			problems = append(problems, where+": runs go build but does not write go env GOVERSION to a file")
+			continue
+		}
+		if setup := findStep(j, "actions/setup-go"); setup < 0 || setup > rec {
+			problems = append(problems, where+": writes go env GOVERSION before actions/setup-go")
+		}
+		name := strings.ReplaceAll(target, slugExpr, "linux_amd64")
+		if strings.TrimSpace(j.Steps[rec].Env["SLUG"]) == slugExpr {
+			name = strings.ReplaceAll(strings.ReplaceAll(name, "${SLUG}", "linux_amd64"), "$SLUG", "linux_amd64")
+		}
+		if path.Base(name) != "goversion_linux_amd64.txt" {
+			problems = append(problems, fmt.Sprintf("%s: writes go env GOVERSION to %q, want goversion_<matrix slug>.txt", where, target))
+		}
+		up := findStep(j, "actions/upload-artifact")
+		if up < rec {
+			problems = append(problems, where+": does not upload the go env GOVERSION file after it writes it")
+			continue
+		}
+		pats, _ := j.Steps[up].with("path")
+		uploaded := false
+		for _, pat := range strings.Split(pats, "\n") {
+			if ok, _ := path.Match(strings.TrimSpace(pat), name); ok {
+				uploaded = true
+			}
+		}
+		if !uploaded {
+			problems = append(problems, fmt.Sprintf("%s: the upload path %q does not hold %s", where, pats, target))
+		}
+	}
+	if builds == 0 {
+		problems = append(problems, w.file+": no job runs go build")
+	}
+	return problems
+}
+
+// testSlugs are the build targets of the test release tree.
+var testSlugs = []string{"linux_amd64", "linux_arm64", "linux_armv7", "windows_amd64"}
+
+// runReleaseNotes runs the release notes step in a directory with the given
+// Dockerfile, a CHANGELOG with a 2.1.0 section, an archive per test slug,
+// and a goversion_<slug>.txt file per entry of goVersions, as the build jobs
+// upload them. It returns the notes file.
+func runReleaseNotes(t *testing.T, n releaseNotes, dockerfile string, goVersions map[string]string) (notes, log string, err error) {
+	t.Helper()
+	dir := goVersionTree(t, dockerfile)
+	writeTestFile(t, filepath.Join(dir, "docs", "CHANGELOG.md"), "# Changelog\n\n## [2.1.0] - 2026-10-09\n\n- A change from the CHANGELOG.\n\n## [2.0.1] - 2026-10-08\n\n- An older change.\n")
+	art := filepath.Join(dir, filepath.FromSlash(strings.TrimSpace(n.artifacts)))
+	for _, slug := range testSlugs {
+		writeTestFile(t, filepath.Join(art, "s-hole_v2.1.0_"+slug+".tar.gz"), "archive "+slug+"\n")
+	}
+	for slug, v := range goVersions {
+		writeTestFile(t, filepath.Join(art, "goversion_"+slug+".txt"), v+"\n")
+	}
+	log, err = runStep(t, n.step, dir, "GITHUB_REF_NAME=v2.1.0")
+	data, _ := os.ReadFile(filepath.Join(dir, filepath.FromSlash(n.notesFile)))
+	return string(data), log, err
+}
+
+// allSlugs returns a goversion file content for every test slug.
+func allSlugs(v string) map[string]string {
+	m := map[string]string{}
+	for _, s := range testSlugs {
+		m[s] = v
+	}
+	return m
+}
+
+var buildHeadingRE = regexp.MustCompile(`(?m)^#{1,6} Build\s*$`)
+
+// TestRelease_BuildJobsRecordGoVersion pins SEC-07 (CL 108): each release
+// build job records the Go release that built its archive, in a file that
+// the release job downloads.
+func TestRelease_BuildJobsRecordGoVersion(t *testing.T) {
+	reportProblems(t, releaseBuildGoProblems(repoWorkflow(t, "release.yml")))
+}
+
+// TestRelease_NotesNameDockerfileGo pins SEC-07 (CL 108): before the job
+// creates the GitHub Release, it reads the Go release with
+// .github/go-version.sh, fails when a build job used another Go release,
+// and adds a Build section that names go<X.Y.Z> to the release notes. When
+// bash is available, the test runs the notes step in a test tree.
+func TestRelease_NotesNameDockerfileGo(t *testing.T) {
+	want := repoGoVersion(t)
+	n, problems := releaseNotesProblems(repoWorkflow(t, "release.yml"))
+	reportProblems(t, problems)
+	if len(problems) != 0 {
+		t.FailNow()
+	}
+	lookShell(t, "bash")
+
+	repoDockerfile := readRepoFile(t, "Dockerfile")
+	good := []struct{ name, dockerfile, want string }{
+		{"repository pin", repoDockerfile, want},
+		{"other pin", testBuilder("1.27.3-alpine3.25") + testRuntime, "1.27.3"},
+	}
+	for _, c := range good {
+		notes, log, err := runReleaseNotes(t, n, c.dockerfile, allSlugs("go"+c.want))
+		if err != nil {
+			t.Errorf("%s: the notes step failed: %v\n%s", c.name, err, log)
+			continue
+		}
+		loc := buildHeadingRE.FindStringIndex(notes)
+		if loc == nil {
+			t.Errorf("%s: the release notes have no Build section:\n%s", c.name, notes)
+			continue
+		}
+		if !strings.Contains(notes[loc[1]:], "go"+c.want) || strings.Contains(notes, "gogo") {
+			t.Errorf("%s: the Build section does not name go%s:\n%s", c.name, c.want, notes)
+		}
+		if c.want != want && strings.Contains(notes, "go"+want) {
+			t.Errorf("%s: the notes name go%s, the repository pin, not the test pin:\n%s", c.name, want, notes)
+		}
+		if !strings.Contains(notes, "A change from the CHANGELOG.") {
+			t.Errorf("%s: the CHANGELOG section is not in the notes:\n%s", c.name, notes)
+		}
+	}
+
+	// One odd release sorts before the pin and one after it, so a check
+	// that reads only the first or the last line is found.
+	older, newer := allSlugs("go"+want), allSlugs("go"+want)
+	older["linux_armv7"] = "go1.0.0"
+	newer["linux_armv7"] = "go9.0.0"
+	bad := []struct {
+		name, dockerfile string
+		goVersions       map[string]string
+	}{
+		{"one build job used an older release", repoDockerfile, older},
+		{"one build job used a newer release", repoDockerfile, newer},
+		{"every build job used another release", repoDockerfile, allSlugs("go1.26.0")},
+		{"build jobs used the floating list", testBuilder("1.27.3-alpine3.25") + testRuntime, allSlugs("go" + want)},
+		{"no goversion files", repoDockerfile, nil},
+		{"Dockerfile has no exact pin", testBuilder("1.26-alpine3.24") + testRuntime, allSlugs("go" + want)},
+		{"Dockerfile has no golang builder", testRuntime, allSlugs("go" + want)},
+	}
+	for _, c := range bad {
+		if _, log, err := runReleaseNotes(t, n, c.dockerfile, c.goVersions); err == nil {
+			t.Errorf("%s: the notes step succeeded, want a failure before the release is created\n%s", c.name, log)
+		}
+	}
+}
+
+// TestReleaseGoChecks_RejectMissingParts is the negative test for
+// releaseNotesProblems and releaseBuildGoProblems.
+func TestReleaseGoChecks_RejectMissingParts(t *testing.T) {
+	co := "      - uses: actions/checkout@x\n        with:\n          persist-credentials: false\n"
+	vs := "      - id: go\n        run: |\n          version=\"$(sh .github/go-version.sh)\"\n          echo \"version=${version}\" >> \"$GITHUB_OUTPUT\"\n"
+	setup := "      - uses: actions/setup-go@x\n        with:\n          go-version: ${{ steps.go.outputs.version }}\n"
+	record := "      - env:\n          SLUG: ${{ matrix.target.slug }}\n        run: |\n          go build -o out/s-hole ./cmd/s-hole\n          go env GOVERSION > \"out/goversion_${SLUG}.txt\"\n"
+	upload := "      - uses: actions/upload-artifact@x\n        with:\n          path: out/*\n"
+	build := "  build:\n    runs-on: x\n    strategy:\n      matrix:\n        target:\n          - { slug: linux_amd64 }\n    steps:\n" + co + vs + setup + record + upload
+	download := "      - uses: actions/download-artifact@x\n        with:\n          path: artifacts\n"
+	notes := "      - run: |\n          go_image=\"go$(sh .github/go-version.sh)\"\n          [ \"$(sort -u artifacts/goversion_*.txt)\" = \"$go_image\" ]\n          echo \"### Build\" >> notes.md\n"
+	create := "      - run: gh release create \"$TAG\" --notes-file notes.md artifacts/s-hole_*\n"
+	release := func(steps string) string {
+		return "  release:\n    runs-on: x\n    needs: build\n    steps:\n" + co + steps
+	}
+	wf := func(jobs string) *workflow {
+		return mustParseWorkflow(t, "release.yml", "on: push\npermissions: {}\njobs:\n"+jobs)
+	}
+
+	ok := wf(build + release(download+notes+create))
+	n, p := releaseNotesProblems(ok)
+	if len(p) != 0 {
+		t.Fatalf("good release: unexpected notes problems %q", p)
+	}
+	if n.notesFile != "notes.md" || n.artifacts != "artifacts" {
+		t.Errorf("good release: notes file %q, artifacts %q", n.notesFile, n.artifacts)
+	}
+	if p := releaseBuildGoProblems(ok); len(p) != 0 {
+		t.Fatalf("good release: unexpected build problems %q", p)
+	}
+
+	notesCases := map[string]string{
+		"fixed release":        build + release(download+strings.Replace(notes, "go$(sh .github/go-version.sh)", "go1.26.9", 1)+create),
+		"no goversion files":   build + release(download+strings.Replace(notes, "artifacts/goversion_*.txt", "/dev/null", 1)+create),
+		"notes after create":   build + release(download+create+notes),
+		"no create":            build + release(download+notes),
+		"two creates":          build + release(download+notes+create+create),
+		"no notes file":        build + release(download+notes+strings.Replace(create, "--notes-file notes.md ", "", 1)),
+		"other notes file":     build + release(download+notes+strings.Replace(create, "notes.md", "other.md", 1)),
+		"no download":          build + release(notes+create),
+		"download after":       build + release(notes+download+create),
+		"notes in another job": build + "  notes:\n    runs-on: x\n    steps:\n" + co + download + notes + release(download+create),
+	}
+	for name, jobs := range notesCases {
+		if _, p := releaseNotesProblems(wf(jobs)); len(p) == 0 {
+			t.Errorf("notes %s: accepted, want a problem", name)
+		}
+	}
+
+	buildWith := func(steps string) string {
+		return "  build:\n    runs-on: x\n    steps:\n" + steps
+	}
+	rel := release(download + notes + create)
+	buildCases := map[string]string{
+		"no record":           buildWith(co + vs + setup + strings.Replace(record, "          go env GOVERSION > \"out/goversion_${SLUG}.txt\"\n", "", 1) + upload),
+		"record before setup": buildWith(co + vs + record + setup + upload),
+		"no slug":             buildWith(co + vs + setup + strings.Replace(record, "goversion_${SLUG}.txt", "goversion.txt", 1) + upload),
+		"fixed slug":          buildWith(co + vs + setup + strings.Replace(record, "SLUG: ${{ matrix.target.slug }}", "SLUG: linux_amd64", 1) + upload),
+		"outside the upload":  buildWith(co + vs + setup + strings.Replace(record, "\"out/goversion_${SLUG}.txt\"", "\"/tmp/goversion_${SLUG}.txt\"", 1) + upload),
+		"no upload":           buildWith(co + vs + setup + record),
+		"upload before":       buildWith(co + vs + setup + upload + record),
+		"no build job":        "",
+	}
+	for name, jobs := range buildCases {
+		if p := releaseBuildGoProblems(wf(jobs + rel)); len(p) == 0 {
+			t.Errorf("build %s: accepted, want a problem", name)
+		}
+	}
+}
+
+// shellcheckGlobs are the script globs that make lint-sh and the CI
+// shellcheck job must both check.
+var shellcheckGlobs = []string{"deploy/*.sh", ".github/*.sh"}
+
+// isShellcheckLine reports whether a command line runs shellcheck on every
+// glob in shellcheckGlobs.
+func isShellcheckLine(line string) bool {
+	f := strings.Fields(line)
+	if len(f) == 0 || f[0] != "shellcheck" {
+		return false
+	}
+	for _, g := range shellcheckGlobs {
+		found := false
+		for _, a := range f[1:] {
+			if a == g {
+				found = true
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// lintShProblems checks that the Makefile lint-sh target and a CI step run
+// shellcheck on the deploy scripts and on the .github scripts.
+func lintShProblems(makefile string, ci *workflow) []string {
+	var problems []string
+	lines := strings.Split(strings.ReplaceAll(makefile, "\r\n", "\n"), "\n")
+	inTarget, found := false, false
+	for _, l := range lines {
+		switch {
+		case strings.HasPrefix(l, "lint-sh:"):
+			inTarget = true
+		case inTarget && strings.HasPrefix(l, "\t"):
+			if isShellcheckLine(strings.TrimSpace(l)) {
+				found = true
+			}
+		default:
+			inTarget = false
+		}
+	}
+	if !found {
+		problems = append(problems, fmt.Sprintf("Makefile: lint-sh does not run shellcheck %s", strings.Join(shellcheckGlobs, " ")))
+	}
+	found = false
+	for _, jn := range ci.sortedJobs() {
+		for _, s := range ci.Jobs[jn].Steps {
+			for _, l := range strings.Split(s.Run, "\n") {
+				if isShellcheckLine(strings.TrimSpace(l)) {
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		problems = append(problems, fmt.Sprintf("%s: no step runs shellcheck %s", ci.file, strings.Join(shellcheckGlobs, " ")))
+	}
+	return problems
+}
+
+// TestLintSh_ChecksGoVersionScript pins SEC-07 (CL 108): shellcheck checks
+// .github/go-version.sh next to the deploy scripts, in make lint-sh and in
+// CI.
+func TestLintSh_ChecksGoVersionScript(t *testing.T) {
+	reportProblems(t, lintShProblems(readRepoFile(t, "Makefile"), repoWorkflow(t, "ci.yml")))
+	matches, err := filepath.Glob(filepath.Join(repoRoot(t), ".github", "*.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, m := range matches {
+		if filepath.Base(m) == "go-version.sh" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf(".github/*.sh matches %v, want %s in it", matches, goVersionScript)
+	}
+}
+
+// TestLintShProblems_RejectsMissingGlob is the negative test for
+// lintShProblems.
+func TestLintShProblems_RejectsMissingGlob(t *testing.T) {
+	ci := func(run string) *workflow {
+		return mustParseWorkflow(t, "ci.yml", "on: push\npermissions: {}\njobs:\n  a:\n    runs-on: x\n    steps:\n      - run: "+run+"\n")
+	}
+	goodMk := "lint-sh:\n\t@command -v shellcheck >/dev/null\n\tshellcheck deploy/*.sh .github/*.sh\n"
+	goodCI := ci("shellcheck deploy/*.sh .github/*.sh")
+	if p := lintShProblems(goodMk, goodCI); len(p) != 0 {
+		t.Fatalf("good input: unexpected problems %q", p)
+	}
+	for name, mk := range map[string]string{
+		"deploy only":     "lint-sh:\n\tshellcheck deploy/*.sh\n",
+		"workflows glob":  "lint-sh:\n\tshellcheck deploy/*.sh .github/workflows/*.sh\n",
+		"other target":    "lint-sh:\n\tshellcheck deploy/*.sh\n\nlint-ci:\n\tshellcheck deploy/*.sh .github/*.sh\n",
+		"no lint-sh":      "lint:\n\tshellcheck deploy/*.sh .github/*.sh\n",
+		"commented out":   "lint-sh:\n\t# shellcheck deploy/*.sh .github/*.sh\n\tshellcheck deploy/*.sh\n",
+		"echo, not a run": "lint-sh:\n\techo shellcheck deploy/*.sh .github/*.sh\n",
+	} {
+		if p := lintShProblems(mk, goodCI); len(p) == 0 {
+			t.Errorf("Makefile %s: accepted, want a problem", name)
+		}
+	}
+	for name, run := range map[string]string{
+		"deploy only":    "shellcheck deploy/*.sh",
+		"github only":    "shellcheck .github/*.sh",
+		"workflows glob": "shellcheck deploy/*.sh .github/workflows/*.sh",
+	} {
+		if p := lintShProblems(goodMk, ci(run)); len(p) == 0 {
+			t.Errorf("ci %s: accepted, want a problem", name)
 		}
 	}
 }

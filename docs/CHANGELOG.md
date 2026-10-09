@@ -167,8 +167,9 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   that the release workflow of `lcsabi/s-hole` built the file from the
   release tag. Check it with `gh attestation verify <file> --repo
   lcsabi/s-hole` (see "Install a pre-built release" in the README). The image
-  also has an SBOM, and the release notes name the Go versions that built the
-  archives and the image. A published release and its tag cannot change.
+  also has an SBOM, and the release notes name the Go release that built the
+  archives and the image (the same one, from the `golang` image that the
+  Dockerfile pins). A published release and its tag cannot change.
   The workflows pin every action to a commit SHA and give each job only the
   token rights that it needs, and the Dockerfile pins its base images by
   digest. A weekly scan runs `govulncheck` on the binaries of the latest

@@ -69,12 +69,12 @@ vet:
 lint:
 	golangci-lint run ./...
 
-## lint-sh: shellcheck the deploy scripts (CI runs the same check)
+## lint-sh: shellcheck the deploy and CI scripts (CI runs the same check)
 lint-sh:
 	@command -v shellcheck >/dev/null 2>&1 || { \
 		echo "shellcheck not found; install it (apt install shellcheck / brew install shellcheck)"; \
 		exit 1; }
-	shellcheck deploy/*.sh
+	shellcheck deploy/*.sh .github/*.sh
 
 ## vuln: scan dependencies + code for known CVEs (govulncheck)
 vuln:

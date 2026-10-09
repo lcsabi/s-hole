@@ -37,7 +37,7 @@ make test          # plain test run
 make test-race     # tests with the race detector (CGO toolchain required)
 make bench         # one iteration of each benchmark
 make lint          # golangci-lint
-make lint-sh       # shellcheck the deploy scripts
+make lint-sh       # shellcheck the deploy and CI scripts
 make fmt           # gofmt -s -w .
 make install       # go install into $GOBIN
 make version       # show the version metadata the next build will embed
@@ -237,10 +237,10 @@ archive plus `SHA256SUMS` to a GitHub Release (notes drawn from the matching
 
 The workflow also signs a build provenance attestation for each archive, the
 binary in it, and the image, and pushes an SBOM with the image. The release
-notes end with a "Build" section that names the Go version of the archives
-and of the image. The image uses the Go version that the Dockerfile pins, so
-it can be one patch behind the archives until the Dependabot update for the
-`golang` image merges.
+notes end with a "Build" section that names the Go release that built the
+archives and the image. Both use the release of the `golang` builder image
+that the Dockerfile pins (`.github/go-version.sh` reads it), so a new Go patch
+arrives as a Dependabot pull request for that image.
 
 The repository makes a published release immutable: its assets and its tag
 cannot change. A tag ruleset also refuses to move or delete a final `v*` tag.
@@ -264,7 +264,7 @@ The procedure:
    - a downloaded binary reports the tag under `-version`, and `docker pull
      ghcr.io/lcsabi/s-hole:X.Y.Z-rc1` runs and reports the same version;
    - the Release notes show the `[X.Y.Z]` CHANGELOG section (not a
-     placeholder) and the "Build" section with the Go versions;
+     placeholder) and the "Build" section with the Go release;
    - `gh attestation verify <file> --repo lcsabi/s-hole` passes for each
      archive and for the unpacked binary;
    - `gh attestation verify oci://ghcr.io/lcsabi/s-hole:X.Y.Z-rc1 --repo

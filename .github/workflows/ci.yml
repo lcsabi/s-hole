@@ -18,9 +18,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Read the Go version
+        id: go
+        # The Go release of the golang image that the Dockerfile pins (see
+        # .github/go-version.sh).
+        run: |
+          version="$(sh .github/go-version.sh)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: ${{ steps.go.outputs.version }}
       - name: Read the golangci-lint version
         id: lintver
         # The Makefile holds the one pinned version, so CI and
@@ -43,9 +50,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Read the Go version
+        id: go
+        # The Go release of the golang image that the Dockerfile pins (see
+        # .github/go-version.sh).
+        run: |
+          version="$(sh .github/go-version.sh)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: ${{ steps.go.outputs.version }}
       - name: Cache Go module + build cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -78,8 +92,8 @@ jobs:
       # ubuntu-latest ships shellcheck preinstalled, so no setup step is
       # needed. Kept as its own job (like vuln) so a script quoting regression
       # surfaces independently of the Go build/test job.
-      - name: shellcheck deploy scripts
-        run: shellcheck deploy/*.sh
+      - name: shellcheck deploy and CI scripts
+        run: shellcheck deploy/*.sh .github/*.sh
 
   vuln:
     name: govulncheck
@@ -88,18 +102,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Read the Go version
+        id: go
+        # The Go release of the golang image that the Dockerfile pins (see
+        # .github/go-version.sh).
+        run: |
+          version="$(sh .github/go-version.sh)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
       # The official action installs govulncheck and runs `govulncheck ./...`,
       # failing the job on any known CVE reachable from our code. Kept as its
       # own job so a new advisory surfaces independently of the build/test job.
-      # This job pins "1.26" explicitly: the action installs govulncheck@latest,
-      # and x/vuln v1.8.0 requires Go >= 1.26 to build. "1.26" resolves to the
-      # newest 1.26 patch, so the scan also sees the current standard-library
-      # fixes. The module now requires Go 1.26, so the build/test jobs match.
-      # repo-checkout: false: the step above checks out without keeping the
+      # The scan uses the same Go release as the build (the Dockerfile pin),
+      # so it sees the standard library that the binaries ship with.
+      # repo-checkout: false: the first step checks out without keeping the
       # token in .git/config; the action's own checkout would keep it.
       - uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
         with:
-          go-version-input: "1.26"
+          go-version-input: ${{ steps.go.outputs.version }}
           repo-checkout: false
 
   cross-compile:
@@ -117,9 +136,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Read the Go version
+        id: go
+        # The Go release of the golang image that the Dockerfile pins (see
+        # .github/go-version.sh).
+        run: |
+          version="$(sh .github/go-version.sh)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: ${{ steps.go.outputs.version }}
       - name: Resolve version metadata
         id: meta
         run: |

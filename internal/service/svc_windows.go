@@ -146,7 +146,7 @@ func Install(configPath string) error {
 	defer m.Disconnect()
 
 	if s, err := m.OpenService(svcName); err == nil {
-		s.Close()
+		_ = s.Close()
 		return fmt.Errorf("service %q already exists. Run -service uninstall first", svcName)
 	}
 
@@ -186,7 +186,7 @@ func Install(configPath string) error {
 	if err := setRecovery(s); err != nil {
 		fmt.Printf("warning: could not set restart-on-failure for service %q: %v\n", svcName, err)
 	}
-	s.Close()
+	_ = s.Close()
 
 	// Register an event-log source so Event Viewer renders s-hole's messages
 	// without the "description cannot be found" preamble. The service still
@@ -333,7 +333,7 @@ func readACL(path string) (owner string, acl []ace, nullDACL bool, err error) {
 			continue
 		}
 		// The SID starts at SidStart in every entry of these types.
-		sid := (*windows.SID)(unsafe.Pointer(&a.SidStart))
+		sid := (*windows.SID)(unsafe.Pointer(&a.SidStart)) //nolint:gosec // G103: Windows defines this ACE layout; GetAce returned the entry
 		acl = append(acl, ace{deny: deny, flags: a.Header.AceFlags, mask: uint32(a.Mask), sid: sid.String()})
 	}
 	return owner, acl, false, nil

@@ -915,7 +915,7 @@ $env:GOOS=""; $env:GOARCH=""
 - **Every change is a small, self-contained change-list** with motivation, files touched, and testing notes ([`docs/cls/`](docs/cls)).
 - **A bug tracker with priorities and structured root-cause/fix records** ([`docs/BUGS.md`](docs/BUGS.md)), including entries deliberately marked *Won't Fix (by design)*.
 - **Documentation drift is treated as a bug.** Code and docs are updated in the same change.
-- **CI gate on every push**: `gofmt`, `go vet`, `golangci-lint`, race-enabled tests, `govulncheck`, and a cross-compile of every release target. The core `internal/` packages meet the coverage targets (see the [targets under Development](#development)).
+- **CI gate on every push**: `gofmt`, `go vet`, `golangci-lint` with the `gosec` security checks (for the Linux and the Windows build), race-enabled tests, `govulncheck`, and a cross-compile of every release target. GitHub CodeQL also analyzes each push to `master` and each pull request; its alerts do not block a merge. The core `internal/` packages meet the coverage targets (see the [targets under Development](#development)).
 - **Verifiable releases**: every action pinned to a commit SHA, least-privilege workflow tokens, signed build provenance for each archive and the container image, an image SBOM, and a weekly `govulncheck` of the latest release's binaries.
 
 ---
@@ -1026,7 +1026,7 @@ make check       # gofmt + go vet + golangci-lint + shellcheck + go test
 make test        # plain test run
 make test-race   # tests under the race detector (CGO toolchain required)
 make bench       # one iteration of each benchmark
-make lint        # golangci-lint
+make lint        # golangci-lint (with gosec), for this OS and for Windows
 make lint-sh     # shellcheck the deploy and CI scripts
 make vuln        # govulncheck: scan deps + code for known CVEs
 make fmt         # gofmt -s -w

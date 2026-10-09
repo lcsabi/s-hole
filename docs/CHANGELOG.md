@@ -190,6 +190,10 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   (for example in `net/http` and `html/template`) that go1.26.9 fixes.
   This release builds the archives and the image with go1.26.9 or later.
   (CL 108)
+- **Static security analysis.** The CI lint job now runs `gosec` for the
+  Linux and the Windows build. Each finding is fixed or carries a comment
+  that tells why the code is safe. GitHub CodeQL also analyzes the Go code,
+  the workflows, and the dashboard script. (CL 111)
 
 ## [2.0.1] - 2026-10-08
 

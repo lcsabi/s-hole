@@ -18,7 +18,7 @@ GOLANGCI_LINT_VERSION ?= v2.14.0
 # On Windows use: $env:GOOS="linux"; $env:GOARCH="arm64"; go build ...
 # or run these targets from WSL / Git Bash.
 
-.PHONY: all pi pi32 linux clean test test-race bench fmt vet lint lint-sh vuln check install help version tools-install
+.PHONY: all pi pi32 linux clean test test-race bench fmt vet lint lint-windows lint-sh vuln check install help version tools-install
 
 ## help: show this help text (default target)
 help:
@@ -65,8 +65,15 @@ fmt:
 vet:
 	go vet ./...
 
-## lint: run golangci-lint (install via `make tools-install` if missing)
-lint:
+## lint: run golangci-lint for this OS and for Windows (install via `make tools-install` if missing)
+lint: lint-windows
+	golangci-lint run ./...
+
+## lint-windows: run golangci-lint for the Windows build (GOOS=windows); `make lint` runs it
+# The Windows-only files build only with GOOS=windows, so a lint for another
+# OS does not check them. CI runs both.
+lint-windows: export GOOS=windows
+lint-windows:
 	golangci-lint run ./...
 
 ## lint-sh: shellcheck the deploy and CI scripts (CI runs the same check)

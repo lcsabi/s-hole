@@ -210,7 +210,7 @@ func (p Problem) String() string { return p.Key + ": " + p.Detail }
 // cannot be read or parsed as YAML, dns.listen is malformed, every upstream is
 // malformed, or DoT is on and its certificate pair cannot load.
 func Load(path string) (*Config, []Problem, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: the operator names the config file (-config)
 	if err != nil {
 		return nil, nil, err
 	}

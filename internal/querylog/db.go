@@ -247,7 +247,7 @@ func NewDBLogger(path, logQueries string, flushInterval time.Duration, retention
 // failed chmod is a WARN, not an error: the history then stays as readable
 // as before, which is no reason to stop recording it.
 func preparePrivateDB(path string) error {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600) //nolint:gosec // G304: query_log.database from the config
 	if err != nil {
 		return err
 	}
@@ -816,7 +816,7 @@ func (d *DBLogger) Search(ctx context.Context, f QueryFilter, n int) ([]QueryRow
 // and a sustained drop shows in shole_query_log_dropped_total.
 func (d *DBLogger) Export(ctx context.Context, f QueryFilter, n int, yield func(QueryRow) error) error {
 	clause, args := f.where()
-	q := selectColumns + clause + " ORDER BY id DESC"
+	q := selectColumns + clause + " ORDER BY id DESC" //nolint:gosec // G202: where() joins constant conditions; every value is a bound parameter
 	if n > 0 {
 		q += " LIMIT ?"
 		args = append(args, n)

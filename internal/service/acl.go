@@ -5,7 +5,7 @@ package service
 // svc_windows.go reads and writes real access lists.
 
 import (
-	"crypto/sha1" //nolint:gosec // the service SID is defined by SHA-1; it is not a security hash here
+	"crypto/sha1" //nolint:gosec // G505: the service SID is defined by SHA-1; it is not a security hash here
 	"encoding/binary"
 	"fmt"
 	"sort"
@@ -93,7 +93,7 @@ func serviceSID(name string) string {
 	for i, c := range u {
 		binary.LittleEndian.PutUint16(b[2*i:], c)
 	}
-	sum := sha1.Sum(b) //nolint:gosec // see the import
+	sum := sha1.Sum(b) //nolint:gosec // G401: see the import
 	parts := make([]string, 5)
 	for i := range parts {
 		parts[i] = fmt.Sprint(binary.LittleEndian.Uint32(sum[4*i:]))

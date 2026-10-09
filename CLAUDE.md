@@ -34,7 +34,7 @@ make check        # fmt + vet + lint + lint-sh + test (what CI runs); run before
 make test         # go test -count=1 ./...
 make test-race    # race detector; requires a CGO toolchain (gcc)
 make bench        # each benchmark once (regression smoke, not measurement)
-make lint         # golangci-lint (install via make tools-install)
+make lint         # golangci-lint with gosec, for this OS and for Windows (install via make tools-install)
 make all          # build for current OS/arch with version ldflags
 ```
 
@@ -49,7 +49,7 @@ go test -fuzz=FuzzValidDomain -fuzztime=30s ./internal/blocklist/   # fuzz targe
 Environment notes:
 - On a Windows host without gcc, `-race` fails; run it in WSL: `CGO_ENABLED=1 go test -race -count=1 ./...` (CI also runs it on Linux).
 - Measure **module-wide** coverage on Linux/WSL only: `go test -coverpkg=./... ./...`. A Windows Go install missing the `covdata` tool silently under-merges the profile, which once put a wrong number in three docs. Per-package `go test -cover` is fine anywhere.
-- Lint requires **golangci-lint v2** (`make tools-install` uses the `/v2` module path; v1 cannot parse the `version: "2"` config). The release is pinned once, in `GOLANGCI_LINT_VERSION` in the `Makefile`; `make tools-install` and the CI lint job both read it. If lint fails with a config-load error right after a Go toolchain bump, it's the lint-binary-built-with-older-Go coupling; see the CL 24 addendum. The deliberate errcheck exclusions live in `.golangci.yml` with their rationale.
+- Lint requires **golangci-lint v2** (`make tools-install` uses the `/v2` module path; v1 cannot parse the `version: "2"` config). The release is pinned once, in `GOLANGCI_LINT_VERSION` in the `Makefile`; `make tools-install` and the CI lint job both read it. If lint fails with a config-load error right after a Go toolchain bump, it's the lint-binary-built-with-older-Go coupling; see the CL 24 addendum. The deliberate errcheck exclusions live in `.golangci.yml` with their rationale. `make lint` also lints the Windows build (`lint-windows`, `GOOS=windows`), and so does the CI lint job. gosec is on (CL 111): fix a finding, or put `//nolint:gosec // G<NNN>: <why>` on its line; never exclude a rule for the whole tree. `nolintlint` fails a `//nolint` without a linter name or a reason, or one that no finding needs. CodeQL default setup is a repository setting (Go, Actions, JavaScript), not a workflow file.
 - `./internal/dnsserver` takes ~12 s on Linux: the DoT timeout tests wait for the real 2 s and 8 s deadlines (`-short` skips the 8 s idle test). Closed-port UDP tests add more on Windows (~17 s before CL 90; not measured again since). Expected, not a hang.
 - If port-binding tests fail mysteriously on a Windows/Hyper-V host (bind errors or probe timeouts on ports that look free), check `netsh int ipv4 show excludedportrange protocol=udp`; Windows reserves large port blocks *per protocol* and the reservations shift when VMs start (b/029). `pickFreePort` in dnsserver already defends against this; new tests that bind ports should reuse it or copy its dual-transport random-probe approach.
 - Run locally without root/port conflicts: `S_HOLE_DNS_LISTEN=:5354 go run ./cmd/s-hole -config config.yaml`, then `dig @127.0.0.1 -p 5354 doubleclick.net`. Port 5353 is taken by avahi (mDNS) on Raspberry Pi OS and most desktops (b/085). CONTRIBUTING.md has the full 8-step manual smoke test, which turns the query history on through `S_HOLE_*` variables.

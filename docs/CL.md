@@ -126,6 +126,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 110](cls/CL-110.md) | Overwrite the SQLite WAL with zeros before SQLite frees it: at startup, after a prune, in a purge, and at a stop; `journal_size_limit=-1` |
 | [CL 111](cls/CL-111.md) | Static analysis gate: gosec and nolintlint in golangci-lint, a Windows lint run (`make lint`, CI), and CodeQL default setup |
 | [CL 112](cls/CL-112.md) | Privacy docs: every local account can use the loopback admin API, the `admin.listen` warning says the traffic is plain HTTP, ROADMAP #42 requirements (loopback authentication, TLS), the Prometheus history, and a DoH-only setup |
+| [CL 113](cls/CL-113.md) | Graduate the CHANGELOG to v2.1.0 |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

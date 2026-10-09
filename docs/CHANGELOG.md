@@ -8,6 +8,13 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 
 ## [Unreleased]
 
+### Added
+
+- **The October 2026 privacy and security review is public.**
+  `docs/SECURITY-REVIEW-2026-10.md` lists what the review of 2.0.0 found,
+  what 2.0.1, 2.1.0, and 2.1.1 changed, the recommendations that needed no
+  change, and what is still open. `SECURITY.md` links to it. (CL 116)
+
 ## [2.1.1] - 2026-10-09
 
 A patch release. It updates one dependency so that a vulnerability scan of

@@ -139,6 +139,29 @@ func TestZeroFile_RefusesDirectory(t *testing.T) {
 	}
 }
 
+func TestZeroFile_OverwritesAroundTheHeader(t *testing.T) {
+	// PRIV-16: ZeroFile writes the 32-byte WAL header first and the rest of
+	// the file after it. Every size around that split, and around the first
+	// chunk after it, is zeroed completely and keeps its size.
+	for _, size := range []int{zeroHead - 1, zeroHead, zeroHead + 1, zeroChunk + zeroHead - 1, zeroChunk + zeroHead, zeroChunk + zeroHead + 1} {
+		path := filepath.Join(t.TempDir(), "q.db-wal")
+		if err := os.WriteFile(path, markerContent(size), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := ZeroFile(path); err != nil {
+			t.Errorf("size %d: ZeroFile = %v, want nil", size, err)
+			continue
+		}
+		got := fileBytes(t, path)
+		if len(got) != size {
+			t.Errorf("size %d: size after ZeroFile = %d, want it unchanged", size, len(got))
+		}
+		if !allZero(got) {
+			t.Errorf("size %d: the file holds bytes other than zero after ZeroFile", size)
+		}
+	}
+}
+
 func TestTruncateFile_EmptiesTheSameFile(t *testing.T) {
 	// b/105: truncateFile empties the file at path through a new handle when
 	// it is the file that the caller has open, also while a handle opened

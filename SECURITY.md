@@ -108,11 +108,13 @@ Out of scope:
 - **Stored data** is owner-only: s-hole creates its files with mode `600`
   (umask `077`, and `UMask=0077` in the unit), the data directory is `700`,
   and the query database is opened with `secure_delete`, so a pruned or
-  purged row is overwritten in the file. A purge also overwrites the query
-  log file with zeros before it empties or deletes it, and a purge while
-  s-hole is stopped overwrites the database files with zeros before it
-  deletes them. The overwrite refuses a symbolic link, a file that is not a
-  regular file, and a file with more than one hard link: the
+  purged row is overwritten in the file. s-hole overwrites the database's
+  write-ahead log with zeros before SQLite empties or deletes it. A purge
+  also overwrites the query log file with zeros before it empties or
+  deletes it, and a purge while s-hole is stopped overwrites the database
+  files with zeros before it deletes them. The purge overwrite refuses a
+  symbolic link, a file that is not a regular file, and a file with more
+  than one hard link: the
   uninstaller runs the purge as root in a directory that the `s-hole` user
   owns, and on Windows an administrator runs it in the config folder, where
   the service can create files. On Windows the service runs as a virtual

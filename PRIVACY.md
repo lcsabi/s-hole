@@ -112,14 +112,21 @@ The query filter you type is kept for the browser tab only (sessionStorage).
   deletes it. When s-hole is stopped, the purge also overwrites the query
   database files with zeros before it deletes them. When s-hole runs,
   `secure_delete` overwrites the deleted rows in the database file.
+- SQLite keeps copies of the changed database pages in its write-ahead log
+  (the `-wal` file next to the database). s-hole overwrites this file with
+  zeros before it lets SQLite empty or delete it: when s-hole starts, after
+  a retention prune, during a purge, and when s-hole stops. If another
+  program reads or writes the database at that moment, or if the `-wal`
+  file is a link, s-hole cannot do this safely. The data then stays in the
+  file until the next try. At startup, after a prune, and at a stop, s-hole
+  logs the WARN `query log WAL overwrite failed`; a purge reports the step
+  as failed. If this occurs when s-hole stops, SQLite can delete the file
+  later without the overwrite, when the last program closes the database.
 - The overwrite is best effort. On flash storage and on a copy-on-write file
   system (Btrfs, ZFS), the zeros can go to new blocks, and a deleted block
-  can stay on the medium. SQLite also frees its write-ahead log (the `-wal`
-  file next to the database) without overwriting it: at each checkpoint, and
-  when s-hole stops. So older copies of database pages can stay in free disk
-  blocks until the file system reuses them. Reading free blocks needs access
-  to the raw disk (root, or the disk or SD card itself). Only disk
-  encryption makes sure deleted data cannot be recovered.
+  can stay on the medium. Reading free blocks needs access to the raw disk
+  (root, or the disk or SD card itself). Only disk encryption makes sure
+  deleted data cannot be recovered.
 - A change to a more private setting applies to new rows only. s-hole warns
   about stored rows that hold more than the current settings, with the date
   retention removes them. Purge to remove them at once.

@@ -25,11 +25,22 @@ func refused(path, reason string) error {
 // zeroChunk is the size of each zero write in ZeroFile.
 const zeroChunk = 64 << 10
 
+// zeroHead is the size of the SQLite WAL header, which ZeroFile writes and
+// syncs before the rest of the file.
+const zeroHead = 32
+
 // ZeroFile overwrites the file at path with zeros up to its current size and
 // syncs it to the disk. It does not truncate or remove the file: the caller
 // does that next, so the blocks the file frees hold zeros, not query data.
 // On flash storage and on a copy-on-write file system the overwrite can go to
 // new blocks, so it is best effort (see PRIVACY.md).
+//
+// ZeroFile writes and syncs the first 32 bytes before the rest. For a WAL
+// file, these bytes are the header: SQLite recovery ignores a WAL whose
+// header is not valid. After a power loss during the overwrite, a valid
+// header with only part of the frames zeroed would make recovery replay the
+// older frames over newer pages in the database, and rows would silently
+// lose their last changes.
 //
 // The offline purge can run as root in the data directory, which the s-hole
 // user owns, or on Windows as an administrator in the config folder, where
@@ -82,7 +93,14 @@ func writeZeros(f *os.File, path string, lfi, want os.FileInfo) error {
 		return refused(path, fmt.Sprintf("has %d hard links; not overwritten", links))
 	}
 	zeros := make([]byte, zeroChunk)
-	for off := int64(0); off < fi.Size(); off += zeroChunk {
+	head := min(fi.Size(), zeroHead)
+	if _, err := f.WriteAt(zeros[:head], 0); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	for off := head; off < fi.Size(); off += zeroChunk {
 		n := min(fi.Size()-off, zeroChunk)
 		if _, err := f.WriteAt(zeros[:n], off); err != nil {
 			return err

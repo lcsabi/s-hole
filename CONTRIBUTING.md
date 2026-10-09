@@ -240,7 +240,9 @@ binary in it, and the image, and pushes an SBOM with the image. The release
 notes end with a "Build" section that names the Go release that built the
 archives and the image. Both use the release of the `golang` builder image
 that the Dockerfile pins (`.github/go-version.sh` reads it), so a new Go patch
-arrives as a Dependabot pull request for that image.
+arrives as a Dependabot pull request for that image. When the `golang` image
+stops publishing the pinned Alpine variant, that pull request does not come;
+the Dockerfile header says what to do.
 
 The repository makes a published release immutable: its assets and its tag
 cannot change. A tag ruleset also refuses to move or delete a final `v*` tag.

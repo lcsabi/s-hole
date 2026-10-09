@@ -174,6 +174,11 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   token rights that it needs, and the Dockerfile pins its base images by
   digest. A weekly scan runs `govulncheck` on the binaries of the latest
   release. (CL 108)
+- **Built with go1.26.9.** The v2.0.1 binaries were built with go1.26.8.
+  `govulncheck -mode=binary` finds 12 standard-library advisories in them
+  (for example in `net/http` and `html/template`) that go1.26.9 fixes.
+  This release builds the archives and the image with go1.26.9 or later.
+  (CL 108)
 
 ## [2.0.1] - 2026-10-08
 

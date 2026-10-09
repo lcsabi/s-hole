@@ -3,7 +3,11 @@
 # proposes the next Go patch and each new digest. The golang tag below is the
 # one Go pin of the project: CI, the weekly scan, and the release archives
 # read it through .github/go-version.sh, so the archives and the image build
-# with the same Go release. Keep the exact X.Y.Z form of the tag.
+# with the same Go release. Keep the golang:X.Y.Z-<variant> form of the tag
+# (for example 1.26.9-alpine3.24). The golang image publishes tags for the
+# two newest Alpine releases only. When the pinned variant stops, Dependabot
+# proposes no Go patch, and the weekly scan fails on the next Go advisory:
+# then move both tags (golang and alpine) to the new Alpine release by hand.
 
 # ── Build stage ───────────────────────────────────────────────
 # The builder runs on the build host's platform and cross-compiles for the

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Prints the Go release (for example 1.26.9) of the golang builder image that
-# the Dockerfile pins. CI, the weekly scan, and the release build with this
-# release, so the archives and the image use the same Go. Dependabot moves
+# the Dockerfile pins. CI, the weekly scan, and the release use this release,
+# so the archives and the image build with the same Go. Dependabot moves
 # the pin with the image digest. actions/setup-go downloads an exact release
 # from go.dev when its own version list does not have it yet.
 #

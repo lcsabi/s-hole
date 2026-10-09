@@ -35,7 +35,8 @@ jobs:
         # not change the result until the pin moves.
         run: echo "version=$(sed -n 's/^GOLANGCI_LINT_VERSION ?= //p' Makefile)" >> "$GITHUB_OUTPUT"
       - name: golangci-lint
-        # Action v8+ installs golangci-lint v2, required by the
+        # Action v8+ can run golangci-lint v2 (the version comes from the
+        # Makefile pin), required by the
         # version:"2" config schema and a Go-1.26 module target. Action
         # v6 installed v1.64.x, which is built with an older Go and
         # refuses to load the config at all; see CL 24 addendum.

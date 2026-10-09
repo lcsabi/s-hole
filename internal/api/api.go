@@ -4,7 +4,8 @@
 // 127.0.0.1:8080, localhost only; set admin.listen to "0.0.0.0:8080" to
 // expose to the LAN) and exposes JSON endpoints backed by the stats,
 // querylog, and blocklist subsystems. The server is unauthenticated and
-// intended for LAN-only deployment. Every route passes a Host check, a
+// intended for LAN-only deployment. On loopback, every local account and
+// process can use it. Every route passes a Host check, a
 // Fetch Metadata check, and, for a state-changing request, a cross-origin
 // check (security.go), which stop a web page in the operator's browser from
 // using the server through DNS rebinding or a cross-site request.

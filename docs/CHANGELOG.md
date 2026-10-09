@@ -44,6 +44,11 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   the build stage, so it no longer stores the binary twice: about 34 MB on
   disk instead of 60 MB, and about 10 MiB to download instead of 18 MiB
   (amd64). The image works the same way. (CL 103)
+- **More privacy documentation.** The README and `config.yaml` show a DoH-only
+  setup: with no plain upstream, s-hole answers SERVFAIL when every DoH
+  upstream fails. `PRIVACY.md` and the README monitoring section say that a
+  Prometheus server that scrapes `/metrics` keeps the counter history, which
+  shows when the household is active. s-hole cannot delete it. (CL 112)
 
 ### Fixed
 
@@ -194,6 +199,12 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   Linux and the Windows build. Each finding is fixed or carries a comment
   that tells why the code is safe. GitHub CodeQL also analyzes the Go code,
   the workflows, and the dashboard script. (CL 111)
+- **The `admin.listen` warning says that the traffic is unencrypted.** The
+  admin server uses plain HTTP, so with `admin.listen` on a LAN address other
+  devices on the network can read the history as it goes to the browser.
+  `PRIVACY.md` and `SECURITY.md` now also say that every account and program
+  on the s-hole host can read the history through the loopback dashboard, and
+  recommend a dedicated host. (CL 112)
 
 ## [2.0.1] - 2026-10-08
 

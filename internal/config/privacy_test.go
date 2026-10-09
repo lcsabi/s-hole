@@ -161,3 +161,76 @@ func TestWarnings_MalformedAdminListenIsNotLoopback(t *testing.T) {
 		t.Errorf("warning keys = %v, want [admin.listen]", got)
 	}
 }
+
+func TestWarnings_AdminListenDetail(t *testing.T) {
+	// SEC-14: a non-loopback admin.listen gives one warning. The detail names
+	// the address, says that there is no login, that every device that can
+	// reach it can read the history and change the allowlist, and that the
+	// traffic is not encrypted. The hint names the loopback default.
+	// The checks look for the facts, not the exact sentence.
+	notEncrypted := []string{"plain http", "unencrypted", "not encrypted", "cleartext", "clear text"}
+	noLogin := []string{"no login", "without a login", "no authentication", "no password"}
+	for _, addr := range []string{"0.0.0.0:8080", ":8080", "192.168.1.10:8080", "[::]:8080"} {
+		t.Run(addr, func(t *testing.T) {
+			cfg, probs := mustLoadYAML(t, yamlFor("admin.listen", `"`+addr+`"`), nil)
+			if len(probs) != 0 {
+				t.Fatalf("problems = %v, want none", probs)
+			}
+			var found []Warning
+			for _, w := range cfg.Warnings() {
+				if w.Key == "admin.listen" {
+					found = append(found, w)
+				}
+			}
+			if len(found) != 1 {
+				t.Fatalf("admin.listen warnings = %+v, want exactly one", found)
+			}
+			w := found[0]
+			detail := strings.ToLower(w.Detail)
+			if !strings.Contains(w.Detail, addr) {
+				t.Errorf("detail = %q, want it to name %s", w.Detail, addr)
+			}
+			if !containsAny(detail, noLogin) {
+				t.Errorf("detail = %q, want it to say that there is no login", w.Detail)
+			}
+			if !strings.Contains(detail, "history") {
+				t.Errorf("detail = %q, want it to say that the stored history can be read", w.Detail)
+			}
+			if !strings.Contains(detail, "allowlist") {
+				t.Errorf("detail = %q, want it to say that the allowlist can be changed", w.Detail)
+			}
+			if !containsAny(detail, notEncrypted) {
+				t.Errorf("detail = %q, want it to say that the traffic is not encrypted (one of %q)", w.Detail, notEncrypted)
+			}
+			if !strings.Contains(w.Hint, "admin.listen") || !strings.Contains(w.Hint, "127.0.0.1:8080") {
+				t.Errorf("hint = %q, want it to set admin.listen to 127.0.0.1:8080", w.Hint)
+			}
+		})
+	}
+}
+
+func TestWarnings_LoopbackAdminListenGivesNoWarning(t *testing.T) {
+	// SEC-14: a loopback admin.listen gives no warning at all, so the
+	// unencrypted-traffic text does not show for the default bind.
+	for _, addr := range []string{"127.0.0.1:8080", "[::1]:8080", "localhost:8080"} {
+		t.Run(addr, func(t *testing.T) {
+			cfg, probs := mustLoadYAML(t, yamlFor("admin.listen", `"`+addr+`"`), nil)
+			if len(probs) != 0 {
+				t.Fatalf("problems = %v, want none", probs)
+			}
+			if ws := cfg.Warnings(); len(ws) != 0 {
+				t.Errorf("warnings = %+v, want none", ws)
+			}
+		})
+	}
+}
+
+// containsAny reports whether s contains one of the substrings.
+func containsAny(s string, subs []string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
+}

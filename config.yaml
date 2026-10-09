@@ -52,9 +52,16 @@ dns:
   # fallback. For a public name, s-hole uses a plain entry only when every DoH
   # entry has failed, and it logs a WARN with the count, at most once a minute,
   # while it does. (A local name goes only to an upstream on the LAN; see
-  # local_domains below.) For DoH only, delete the two plain entries. Then, if
-  # TLS fails (for example, the system clock is wrong), s-hole cannot resolve
-  # names until it works again.
+  # local_domains below.)
+  #
+  # For DoH only, delete the two plain entries. Do not add your router
+  # either: when every DoH entry fails, s-hole sends public names to the
+  # router too. With DoH entries only, s-hole answers SERVFAIL (server
+  # failure) when every DoH entry fails, and no client query leaves the
+  # network unencrypted. If TLS fails (for example, the system clock is
+  # wrong), s-hole then cannot resolve names that are not in the cache until
+  # TLS works again. On a Raspberry Pi 4 or older, see "Keep the s-hole host
+  # off s-hole" in README.md. There is no separate setting for DoH only.
   #
   # A DoH entry must use an IP address, not a hostname, and needs a path such
   # as /dns-query. It must not contain a user name or password. A plain entry
@@ -203,10 +210,15 @@ query_log:
     # "10.0.5.0/24": iot-vlan
 
 admin:
-  # Address and port for the dashboard and REST API. They have no login.
-  # "127.0.0.1:8080" (the default) allows this machine only.
+  # Address and port for the dashboard and REST API. They have no login and
+  # use plain HTTP.
+  # "127.0.0.1:8080" (the default) allows this machine only. Every account
+  # and program on this machine can then read the query history, delete it,
+  # and change the allowlist, so run s-hole on a dedicated host (see
+  # PRIVACY.md).
   # To open the dashboard from other devices, set "0.0.0.0:8080". Then every
-  # device on the LAN can read the query history and change the allowlist.
+  # device on the LAN can read the query history and change the allowlist,
+  # and a device on the network path can read the traffic.
   # s-hole warns while this is not a loopback address.
   # Open the dashboard by IP address, "localhost", or this machine's hostname
   # (for example http://raspberrypi.local:8080). s-hole refuses other names.

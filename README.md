@@ -18,7 +18,7 @@ s-hole is intentionally small: a single binary, a single YAML config file, no ru
 - [Scope & limitations](#scope--limitations)
 - [Privacy](#privacy): what s-hole records, and how to delete it
 - [Quick Start](#quick-start) (incl. [Keep the s-hole host off s-hole](#keep-the-s-hole-host-off-s-hole))
-- [Configuration](#configuration) (incl. [env-var overrides](#environment-variable-overrides), [local names](#local-names-printer-naslan), and [DNS over TLS](#dns-over-tls-android-private-dns))
+- [Configuration](#configuration) (incl. [env-var overrides](#environment-variable-overrides), [DoH only](#doh-only), [local names](#local-names-printer-naslan), and [DNS over TLS](#dns-over-tls-android-private-dns))
 - [REST API](#rest-api)
 - [Deployment](#deployment): [Linux/Pi](#raspberry-pi--linux-systemd), [Docker](#docker), [Windows](#windows-system-service)
 - [Troubleshooting](docs/TROUBLESHOOTING.md): which log lines to look for when something does not work
@@ -91,11 +91,12 @@ s-hole sees every DNS query on your network, so it could hold the browsing histo
 - **Nothing is recorded by default.** `query_log.mode` is `"none"`: s-hole keeps no query history, writes no query lines, and the Top Domains and Top Clients panels stay empty. The dashboard still shows the live counters since startup. The per-minute graph follows `query_log.mode` like the Top lists, so it is off under `"none"`.
 - **No device addresses by default.** `query_log.clients` is `"drop"`: when you turn the history on, s-hole still does not record which device asked.
 - **Limited history.** With the history on, rows older than 7 days are deleted (`query_log.retention_days`), and the database overwrites deleted rows.
-- **Encrypted upstreams.** The default upstreams are DoH (Quad9, then Cloudflare), so your internet provider cannot read the queries s-hole forwards.
+- **Encrypted upstreams.** The default upstreams are DoH (Quad9, then Cloudflare), so your internet provider cannot read the queries s-hole forwards. When every DoH upstream fails, s-hole uses the plain fallback and warns. For DoH only, see [DoH only](#doh-only).
 - **Minimal upstream queries.** The upstream gets only the name, the type, and a few protocol flags. s-hole removes the device's EDNS options (a cookie, a Client Subnet) and query ID, and sends no cookie of its own.
 - **Local names stay on the LAN.** s-hole sends local names (`printer`, `nas.lan`, `.local`, `home.arpa`, and the domains in `dns.local_domains`) only to an upstream on the LAN. If no upstream is on the LAN, it answers "no such name".
 - **Loud warnings.** Each setting that records more than the default (and a few other less private or less secure settings) gives a WARN at `-check-config`, at startup, and again with every stats line, and appears on the dashboard. You cannot turn these warnings off; change the setting to remove one.
 - **LAN only.** s-hole answers devices on the local network only.
+- **Dashboard access.** The dashboard has no login. On the default `127.0.0.1:8080`, every account and program on the s-hole host can read the history, so run s-hole on a dedicated host.
 - **No cache-only queries.** s-hole refuses a query that reads only the cache (RD=0). So a device that checks whether another device queried a name also puts that name in the cache. `PRIVACY.md` says what a device can still learn from the cache.
 
 The network owner decides what s-hole records, and everyone who uses the network has to trust that person. If you turn on more recording, tell the people who use your network.
@@ -306,7 +307,7 @@ All configuration lives in `config.yaml`, in four sections (`dns`, `blocking`, `
 | `query_log.retention_days` | `7` | whole number ≥ 0 | Delete database rows older than this; `0` keeps them forever | when `0` or more than `7`, with a database and mode not `"none"` |
 | `query_log.flush_interval` | `"30s"` | positive duration | How often recorded queries are written to the database | |
 | `query_log.client_names` | none | map of IP or CIDR to a label | Labels for clients on the dashboard. A label never shows more than `clients` keeps. An invalid key is dropped | |
-| `admin.listen` | `"127.0.0.1:8080"` | `host:port` | Address of the dashboard and API, which have no login | when not a loopback address |
+| `admin.listen` | `"127.0.0.1:8080"` | `host:port` | Address of the dashboard and API, which have no login and use plain HTTP | when not a loopback address |
 | `admin.pprof` | `false` | `true`, `false` | Expose the Go profiler under `/debug/pprof/` | when `true` |
 | `stats_interval` | `"5m"` | positive duration | How often the stats line (the uptime, no query counts) and the warnings line are logged | |
 
@@ -348,6 +349,21 @@ query_log:
 ```
 
 On a Raspberry Pi 4 or older (no battery-backed clock), keep the plain fallback upstreams, or make sure the Pi does not use s-hole as its own resolver (see [Keep the s-hole host off s-hole](#keep-the-s-hole-host-off-s-hole)).
+
+### DoH only
+
+The default upstreams have a plain DNS fallback: when every DoH upstream fails, s-hole sends public names unencrypted, and it logs a WARN with the count. To send public names over DoH only, remove the plain entries from `dns.upstreams`:
+
+```yaml
+dns:
+  upstreams:
+    - "https://9.9.9.9/dns-query"   # Quad9 DoH
+    - "https://1.1.1.1/dns-query"   # Cloudflare DoH
+```
+
+When every DoH upstream fails, s-hole then answers SERVFAIL (server failure), and no client query leaves the network unencrypted. Names that are not in the cache do not resolve until a DoH upstream works again. A DoH upstream fails, for example, when the system clock is wrong, because TLS then rejects the certificate. On a Raspberry Pi 4 or older, first keep the Pi off s-hole (see [Keep the s-hole host off s-hole](#keep-the-s-hole-host-off-s-hole)). There is no separate setting for DoH only.
+
+A router in the list is a plain upstream too. When it comes after the DoH entries, s-hole sends public names to it when every DoH upstream fails (see [Local names](#local-names-printer-naslan)). So for DoH only, do not list your router. s-hole then answers "no such name" for local names such as `printer`.
 
 ### Local names (printer, nas.lan)
 
@@ -509,7 +525,7 @@ For other clients that check the certificate, or to cover several servers with o
 
 ## REST API
 
-The admin web UI is served at **`http://127.0.0.1:8080`** by default. This is localhost only, so a fresh install is not reachable from the LAN. Set `admin.listen: "0.0.0.0:8080"` in `config.yaml` (or `S_HOLE_ADMIN_LISTEN=...`) to expose it; s-hole then warns, because the dashboard has no login. All data is also available as JSON.
+The admin web UI is served at **`http://127.0.0.1:8080`** by default. This is localhost only, so a fresh install is not reachable from the LAN. Set `admin.listen: "0.0.0.0:8080"` in `config.yaml` (or `S_HOLE_ADMIN_LISTEN=...`) to expose it; s-hole then warns, because the dashboard has no login and uses plain HTTP: other devices on the network can read the history as it goes to your browser. All data is also available as JSON.
 
 The server answers only requests addressed to an IP address, to `localhost`, or to the machine's own hostname (for example `raspberrypi` or `raspberrypi.local`). A request for any other name gets `421` with a hint. This stops a web page from reading the API through DNS rebinding. A request that a browser marks as sent from another site gets `403`, so a web page cannot use your browser to change the allowlist, to start an export, or to time a reply. A link from another page can still open the dashboard. Scripts and `curl` are not affected. Browsers send this header only to `localhost`, a loopback address, or HTTPS, so the check protects the default `127.0.0.1:8080` bind. It does not protect a dashboard opened by its LAN address over plain HTTP. Every response carries `Cache-Control: no-store`, so the browser does not keep query data on disk.
 
@@ -726,7 +742,7 @@ docker run -d \
 
 Publish port 53 on the host's IPv4 address, as the example does. Do not publish it without an address (`-p 53:53/udp`). Without an address, Docker also listens on the host's IPv6 addresses and relays IPv6 queries into the container's IPv4-only network. s-hole then sees every IPv6 client as the bridge gateway (for example `172.17.0.1`), a private address. The Top Clients panel and the query history show the gateway for every IPv6 client. If the router lets IPv6 traffic from the internet reach the host, the LAN check cannot refuse those queries either. With Docker Engine on Linux, IPv4 queries keep their real source; to serve IPv6 clients on Linux, use host networking. Docker Desktop on Mac or Windows relays every published port, so s-hole can see one internal address for every client there. See [Every client shows as 172.17.0.1](docs/TROUBLESHOOTING.md#every-client-shows-as-1721701).
 
-In this variant, set `admin.listen: "0.0.0.0:8080"` in `data/config.yaml`: inside the container, `127.0.0.1` answers only the container itself. The `-p 127.0.0.1:8080:8080` mapping keeps the dashboard on the host only; to open it to the LAN, publish it on `${HOST_IP}` instead. Inside a bridge network s-hole sees host-local requests as coming from the bridge gateway (for example `172.17.0.1`), so the dashboard's **Delete history** button does not work there: run `docker exec s-hole s-hole -purge -config /app/config.yaml` instead. On Windows, use a backtick for line continuation and `${PWD}\data:/app` for the volume.
+In this variant, set `admin.listen: "0.0.0.0:8080"` in `data/config.yaml`: inside the container, `127.0.0.1` answers only the container itself. The `-p 127.0.0.1:8080:8080` mapping keeps the dashboard on the host only; to open it to the LAN, publish it on `${HOST_IP}` instead. s-hole warns about `0.0.0.0:8080`, because it cannot see the `-p` mapping. With `127.0.0.1:` in the mapping, no other device can reach the dashboard. Inside a bridge network s-hole sees host-local requests as coming from the bridge gateway (for example `172.17.0.1`), so the dashboard's **Delete history** button does not work there: run `docker exec s-hole s-hole -purge -config /app/config.yaml` instead. On Windows, use a backtick for line continuation and `${PWD}\data:/app` for the volume.
 
 After the first run `./data` looks like this:
 
@@ -864,6 +880,12 @@ host. To scrape from another host, set `admin.listen: "0.0.0.0:8080"` (s-hole
 warns) and use the LAN IP as the target: the admin server answers requests
 addressed to an IP address, `localhost`, or its own hostname only. Do not
 expose `/metrics` to the public internet: the admin API is unauthenticated.
+
+Prometheus keeps the history of each counter under its own retention (15 days
+by default). The query counts over time show when the people in the household
+are active, also under `query_log.mode: "none"`. s-hole cannot delete this
+history: a purge and `query_log.retention_days` do not reach Prometheus. See
+[`PRIVACY.md`](PRIVACY.md).
 
 ---
 
@@ -1077,7 +1099,7 @@ A full end-to-end integration test (`internal/dnsserver/integration_test.go`) wi
 
 - s-hole is designed for **LAN deployment only**. It answers queries from the local network only and refuses every other source, but do not expose port 53 to the public internet anyway. In Docker with bridge networking, publish port 53 on an IPv4 address (see [Docker](#docker)); otherwise IPv6 queries arrive from the bridge gateway, and the LAN check cannot refuse them. There is no rate limit for each client. Global limits apply: at most 512 queries wait for an upstream at the same time (a query over the limit gets SERVFAIL), and at most 256 plain-TCP and 256 DoT connections can be open.
 - The query history (`query_log.database`) and a query log file hold the browsing history of the devices on your network. They are off by default. When you turn them on, treat them as sensitive data, and see [`PRIVACY.md`](PRIVACY.md) for where they live and how long they stay.
-- The admin UI has no authentication. The default `admin.listen` (`127.0.0.1:8080`) restricts it to localhost; s-hole warns while it listens on another address. The server refuses requests addressed to a foreign hostname (DNS rebinding) and requests from another web site (a link that opens the dashboard still works; browsers mark such requests only to `localhost`, a loopback address, or HTTPS, so this covers the default bind only), and it enforces read/write/idle timeouts and a 64 KiB request body limit. These are no substitute for proper access control on a multi-user network.
+- The admin UI has no authentication. The default `admin.listen` (`127.0.0.1:8080`) restricts it to localhost. But every account and program on the s-hole host can still read the history through it, so run s-hole on a dedicated host. s-hole warns while it listens on another address. The admin server uses plain HTTP, so a device on the network path can read its traffic. The server refuses requests addressed to a foreign hostname (DNS rebinding) and requests from another web site (a link that opens the dashboard still works; browsers mark such requests only to `localhost`, a loopback address, or HTTPS, so this covers the default bind only), and it enforces read/write/idle timeouts and a 64 KiB request body limit. These are no substitute for proper access control on a multi-user network.
 - Blocklist URLs are operator-controlled. Use HTTPS URLs from sources you trust; s-hole warns about an `http://` URL. s-hole does not follow a redirect from an HTTPS list URL to a plain HTTP URL.
 - The DoT private key (`dns.dot_key`) lets anyone who holds it impersonate your resolver. Keep it readable only by root and the `s-hole` group (mode `640`). The DoT listener caps open connections and times out slow TLS handshakes, but like port 53 it is meant for the LAN only. A private CA that you install on clients is trusted for every website, so keep its key off the s-hole box (see [Other DoT clients](#other-dot-clients)). Keep `CA:FALSE` in the openssl command, so the self-signed certificate cannot act as a CA.
 

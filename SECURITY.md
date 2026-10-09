@@ -51,6 +51,10 @@ Out of scope:
   untrusted input but cannot vouch for what they contain.
 - DNS amplification or spoofing on a deployment that ignores the
   "LAN-only" guidance.
+- Use of the admin API by an account or program on the s-hole host, and
+  capture of the plain HTTP traffic of an admin listener on the LAN. Both
+  are documented limits (see Defensive Posture), and `docs/ROADMAP.md` #42
+  plans the fix.
 
 ## Defensive Posture (Summary)
 
@@ -105,6 +109,20 @@ Out of scope:
   None of this is authentication: the dashboard has no login (see
   `docs/ROADMAP.md` for the planned device pairing). A purge
   (`POST /api/purge`) is accepted only from the s-hole host itself.
+- **Every account on the s-hole host can use the admin API.** The default
+  loopback bind keeps other devices out, but every local account and
+  every program on the host can connect to `127.0.0.1:8080`. Each of them can read
+  the stored history, export it, purge it, and change the allowlist. The
+  file mode `600` of the query database does not protect the history while
+  s-hole runs. Run s-hole on a dedicated host. The planned device pairing
+  (ROADMAP #42) must also authenticate loopback requests to the data
+  routes. The probes and `/metrics` stay open.
+- **The admin server uses plain HTTP.** With `admin.listen` on a LAN
+  address, the history, the exports, and the allowlist changes cross the
+  network unencrypted. Another device on the network path can capture them,
+  for example on a WPA2 Wi-Fi network with a shared password. The
+  `admin.listen` warning says so. ROADMAP #42 requires TLS for an admin
+  listener that is not loopback.
 - **Stored data** is owner-only: s-hole creates its files with mode `600`
   (umask `077`, and `UMask=0077` in the unit), the data directory is `700`,
   and the query database is opened with `secure_delete`, so a pruned or

@@ -1,12 +1,19 @@
-# Requires Go 1.26 (the go.mod go line). The builder image is pinned to that
-# release, so the image and the release archives build with the same Go
-# version; Dependabot proposes the next one.
+# Requires Go 1.26 (the go.mod go line). Both base images are pinned by
+# digest, so a rebuild of the same commit uses the same images. Dependabot
+# proposes the next Go patch and each new digest. The golang tag below is the
+# one Go pin of the project: CI, the weekly scan, and the release archives
+# read it through .github/go-version.sh, so the archives and the image build
+# with the same Go release. Keep the golang:X.Y.Z-<variant> form of the tag
+# (for example 1.26.9-alpine3.24). The golang image publishes tags for the
+# two newest Alpine releases only. When the pinned variant stops, Dependabot
+# proposes no Go patch, and the weekly scan fails on the next Go advisory:
+# then move both tags (golang and alpine) to the new Alpine release by hand.
 
 # ── Build stage ───────────────────────────────────────────────
 # The builder runs on the build host's platform and cross-compiles for the
 # target platform. Go needs no emulation to cross-compile, so a multi-arch
 # build does not run the compiler under QEMU.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.9-alpine3.24@sha256:cdfd4fe2da6b225d8b40c6b7a105736e548e83ff56d5d8f9394446eeb5eb84e0 AS builder
 
 WORKDIR /build
 
@@ -47,7 +54,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH GOARM=${TARGETVARIANT#v} go 
 RUN setcap cap_net_bind_service=+ep s-hole
 
 # ── Runtime stage ─────────────────────────────────────────────
-FROM alpine:3.24
+FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
 # ca-certificates: required for HTTPS blocklist downloads and DoH upstreams.
 # Container logs default to UTC (matches log/slog), so tzdata is not

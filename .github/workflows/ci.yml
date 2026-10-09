@@ -5,34 +5,64 @@ on:
     branches: [main, master]
   pull_request:
 
+# Every job only reads the repository. The workflow declares it here, so a
+# change of the repository's default token setting cannot widen it.
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          go-version: "1.26"
+          persist-credentials: false
+      - name: Read the Go version
+        id: go
+        # The Go release of the golang image that the Dockerfile pins (see
+        # .github/go-version.sh).
+        run: |
+          version="$(sh .github/go-version.sh)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ steps.go.outputs.version }}
+      - name: Read the golangci-lint version
+        id: lintver
+        # The Makefile holds the one pinned version, so CI and
+        # `make tools-install` run the same linter. A new linter release does
+        # not change the result until the pin moves.
+        run: echo "version=$(sed -n 's/^GOLANGCI_LINT_VERSION ?= //p' Makefile)" >> "$GITHUB_OUTPUT"
       - name: golangci-lint
-        # Action v8+ installs golangci-lint v2, required by the
+        # Action v8+ can run golangci-lint v2 (the version comes from the
+        # Makefile pin), required by the
         # version:"2" config schema and a Go-1.26 module target. Action
         # v6 installed v1.64.x, which is built with an older Go and
         # refuses to load the config at all; see CL 24 addendum.
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: latest
+          version: ${{ steps.lintver.outputs.version }}
 
   test:
     name: build / vet / test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          go-version: "1.26"
+          persist-credentials: false
+      - name: Read the Go version
+        id: go
+        # The Go release of the golang image that the Dockerfile pins (see
+        # .github/go-version.sh).
+        run: |
+          version="$(sh .github/go-version.sh)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ steps.go.outputs.version }}
       - name: Cache Go module + build cache
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cache/go-build
@@ -57,28 +87,40 @@ jobs:
     name: shellcheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # ubuntu-latest ships shellcheck preinstalled, so no setup step is
       # needed. Kept as its own job (like vuln) so a script quoting regression
       # surfaces independently of the Go build/test job.
-      - name: shellcheck deploy scripts
-        run: shellcheck deploy/*.sh
+      - name: shellcheck deploy and CI scripts
+        run: shellcheck deploy/*.sh .github/*.sh
 
   vuln:
     name: govulncheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read the Go version
+        id: go
+        # The Go release of the golang image that the Dockerfile pins (see
+        # .github/go-version.sh).
+        run: |
+          version="$(sh .github/go-version.sh)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
       # The official action installs govulncheck and runs `govulncheck ./...`,
       # failing the job on any known CVE reachable from our code. Kept as its
       # own job so a new advisory surfaces independently of the build/test job.
-      # This job pins "1.26" explicitly: the action installs govulncheck@latest,
-      # and x/vuln v1.8.0 requires Go >= 1.26 to build. "1.26" resolves to the
-      # newest 1.26 patch, so the scan also sees the current standard-library
-      # fixes. The module now requires Go 1.26, so the build/test jobs match.
-      - uses: golang/govulncheck-action@v1
+      # The scan uses the same Go release as the build (the Dockerfile pin),
+      # so it sees the standard library that the binaries ship with.
+      # repo-checkout: false: the first step checks out without keeping the
+      # token in .git/config; the action's own checkout would keep it.
+      - uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
         with:
-          go-version-input: "1.26"
+          go-version-input: ${{ steps.go.outputs.version }}
+          repo-checkout: false
 
   cross-compile:
     name: cross-compile / ${{ matrix.target.goos }}-${{ matrix.target.goarch }}
@@ -92,25 +134,37 @@ jobs:
           - { goos: linux,  goarch: arm, goarm: "7" }
           - { goos: windows, goarch: amd64 }
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          go-version: "1.26"
+          persist-credentials: false
+      - name: Read the Go version
+        id: go
+        # The Go release of the golang image that the Dockerfile pins (see
+        # .github/go-version.sh).
+        run: |
+          version="$(sh .github/go-version.sh)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ steps.go.outputs.version }}
       - name: Resolve version metadata
         id: meta
         run: |
-          echo "version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)" >> $GITHUB_OUTPUT
-          echo "commit=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          echo "version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
       - name: Build ${{ matrix.target.goos }}/${{ matrix.target.goarch }}
         env:
           GOOS: ${{ matrix.target.goos }}
           GOARCH: ${{ matrix.target.goarch }}
           GOARM: ${{ matrix.target.goarm }}
           CGO_ENABLED: "0"
+          VERSION: ${{ steps.meta.outputs.version }}
+          COMMIT: ${{ steps.meta.outputs.commit }}
+          BUILD_DATE: ${{ steps.meta.outputs.date }}
         run: |
           go build -ldflags="-s -w \
-            -X 'github.com/lcsabi/s-hole/internal/version.Version=${{ steps.meta.outputs.version }}' \
-            -X 'github.com/lcsabi/s-hole/internal/version.Commit=${{ steps.meta.outputs.commit }}' \
-            -X 'github.com/lcsabi/s-hole/internal/version.BuildDate=${{ steps.meta.outputs.date }}'" \
+            -X 'github.com/lcsabi/s-hole/internal/version.Version=${VERSION}' \
+            -X 'github.com/lcsabi/s-hole/internal/version.Commit=${COMMIT}' \
+            -X 'github.com/lcsabi/s-hole/internal/version.BuildDate=${BUILD_DATE}'" \
             -o /tmp/s-hole ./cmd/s-hole

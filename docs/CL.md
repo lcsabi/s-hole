@@ -127,6 +127,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 111](cls/CL-111.md) | Static analysis gate: gosec and nolintlint in golangci-lint, a Windows lint run (`make lint`, CI), and CodeQL default setup |
 | [CL 112](cls/CL-112.md) | Privacy docs: every local account can use the loopback admin API, the `admin.listen` warning says the traffic is plain HTTP, ROADMAP #42 requirements (loopback authentication, TLS), the Prometheus history, and a DoH-only setup |
 | [CL 113](cls/CL-113.md) | Graduate the CHANGELOG to v2.1.0 |
+| [CL 114](cls/CL-114.md) | Update `golang.org/x/net` to v0.60.0, so `govulncheck -mode=binary` finds no advisory in the Linux binaries |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

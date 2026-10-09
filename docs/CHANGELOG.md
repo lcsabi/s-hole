@@ -8,6 +8,18 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 
 ## [Unreleased]
 
+### Security
+
+- **`golang.org/x/net` 0.60.0.** `govulncheck -mode=binary` reports five
+  HTTP/2 advisories published on 2026-10-08 (GO-2026-6603, GO-2026-6610,
+  GO-2026-6611, GO-2026-6612, GO-2026-6617) for `golang.org/x/net` 0.57.0 in
+  the 2.1.0 Linux binaries and image. s-hole is not affected: from this
+  module it uses only the `ipv4` and `ipv6` packages and their helpers
+  (through `miekg/dns`). Its HTTP/2 code is the copy in the Go standard
+  library, which go1.26.9 already fixes. The update makes the binary scan
+  clean. No action is needed: the 2.1.1 binaries and image carry it.
+  (CL 114)
+
 ## [2.1.0] - 2026-10-09
 
 A minor release with privacy and security fixes. The config format does not

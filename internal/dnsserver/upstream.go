@@ -91,8 +91,8 @@ func (t *upstreamTracker) TransportFailureCounts() map[string]uint64 {
 }
 
 // forwardTracker is the package-level tracker shared by every call to
-// forward(). Stateful but per-process; tests construct their own via
-// forwardWith.
+// forward(). Stateful but per-process; unit tests of forward construct their
+// own via forwardWith, and the ServeDNS tests share this one (b/106).
 var forwardTracker = newUpstreamTracker()
 
 // UpstreamTransportFailures returns the cumulative per-upstream

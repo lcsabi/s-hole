@@ -368,7 +368,8 @@ func TestServeDNS_UnresolvedSummaryNamesNoQuery(t *testing.T) {
 			if _, has := s["last_domain"]; has {
 				t.Errorf("summary has last_domain under mode %q: %v", mode, s)
 			}
-			text := strings.ToLower(app.text())
+			// The summary names the upstreams, whose ports the OS picks (b/106).
+			text := app.scanText(t, ups...)
 			for _, leak := range []string{"zqxv-example", "first.", "second.", "192.168.1.100", "33333"} {
 				if strings.Contains(text, leak) {
 					t.Errorf("application log holds %q under mode %q:\n%s", leak, mode, app.text())

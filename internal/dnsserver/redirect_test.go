@@ -210,6 +210,11 @@ func TestServeDNS_DoHRedirectFailsOverAndIsCounted(t *testing.T) {
 	targetBase, targetHits := startRedirectTarget(t, false)
 	redirector, _ := startRedirectingDoH(t, http.StatusTemporaryRedirect, targetBase+"/dns-query")
 	next, _ := startMockUpstream(t, net.IPv4(7, 7, 7, 7))
+	// b/106: the package shares one tracker. The OS can give this server the
+	// port of an earlier upstream that failed, and the forwarder skips a URL
+	// in cooldown on its first sweep. Clear the cooldown only; recordSuccess
+	// keeps the failure count, so the test measures the difference.
+	forwardTracker.recordSuccess(redirector)
 	before := UpstreamTransportFailures()[redirector]
 
 	h := NewHandler(blocklist.NewStore(), stats.New(), []string{redirector, next}, nullLogger{}, "zero", 60, nil, false, "full")
@@ -263,7 +268,9 @@ func TestServeDNS_DoHRedirectSummaryNamesNoQuery(t *testing.T) {
 	if !strings.Contains(causes, hostPort) || !strings.Contains(causes, "redacted") {
 		t.Errorf("causes = %q, want the upstream %s shown through redact.URL", causes, hostPort)
 	}
-	text := strings.ToLower(app.text())
+	// The summary names the configured upstream, whose port the OS picks
+	// (b/106).
+	text := app.scanText(t, hostPort)
 	targetHost := strings.TrimPrefix(targetBase, "http://")
 	for _, leak := range []string{"zqxv", "redirected.", "u53r", "p455", "t0k3n", targetHost, "192.168.1.100", "33333"} {
 		if strings.Contains(text, leak) {

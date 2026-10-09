@@ -57,6 +57,31 @@ func (l *appLog) records(t *testing.T) []map[string]any {
 	return out
 }
 
+// scanText returns the log for a leak scan, in lower case: one JSON line per
+// record, without the time field, and with each string in known replaced by
+// "known". The time stamp has nanosecond digits, and a test server's address
+// has a port that the OS picks, so either can hold a number that a scan looks
+// for, such as the fake client's port 33333 (b/106). Pass the addresses that
+// the log must name, such as an upstream test server.
+func (l *appLog) scanText(t *testing.T, known ...string) string {
+	t.Helper()
+	var b strings.Builder
+	for _, rec := range l.records(t) {
+		delete(rec, "time")
+		line, err := json.Marshal(rec)
+		if err != nil {
+			t.Fatalf("encode log record: %v", err)
+		}
+		b.Write(line)
+		b.WriteByte('\n')
+	}
+	text := b.String()
+	for _, k := range known {
+		text = strings.ReplaceAll(text, k, "known")
+	}
+	return strings.ToLower(text)
+}
+
 // withMsg returns the records whose msg is msg.
 func (l *appLog) withMsg(t *testing.T, msg string) []map[string]any {
 	t.Helper()
@@ -369,7 +394,7 @@ func replyWriteError() error {
 // (in any case) or a part of the client's or the server's socket address.
 func assertNoQueryData(t *testing.T, app *appLog, name string) {
 	t.Helper()
-	text := strings.ToLower(app.text())
+	text := app.scanText(t)
 	if n := strings.ToLower(strings.TrimSuffix(name, ".")); strings.Contains(text, n) {
 		t.Errorf("application log names the query %q:\n%s", name, app.text())
 	}
@@ -505,7 +530,7 @@ func TestReplySummary_ErrorsHoldNoAddress(t *testing.T) {
 			t.Errorf("summary errors = %q, lack %q", text, want)
 		}
 	}
-	all := strings.ToLower(app.text())
+	all := app.scanText(t)
 	for _, leak := range []string{"fd12:3456::77", "44444", "fd12:3456::2", "192.168.1.100", "33333", "zqxv-tracker"} {
 		if strings.Contains(all, leak) {
 			t.Errorf("application log holds %q:\n%s", leak, app.text())

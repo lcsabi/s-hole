@@ -14,6 +14,11 @@ linters:
     - misspell
     - gocritic
     - revive
+    # gosec: fix a finding, or put //nolint:gosec // G<NNN>: <why> on its
+    # line. Do not exclude a rule for the whole tree. nolintlint checks
+    # every //nolint (see its settings).
+    - gosec
+    - nolintlint
 
   settings:
     errcheck:
@@ -32,16 +37,28 @@ linters:
         - (io.ReadCloser).Close
         - (*database/sql.Rows).Close
         - (*database/sql.Stmt).Close
+        # The Windows service commands close their service manager handles
+        # when they return; a failed close loses nothing.
+        - (*golang.org/x/sys/windows/svc/mgr.Mgr).Disconnect
+        - (*golang.org/x/sys/windows/svc/mgr.Service).Close
     revive:
       rules:
         # Allow short names in handler receivers and small loops.
         - name: var-naming
           disabled: false
+    nolintlint:
+      # A //nolint names its linter and says why, and is removed when the
+      # finding goes away.
+      require-specific: true
+      require-explanation: true
+      allow-unused: false
 
   exclusions:
     rules:
       # Tests routinely ignore errors from setup helpers (write file, close,
       # cleanup) and over-strict errcheck is more noise than signal there.
+      # Tests also open temporary paths and write fixed inputs on purpose,
+      # which gosec reports.
       - path: _test\.go
         linters:
           - errcheck

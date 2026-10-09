@@ -36,7 +36,7 @@ make check         # gofmt + vet + golangci-lint + shellcheck + tests (what CI r
 make test          # plain test run
 make test-race     # tests with the race detector (CGO toolchain required)
 make bench         # one iteration of each benchmark
-make lint          # golangci-lint
+make lint          # golangci-lint (with gosec), for this OS and for Windows
 make lint-sh       # shellcheck the deploy and CI scripts
 make fmt           # gofmt -s -w .
 make install       # go install into $GOBIN
@@ -50,7 +50,10 @@ check via `go.uber.org/goleak`), a `shellcheck` run on the deploy
 scripts (`make lint-sh` locally), a `govulncheck` scan (`make vuln`
 locally), and cross-compile for `linux/{amd64,arm64,armv7}` and
 `windows/amd64`. A weekly workflow also runs `govulncheck` on `master` and on
-the binaries of the latest release.
+the binaries of the latest release. GitHub CodeQL also analyzes each pull
+request (a repository setting, not a workflow). If gosec reports a finding,
+fix it, or put `//nolint:gosec // G<NNN>: <why>` on its line; do not
+exclude a rule in `.golangci.yml`.
 
 ### Running the binary
 

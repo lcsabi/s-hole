@@ -38,7 +38,7 @@ var resolvFiles = []string{"/etc/resolv.conf", "/run/systemd/resolve/resolv.conf
 func nameservers(files []string) []netip.Addr {
 	var out []netip.Addr
 	for _, f := range files {
-		fh, err := os.Open(f)
+		fh, err := os.Open(f) //nolint:gosec // G304: f is a fixed path from resolvFiles
 		if err != nil {
 			continue
 		}
@@ -64,7 +64,7 @@ func searchDomains(files []string) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, f := range files {
-		fh, err := os.Open(f)
+		fh, err := os.Open(f) //nolint:gosec // G304: f is a fixed path from resolvFiles
 		if err != nil {
 			continue
 		}

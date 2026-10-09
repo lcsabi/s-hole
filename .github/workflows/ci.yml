@@ -43,6 +43,14 @@ jobs:
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: ${{ steps.lintver.outputs.version }}
+      - name: golangci-lint (Windows build)
+        # The Windows-only files (internal/service and cmd/s-hole/*_windows.go)
+        # build only with GOOS=windows, so the run above does not check them.
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        env:
+          GOOS: windows
+        with:
+          version: ${{ steps.lintver.outputs.version }}
 
   test:
     name: build / vet / test

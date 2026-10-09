@@ -124,6 +124,7 @@ every change as a separate, numbered, reviewable unit.
 | [CL 108](cls/CL-108.md) | CI and release supply chain: every action pinned to a commit SHA, least-privilege workflow tokens, signed build provenance for the archives and the image, an image SBOM, base images pinned by digest, one Go release (the Dockerfile's `golang` pin) for CI, the archives, and the image, named in the release notes, a weekly `govulncheck` of `master` and the latest release binaries |
 | [CL 109](cls/CL-109.md) | Test fix: the DoH redirect and log leak tests do not fail when the OS reuses a port or a time stamp holds the client port (b/106) |
 | [CL 110](cls/CL-110.md) | Overwrite the SQLite WAL with zeros before SQLite frees it: at startup, after a prune, in a purge, and at a stop; `journal_size_limit=-1` |
+| [CL 111](cls/CL-111.md) | Static analysis gate: gosec and nolintlint in golangci-lint, a Windows lint run (`make lint`, CI), and CodeQL default setup |
 
 When a new CL lands, drop a new file into `docs/cls/` and add a row
 here. The per-CL file should start with a top-level `# CL N: title`

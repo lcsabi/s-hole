@@ -95,7 +95,7 @@ func NewFileLogger(dest, logQueries string) (*FileLogger, error) {
 // sets an existing file to 0600, so a query log written by an older build
 // with mode 0644 stops being readable by other users (b/076).
 func OpenPrivateFile(path string) (*os.File, error) {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // G304: query_log.file from the config
 	if err != nil {
 		return nil, err
 	}

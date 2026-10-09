@@ -63,7 +63,7 @@ func zeroFile(path string, want os.FileInfo) error {
 	if !lfi.Mode().IsRegular() {
 		return refused(path, "not a regular file; not overwritten")
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|openFlags, 0)
+	f, err := os.OpenFile(path, os.O_WRONLY|openFlags, 0) //nolint:gosec // G304: query_log.database (or its -wal, -shm file) or query_log.file from the config, checked by Lstat above
 	if err != nil {
 		return err
 	}
@@ -113,7 +113,7 @@ func writeZeros(f *os.File, path string, lfi, want os.FileInfo) error {
 // it is still the file want: the query log path can name another file after
 // a log rotation.
 func truncateFile(path string, want os.FileInfo) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|openFlags, 0)
+	f, err := os.OpenFile(path, os.O_WRONLY|openFlags, 0) //nolint:gosec // G304: query_log.file from the config
 	if err != nil {
 		return err
 	}

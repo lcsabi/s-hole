@@ -213,6 +213,17 @@ Out of scope:
   `govulncheck` on `master` and on the binaries of the latest release, and
   the release notes name the Go release that built the archives and the
   image. CI and the release use the Go release that the Dockerfile pins.
+- **Static analysis.** golangci-lint runs `gosec`, a security linter for
+  Go. The CI `lint` job runs it for the Linux and the Windows build, and
+  `make lint` runs it for your OS and for Windows. A pull request cannot
+  merge until the `lint` job passes. Each gosec finding is fixed, or its
+  line has a `//nolint:gosec` comment that names the rule and tells why the
+  code is safe. `nolintlint` fails the lint job for a `//nolint` comment
+  that names no linter, gives no reason, or that no finding needs. gosec
+  does not check test files. GitHub CodeQL (default setup) analyzes
+  the Go code, the workflows, and the dashboard script for each push to
+  `master`, each pull request, and once a week. It reports its findings as
+  code scanning alerts.
 - **Client name labels are read-only and privacy-bounded.** The optional
   `client_names` map adds device labels to the admin API, so it is device-
   identity PII on the unauthenticated read surface. The label is resolved from

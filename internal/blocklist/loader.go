@@ -209,7 +209,7 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 		}
 	}
 
-	req, err := http.NewRequest(http.MethodGet, url, nil) //nolint:gosec // URL comes from operator config
+	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		// The parse error repeats the raw URL, user name and password
 		// included; redact it like a transport error.
@@ -254,7 +254,7 @@ func fetchList(url, cacheDir string, mode Mode) ([]string, sourceMeta, error) {
 	_ = os.MkdirAll(cacheDir, 0o700)
 	tmpPath := cachePath + ".tmp"
 	body := io.LimitReader(resp.Body, maxBodyBytes)
-	f, err := os.Create(tmpPath)
+	f, err := os.Create(tmpPath) //nolint:gosec // G304: blocking.cache_dir from the config and a sha256 hex name (cacheFilename)
 	if err != nil {
 		warnCacheWrite(cacheDir, err)
 		f = nil
@@ -344,7 +344,7 @@ func warnCacheWrite(cacheDir string, err error) {
 }
 
 func loadFromFile(path string) ([]string, int, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // G304: the cache path from fetchList (blocking.cache_dir and a sha256 hex name)
 	if err != nil {
 		return nil, 0, err
 	}

@@ -72,7 +72,7 @@ func (c *Config) Warnings() []Warning {
 		}
 	}
 	if !isLoopbackListen(c.Admin.Listen) {
-		add("admin.listen", fmt.Sprintf("the dashboard and API on %s have no login, and every device that can reach them can read the stored history and change the allowlist", c.Admin.Listen),
+		add("admin.listen", fmt.Sprintf("the dashboard and API on %s have no login and use plain HTTP: every device that can reach them can read the stored history and change the allowlist, and a device on the network path can read the traffic", c.Admin.Listen),
 			`set admin.listen to "127.0.0.1:8080"`)
 	}
 	if c.Admin.Pprof {

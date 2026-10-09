@@ -61,7 +61,7 @@ rails.
 | 39 | Serve DoH to LAN clients (client-facing `/dns-query` endpoint) | Low | not started |
 | 40 | Privacy hardening: private defaults, loud warnings, erasure, purge, LAN-only, admin browser defenses | High | done (CL 93) |
 | 41 | Minimal upstream query: no client EDNS options, a fresh ID, local-only names to LAN upstreams only, EDNS padding, localhost names never blocked | High | done (CL 94) |
-| 42 | Admin authentication by device pairing | Medium | not started (reopened in CL 93) |
+| 42 | Admin authentication by device pairing | Medium | not started (reopened in CL 93; requirements set in CL 112) |
 | 43 | Adblock-format blocklists (`\|\|example.com^`), with `@@` exceptions | Low | not started |
 | 44 | DNS admission control: global caps on in-flight forwards and plain-TCP connections | Low | done (CL 102); no rate limit for each client (see the #44 notes) |
 
@@ -2101,6 +2101,29 @@ Host, Fetch Metadata, and cross-origin checks fit. Fetch Metadata does not
 cover a dashboard opened over plain HTTP by a LAN address, because browsers
 send the headers only to a trustworthy origin. It needs its own CL.
 
+Requirements (set in CL 112):
+
+- **Authentication on loopback too.** Every local account and process can
+  reach the default `127.0.0.1:8080`, so the owner-only file mode of the query
+  database gives no protection while s-hole runs. The pairing check must cover
+  loopback requests to the data routes: `/api/queries` and
+  `/api/queries/export`, `/api/top-blocked`, `/api/history`, the Top lists in
+  `/api/stats`, `POST /api/purge`, and the allowlist changes. The probes
+  (`/healthz`, `/readyz`) and `/metrics` stay open: they hold no domain or
+  client, and the healthcheck and Prometheus have no browser to pair. A local
+  process can still poll `/metrics` and build an activity timeline from the
+  counters, the same counts that a Prometheus server stores. A test shows
+  that an unpaired loopback request gets `401` on a data route. The design
+  settles the other routes: `GET /api/allowlist`, `GET /api/check`,
+  `POST /api/reload`, `/debug/pprof/*` while it is on, and the dashboard
+  page, which must load to show the pairing.
+- **TLS for an admin listener that is not loopback.** With `admin.listen` on
+  a LAN address, the history, the exports, and a pairing pass would cross the
+  network in clear text. The design requires HTTPS there and reuses the DoT
+  certificate code (load at startup, reload with the other reload triggers,
+  expiry and reload-failure metrics). HTTPS also makes the LAN dashboard a
+  trustworthy origin, so browsers send Fetch Metadata to it.
+
 ## 43. Adblock-format blocklists, with exceptions
 
 Some lists come only in the Adblock format that browser blockers use, such as
@@ -2279,6 +2302,9 @@ Pi-hole/AdGuard Home:
   is at hand, and a DoT certificate renewal uses the reload path (CL 86),
   which needs no restart.
 - **Per-client policies / client groups.**
+- **A `require_encrypted_upstream` setting.** A DoH-only `dns.upstreams`
+  list already answers SERVFAIL when every DoH upstream fails (CL 112). A
+  setting would be a second way to say the same thing.
 - **LRU cache eviction.** Move-to-front on every hit is a write on the
   read path; `Get` is a bare `RLock` read today, so LRU would serialize
   readers on a read-dominated cache (the contention

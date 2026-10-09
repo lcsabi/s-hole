@@ -301,7 +301,8 @@ succeed, check the `dns.upstreams` setting.
 
 `msg="queries were sent unencrypted"` means that every DoH upstream failed, so
 s-hole sent these queries to a plain upstream. Correct the DoH problem as
-above. For DoH only, remove the plain upstreams from `dns.upstreams`.
+above. For DoH only, remove the plain upstreams, a router included, from
+`dns.upstreams` (see [DoH only](../README.md#doh-only)).
 
 `msg="replies could not be sent"` comes once a minute while s-hole cannot send
 replies to clients. `replies` is how many failed, and `errors` gives the
@@ -327,7 +328,9 @@ level=INFO msg="no upstream on the LAN" pkg=main hint="s-hole sends local names,
 
 To resolve local names, add your router to `dns.upstreams`, after the DoH
 entries, for example `"192.168.1.1:53"`. Then restart s-hole. See
-[Local names](../README.md#local-names-printer-naslan) in the README.
+[Local names](../README.md#local-names-printer-naslan) in the README. The
+router is a plain upstream: when every DoH upstream fails, s-hole sends
+public names to it too.
 
 If the router uses its own domain for its devices, add the domain to
 `dns.local_domains`. Names under it then go to the router only. `fritz.box`
@@ -542,7 +545,7 @@ cannot turn them off: they go away when you change the setting back.
 | `query_log.file` | query lines go to a file or to standard output | `query_log.file: "off"` |
 | `query_log.retention_days` | the history is kept forever, or for more than 7 days | `query_log.retention_days: 7` |
 | `query_log.database` | the database holds rows written under a less private setting, such as client addresses from before a switch to `"drop"` | wait for retention (the line gives the date), or run `s-hole -purge` |
-| `admin.listen` | the dashboard listens on more than this machine | `admin.listen: "127.0.0.1:8080"` |
+| `admin.listen` | the dashboard listens on more than this machine, with no login and over plain HTTP | `admin.listen: "127.0.0.1:8080"` |
 | `admin.pprof` | the profiler is exposed | `admin.pprof: false` |
 | `dns.local_ptr` | reverse lookups for LAN addresses go upstream | `dns.local_ptr: true` |
 | `dns.upstreams` | every upstream is plain DNS, or queries were sent unencrypted because every DoH upstream failed | put a DoH upstream first; for a fallback, read [Some names do not resolve](#some-names-do-not-resolve) |

@@ -47,7 +47,8 @@ const purgeTimeout = 25 * time.Second
 // (see main's purge function). It is the most destructive request the API
 // has, so it is accepted only from this machine: from a loopback address or
 // one of the host's own addresses. A device on the LAN cannot wipe the
-// history, which keeps the history useful as a record. On the host, the
+// history, which keeps the history useful as a record. Every account on the
+// host can (ROADMAP #42). On the host, the
 // dashboard button and `s-hole -purge` both reach it. The body must be the
 // JSON {"confirm": true}, so a stray POST does nothing.
 func (s *Server) handlePurge(w http.ResponseWriter, r *http.Request) {

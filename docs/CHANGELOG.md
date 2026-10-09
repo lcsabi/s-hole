@@ -132,6 +132,17 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   stopped, it keeps that file; when s-hole runs, it still empties the log
   file. In both cases it reports the step as failed. The overwrite is best
   effort (see `PRIVACY.md`). (CL 105)
+- **The write-ahead log is overwritten before SQLite frees it.** SQLite keeps
+  copies of the changed database pages, with domains, clients, and times, in
+  the `-wal` file next to the query database. SQLite empties that file
+  after a retention prune and during a purge, and deletes it when s-hole
+  stops. It did not overwrite the file first, so the copies stayed in free
+  disk blocks. Now s-hole overwrites the file with zeros first: when it
+  starts, after a retention prune, during a purge, and when it stops. If
+  another program reads or writes the database at that moment, or the
+  `-wal` file is a link, s-hole does not overwrite or empty the file. At
+  startup, after a prune, and at a stop, it logs the WARN `query log WAL
+  overwrite failed`; a purge reports the step as failed. (CL 110)
 - **The systemd unit puts s-hole in a sandbox.** s-hole cannot see other
   processes, cannot reach hardware devices or change kernel settings, and
   can use only the system calls of a normal network service. It can open

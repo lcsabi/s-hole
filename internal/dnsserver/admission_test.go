@@ -336,7 +336,7 @@ func TestServeDNS_ForwardLimit(t *testing.T) {
 	if strings.Contains(hint, "every upstream failed") {
 		t.Errorf("hint = %q blames the upstreams, but only the forward limit was reached", hint)
 	}
-	text := strings.ToLower(app.text())
+	text := app.scanText(t)
 	for _, leak := range []string{"zqxv", "limited.", "192.168.1.100", "33333"} {
 		if strings.Contains(text, leak) {
 			t.Errorf("application log holds %q:\n%s", leak, app.text())

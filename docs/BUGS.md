@@ -3156,3 +3156,49 @@ When `Truncate` on the append handle fails, `truncate` empties the file
 through a new handle (`truncateFile`). It does so only when the path still
 names the open log file (`os.SameFile`), so a purge after a log rotation does
 not empty another file.
+
+## b/106: test: DoH redirect and log leak tests fail when the OS reuses a port
+
+**Priority:** P3
+**Component:** dns (tests)
+**Status:** Fixed in CL 109
+**Filed:** 2026-10-09
+
+### Description
+
+During the CL 108 checks, one `make check` run failed in
+`TestServeDNS_DoHRedirectSummaryNamesNoQuery`; 31 later runs of the package
+passed. A stress run (4 processes, 150 runs each, of the redirect and DoH
+tests) reproduced it and found a second test that fails. No production code
+is involved.
+
+### Root Cause
+
+- **Leak scans.** Five tests make sure that the application log does not
+  name the client: they search the log text for the client address and
+  port (`33333`, `44444`). The text also holds each record's time stamp,
+  which has nanosecond digits, and some summaries name an upstream test
+  server, `127.0.0.1` with a port that the OS picks. Either can hold the
+  number. The stress run failed when the OS gave the upstream port 33333:
+  `causes":"https://redacted@127.0.0.1:33333/dns-query?redacted: ...`.
+  The tests: `TestServeDNS_DoHRedirectSummaryNamesNoQuery`,
+  `TestServeDNS_UnresolvedSummaryNamesNoQuery`, the forward-limit summary
+  test in `admission_test.go`, the write-failure summary test in
+  `privacy_test.go`, and every caller of `assertNoQueryData`.
+- **Failover count.** `TestServeDNS_DoHRedirectFailsOverAndIsCounted`
+  expects one new transport failure for its upstream. The package shares
+  one upstream tracker, keyed by URL. The OS can give the redirecting server
+  the port of an earlier DoH upstream that failed less than 30 s before.
+  That URL is then in cooldown, so the forwarder skips it on the first
+  sweep, and the count does not rise.
+
+### Fix
+
+A shared helper, `appLog.scanText`, gives the leak scans the log records
+without the `time` field and with the addresses that the log must name
+removed. Now only a real leak of the client, the query, or the redirect
+target fails a test. The failover test clears the cooldown of its upstream
+URL before it measures. `recordSuccess` does not reset the failure count, so
+the test still measures the difference. The stress run passes, and a planted
+log line with the client address, its port, or the query name still fails
+the leak scans.

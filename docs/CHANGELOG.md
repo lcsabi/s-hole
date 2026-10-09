@@ -8,6 +8,34 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-10-09
+
+A minor release with privacy and security fixes. The config format does not
+change, and no setting is added or removed. Check these changes before you
+upgrade:
+
+- **Linux:** upgrade with `install-linux.sh` and the new binary, not by a
+  copy of the binary only. The installer replaces the systemd unit with the
+  sandboxed one and keeps your `config.yaml`. It overwrites
+  `/etc/systemd/system/s-hole.service`, so put local changes to the unit in
+  a drop-in file.
+- **Windows:** an installed service keeps working, but it keeps the old
+  access list, which lets the service change its binary and `config.yaml`.
+  `-service install` now refuses the old layout with the binary and the
+  config in one folder. To move the install, follow "Upgrade from an install
+  in `C:\s-hole`" in the README.
+- **DNS over TLS:** s-hole now accepts TLS 1.3 only. An Android 9 device, or
+  another client that supports only TLS 1.2, cannot use DoT. If such a device
+  uses strict Private DNS mode with the s-hole name, it cannot resolve names:
+  set its Private DNS to Automatic or Off.
+- **Public IPv4 networks:** if an interface of the s-hole host has a public or
+  CGNAT IPv4 address, s-hole now refuses the devices in that subnet. It logs
+  a WARN, `an interface subnet is not treated as LAN`, for each such subnet.
+  An upstream in such a subnet no longer gets local names.
+- **Admin API from another page:** a browser page on another site, or on
+  another port of the s-hole host (for example a homepage dashboard on
+  `localhost:3000`), now gets 403 from the admin API.
+
 ### Changed
 
 - **More reverse lookups stay on the LAN.** With `dns.local_ptr: true` (the

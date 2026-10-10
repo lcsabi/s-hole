@@ -295,6 +295,7 @@ func main() {
 	handler := dnsserver.NewHandler(store, counter, cfg.DNS.Upstreams, logger, cfg.Blocking.Reply, cfg.Blocking.ReplyTTLSeconds, dnsCache, cfg.DNS.LocalPTR, cfg.QueryLog.Clients)
 	handler.SetQueryLogMode(cfg.QueryLog.Mode)
 	handler.SetLocalDomains(cfg.DNS.LocalDomains)
+	handler.SetCNAMEInspection(cfg.Blocking.CNAMEInspection)
 	logSearchDomains(mainLog, searchDomains(resolvFiles), handler.KeepsLocal)
 	if !handler.HasLANUpstream() {
 		mainLog.Info("no upstream on the LAN",

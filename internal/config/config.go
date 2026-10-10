@@ -5,7 +5,7 @@
 //	dns:        how s-hole listens and forwards (listen, dot_listen, dot_cert,
 //	            dot_key, upstreams, cache_entries, local_ptr, local_domains)
 //	blocking:   what s-hole blocks (lists, allowlist, reply, reply_ttl_seconds,
-//	            refresh_interval, cache_dir)
+//	            refresh_interval, cache_dir, cname_inspection)
 //	query_log:  what s-hole records about queries (mode, clients, database,
 //	            file, retention_days, flush_interval, client_names)
 //	admin:      the dashboard and REST API (listen, pprof)
@@ -92,6 +92,9 @@ type Blocking struct {
 	ReplyTTLSeconds uint32
 	RefreshInterval time.Duration
 	CacheDir        string // where downloaded blocklists are cached
+	// CNAMEInspection blocks a query whose answer has a CNAME target on a
+	// list, which catches a tracker behind a first-party subdomain (CL 117).
+	CNAMEInspection bool
 }
 
 // QueryLog holds the query_log: section: what s-hole records about queries.
@@ -183,6 +186,7 @@ func defaults() *Config {
 			ReplyTTLSeconds: defaultReplyTTL,
 			RefreshInterval: defaultRefreshInterval,
 			CacheDir:        defaultCacheDir,
+			CNAMEInspection: true,
 		},
 		QueryLog: QueryLog{
 			Mode:          ModeNone,
@@ -271,6 +275,7 @@ func (c *Config) settings() []setting {
 		{key: "blocking.reply_ttl_seconds", scalar: setUint32(&c.Blocking.ReplyTTLSeconds, defaultReplyTTL), current: func() string { return strconv.FormatUint(uint64(c.Blocking.ReplyTTLSeconds), 10) }},
 		{key: "blocking.refresh_interval", scalar: setDuration(&c.Blocking.RefreshInterval, defaultRefreshInterval), current: dtoa(&c.Blocking.RefreshInterval)},
 		{key: "blocking.cache_dir", scalar: setString(&c.Blocking.CacheDir, defaultCacheDir), current: quoted(&c.Blocking.CacheDir)},
+		{key: "blocking.cname_inspection", scalar: setBool(&c.Blocking.CNAMEInspection, true), current: btoa(&c.Blocking.CNAMEInspection)},
 
 		{key: "query_log.mode", scalar: setEnum(&c.QueryLog.Mode, ModeNone, ModeNone, ModeBlocked, ModeAll), current: quoted(&c.QueryLog.Mode)},
 		{key: "query_log.clients", scalar: setEnum(&c.QueryLog.Clients, ClientsDrop, ClientsDrop, ClientsSubnet, ClientsFull), current: quoted(&c.QueryLog.Clients)},

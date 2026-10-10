@@ -144,7 +144,8 @@
         { "refId": "B", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "rate(shole_blocked_total[$__rate_interval])", "legendFormat": "blocked" },
         { "refId": "C", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "rate(shole_cache_hits_total[$__rate_interval])", "legendFormat": "cache hits" },
         { "refId": "D", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "rate(shole_local_ptr_total[$__rate_interval])", "legendFormat": "local PTR" },
-        { "refId": "E", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "rate(shole_local_names_total[$__rate_interval])", "legendFormat": "local names" }
+        { "refId": "E", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "rate(shole_local_names_total[$__rate_interval])", "legendFormat": "local names" },
+        { "refId": "F", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "rate(shole_cname_blocked_total[$__rate_interval])", "legendFormat": "blocked through CNAME" }
       ]
     },
     {

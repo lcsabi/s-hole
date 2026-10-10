@@ -85,7 +85,8 @@ docker logs s-hole 2>&1 | grep -E 'level=(WARN|ERROR)'
 ### Read the counters
 
 The dashboard shows the counters since startup: Total Queries, Blocked, Block
-Rate, and Cache Hit Rate. `/metrics` has all of them, for example
+Rate, and Cache Hit Rate. Under Blocked, it shows how many queries s-hole
+blocked through a CNAME (`shole_cname_blocked_total`). `/metrics` has all of them, for example
 `shole_queries_total`, `shole_forward_failures_total`, and
 `shole_upstream_errors_total`:
 
@@ -464,6 +465,15 @@ The answer shows the block entry that matched. To allow the domain now, add
 it to the allowlist on the dashboard. This entry is lost when s-hole restarts.
 To keep it, also add it to `blocking.allowlist` in the config file.
 
+If `/api/check` says `allowed`, but the domain is still blocked, the block can
+come from a CNAME target. The name is on no list, but it points (CNAME) to a
+domain that is on a list, often a tracker. With the query history on, the
+row shows `BLOCK · CNAME` on the dashboard, or `blocked_by: "cname"` in
+`/api/queries`. To allow the site, add the name that the device asks for to
+the allowlist. Then s-hole does not check its CNAME targets. To stop all
+CNAME checks, set `blocking.cname_inspection: false`. s-hole warns while it is
+off.
+
 The dashboard can refuse an entry:
 
 | You see | What it means | What to do |
@@ -549,6 +559,7 @@ cannot turn them off: they go away when you change the setting back.
 | `admin.pprof` | the profiler is exposed | `admin.pprof: false` |
 | `dns.local_ptr` | reverse lookups for LAN addresses go upstream | `dns.local_ptr: true` |
 | `dns.upstreams` | every upstream is plain DNS, or queries were sent unencrypted because every DoH upstream failed | put a DoH upstream first; for a fallback, read [Some names do not resolve](#some-names-do-not-resolve) |
+| `blocking.cname_inspection` | s-hole does not check CNAME targets, so it does not block a tracker behind a subdomain of a site | `blocking.cname_inspection: true` |
 | `blocking.lists` | a list is downloaded over plain HTTP | use the `https://` URL |
 | `dns.listen` | queries from outside the LAN were refused | read [A device's queries do not reach s-hole](#a-devices-queries-do-not-reach-s-hole) |
 

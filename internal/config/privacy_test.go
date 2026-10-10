@@ -53,14 +53,16 @@ func TestWarnings(t *testing.T) {
 		{"one DoH upstream among plain", "dns:\n  upstreams: [\"9.9.9.9:53\", \"https://1.1.1.1/dns-query\"]\n", nil},
 		{"list over http", "blocking:\n  lists: [\"http://lists.example/a.txt\", \"https://lists.example/b.txt\"]\n", []string{"blocking.lists"}},
 		{"list over HTTP", "blocking:\n  lists: [\"HTTP://lists.example/a.txt\"]\n", []string{"blocking.lists"}},
+		{"cname_inspection off", "blocking:\n  cname_inspection: false\n", []string{"blocking.cname_inspection"}},
+		{"cname_inspection on", "blocking:\n  cname_inspection: true\n", nil},
 		{"two lists over http", "blocking:\n  lists: [\"http://a.example/a\", \"http://b.example/b\"]\n", []string{"blocking.lists", "blocking.lists"}},
 		{"everything",
 			"query_log:\n  mode: all\n  clients: full\n  file: stdout\n  database: q.db\n  retention_days: 0\n" +
 				"admin:\n  listen: \"0.0.0.0:8080\"\n  pprof: true\n" +
 				"dns:\n  local_ptr: false\n  upstreams: [\"9.9.9.9:53\"]\n" +
-				"blocking:\n  lists: [\"http://a.example/a\"]\n",
+				"blocking:\n  lists: [\"http://a.example/a\"]\n  cname_inspection: false\n",
 			[]string{"query_log.mode", "query_log.clients", "query_log.file", "query_log.retention_days",
-				"admin.listen", "admin.pprof", "dns.local_ptr", "dns.upstreams", "blocking.lists"}},
+				"admin.listen", "admin.pprof", "dns.local_ptr", "dns.upstreams", "blocking.lists", "blocking.cname_inspection"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -59,6 +59,10 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintln(w, "# TYPE shole_blocked_total counter")
 	fmt.Fprintf(w, "shole_blocked_total %d\n", snap.BlockedCount)
 
+	fmt.Fprintln(w, "# HELP shole_cname_blocked_total Total DNS queries blocked because a CNAME target in the answer matched a blocklist (a subset of shole_blocked_total).")
+	fmt.Fprintln(w, "# TYPE shole_cname_blocked_total counter")
+	fmt.Fprintf(w, "shole_cname_blocked_total %d\n", snap.CNAMEBlockedCount)
+
 	fmt.Fprintln(w, "# HELP shole_local_ptr_total Total PTR queries for private reverse zones and the LAN's own IPv6 prefix answered locally with NXDOMAIN.")
 	fmt.Fprintln(w, "# TYPE shole_local_ptr_total counter")
 	fmt.Fprintf(w, "shole_local_ptr_total %d\n", snap.LocalPTRCount)

@@ -211,7 +211,12 @@ function updateClientPicker(privacy, clients) {
 // dashboard just maps the label to a badge.
 function outcomeBadge(q) {
   switch (q.outcome) {
-    case 'blocked': return '<span class="badge badge-block">BLOCK</span>';
+    case 'blocked':
+      // A CNAME block: the name is on no list, but it points to a domain
+      // that is (CL 117). The row never holds that target domain.
+      return q.blocked_by === 'cname'
+        ? '<span class="badge badge-block" title="The name points (CNAME) to a blocked domain">BLOCK · CNAME</span>'
+        : '<span class="badge badge-block">BLOCK</span>';
     case 'unresolved': return '<span class="badge badge-unresolved">UNRESOLVED</span>';
     case 'upstream_error': return '<span class="badge badge-upstream">UPSTREAM ERR</span>';
     default: return '<span class="badge badge-allow">ALLOW</span>';
@@ -619,6 +624,7 @@ async function refresh() {
     $('last-refresh').textContent = new Date().toLocaleTimeString();
     $('stat-total').textContent = fmt(s.total_queries);
     $('stat-blocked').textContent = fmt(s.blocked_count);
+    $('stat-cname').textContent = fmt(s.cname_blocked_count) + ' through CNAME';
     $('stat-pct').textContent = s.blocked_pct.toFixed(1) + '%';
     $('stat-cache').textContent = s.cache_hit_pct.toFixed(1) + '%';
     $('stat-blocklist').textContent = fmt(s.blocklist_size);

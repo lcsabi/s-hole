@@ -310,6 +310,29 @@ func BenchmarkStore_IsBlocked(b *testing.B) {
 	}
 }
 
+// BenchmarkStore_IsAllowlisted measures the CL 117 allowlist walk on a miss,
+// its worst case: a deep name that walks every label to the TLD. This is the
+// path for every served answer with a CNAME chain whose name is not
+// allowlisted.
+func BenchmarkStore_IsAllowlisted(b *testing.B) {
+	s := NewStore()
+	const N = 10_000
+	dom := make([]string, 0, N)
+	for i := 0; i < N; i++ {
+		dom = append(dom, "x"+strconv.Itoa(i)+".example.com")
+	}
+	s.SetAllowlist(dom)
+
+	probe := "deep.sub.domain.example.org."
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if s.IsAllowlisted(probe) {
+			b.Fatal("probe unexpectedly allowlisted")
+		}
+	}
+}
+
 // BenchmarkStore_IsBlocked_Miss covers the suffix walk's worst case: a
 // deep, not-blocked, not-allowlisted name walks every label to the TLD
 // without an early return. This is the hot path for the overwhelming

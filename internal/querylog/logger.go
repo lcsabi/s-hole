@@ -38,10 +38,12 @@ var logger = logging.For("querylog")
 // FileLogger writes one line per recorded query to a file or to standard
 // output (query_log.file). The format is fixed for easy parsing by shell
 // tools (grep, tail): "<RFC3339 UTC> <ALLOW|BLOCK> <client> <domain>", with an
-// optional trailing marker on ALLOW lines: " CACHED" on a cache hit or
-// " FAILED" on a failed query (unresolved or a relayed upstream failure).
-// The two markers are mutually exclusive, and a blocked query carries
-// neither (it never reaches the cache and its rcode is not a failure).
+// optional trailing marker. An ALLOW line gets " CACHED" on a cache hit or
+// " FAILED" on a failed query (unresolved or a relayed upstream failure);
+// the two are mutually exclusive. A BLOCK line gets " CNAME" when a CNAME
+// target in the answer matched, not the queried name (CL 117). A blocked
+// query is never CACHED or FAILED: it is never served as an allowed answer,
+// and its rcode is not a failure.
 //
 // Log never blocks the DNS goroutine. It hands the line to a writer goroutine
 // through a buffered channel and drops the line when the channel is full,
@@ -119,9 +121,14 @@ func (l *FileLogger) Log(rec Record) {
 		action = "BLOCK"
 	}
 	marker := ""
-	if rec.CacheHit {
+	switch {
+	case rec.Blocked:
+		if rec.BlockSource == BlockedByCNAME {
+			marker = " CNAME"
+		}
+	case rec.CacheHit:
 		marker = " CACHED"
-	} else if rec.Failed() {
+	case rec.Failed():
 		marker = " FAILED"
 	}
 	line := fmt.Sprintf("%s %s %s %s%s\n", time.Now().UTC().Format(time.RFC3339), action, rec.ClientIP, rec.Domain, marker)
@@ -252,6 +259,35 @@ type Record struct {
 	CacheHit    bool // served from the response cache; ALLOW queries only
 	Rcode       int  // DNS rcode of the reply s-hole sent or relayed; 0 = NOERROR
 	Synthesized bool // s-hole built the reply itself, vs relayed from upstream/cache
+	// BlockSource says what matched a blocked query. The zero value,
+	// BlockedByName, is right for every block on the queried name.
+	BlockSource BlockSource
+}
+
+// BlockSource says what matched a blocked query. The database stores it as an
+// integer (block_source), so a later kind of match gets the next value and
+// needs no new column.
+type BlockSource int
+
+const (
+	// BlockedByName: the queried name, or a parent of it, is on a list.
+	BlockedByName BlockSource = 0
+	// BlockedByCNAME: the queried name is on no list, but a CNAME target in
+	// its answer is (CL 117). The target itself is never recorded.
+	BlockedByCNAME BlockSource = 1
+)
+
+// String returns the label the API, the export, and the dashboard show:
+// "name", "cname", or "unknown" for a value that a later build wrote.
+func (b BlockSource) String() string {
+	switch b {
+	case BlockedByName:
+		return "name"
+	case BlockedByCNAME:
+		return "cname"
+	default:
+		return "unknown"
+	}
 }
 
 // DNS failure rcodes, kept as local constants so querylog stays free of a

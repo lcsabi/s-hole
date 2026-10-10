@@ -70,10 +70,9 @@ ServeDNS (internal/dnsserver/handler.go)
   → classify (localnames.go)       localhost → loopback; .onion/.invalid/.alt → NXDOMAIN;
                                    LAN-only name → LAN upstreams only, NXDOMAIN when none
   → blocklist.Store.IsBlocked      O(labels) suffix walk over two O(1) sets; allowlist overrides
-  → stats.Counter + querylog fan-out (never blocks the query); tallies and the per-minute graph follow query_log.mode
-  → blocked? write sinkhole reply (0.0.0.0/:: or NXDOMAIN) through send
+  → blocked? writeBlocked: sinkhole reply (0.0.0.0/:: or NXDOMAIN) through send
   → cache.Cache.Get                key: question + CD + DO bits (b/096); TTL-respecting, 1-day cap;
-                                   holds no OPT record; hit ends here
+                                   holds no OPT record; a hit goes to chainBlocked, then ends here
   → forward limit                  at most 512 queries wait for an upstream (maxForwards); over it → SERVFAIL at once,
                                    counted as unresolved and in shole_forward_limited_total
   → forward (upstream.go)          fresh query (upstreamQuery: question, RD/CD/AD/DO, random ID,
@@ -82,6 +81,10 @@ ServeDNS (internal/dnsserver/handler.go)
                                    recently-failed upstreams, second sweep retries them;
                                    all failed → *ForwardError → once-a-minute summary
   → stripOPT → cache.Set (caps TTLs at 1 day; never caches truncated/NXDOMAIN/empty)
+  → chainBlocked (cname.go)        a CNAME target in the reply on the block set → writeBlocked (CL 117);
+                                   off by blocking.cname_inspection or an allowlisted queried name
+  → stats.Counter + querylog fan-out at each outcome (never blocks the query); tallies and the
+                                   per-minute graph follow query_log.mode
   → send (edns.go)                 client ID, client OPT without options, fitUDP, DoT padding → reply
 ```
 
@@ -94,7 +97,7 @@ Wiring lives in `cmd/s-hole/main.go`, which owns three cross-cutting mechanisms 
 **Package loggers** (every package, not only main): a package-level logger is `var logger = logging.For("<pkg>")`, never `slog.With(...)`. `slog.With` at package init binds slog's initial handler before `setupLogger` runs; every record then went through the `log` package into the real handler, formatted twice and always at INFO (b/062). `logging.For` looks up `slog.Default()` for each record. Under systemd, `logging.NewStdoutHandler` prefixes each line with its syslog priority (so `journalctl -p warning` works) and drops `time=` from text lines. A log message says what happened (`X failed`); put advice in a `hint` field. A log line carries no query data (see Privacy first). When you add or rename a message that `docs/TROUBLESHOOTING.md` quotes, update that page.
 
 Concurrency invariants that tests pin (keep them green under `-race`):
-- `stats.Counter`: in Snapshot, read every counter a query bumps *after* `total` (`blocked`, `localPTR`, `localName`, `cacheHit`, `forwardFailures`, `upstreamErrors`) *before* `total`, or the ratio can exceed 100% (b/021, b/033, b/036). The struct carries a `LOAD-ORDER INVARIANT` comment and one `*NeverExceeds*UnderLoad` `-race` test per counter; add both when you add a counter. Resolve top-N map pointers *inside* the mutex (R31: prune reassigns them). A purge resets the tallies and the timeline, never the counters, because a counter reset under load breaks the invariant. The per-minute timeline (`timeline.go`) is lock-free (atomic fields, CAS on the minute) and outside the invariant: it shows counts, not ratios.
+- `stats.Counter`: in Snapshot, read every counter a query bumps *after* `total` (`blocked`, `cnameBlocked`, `localPTR`, `localName`, `cacheHit`, `forwardFailures`, `upstreamErrors`) *before* `total`, or the ratio can exceed 100% (b/021, b/033, b/036); `cnameBlocked` is a subset of `blocked`, so it is read before `blocked` too (CL 117). The struct carries a `LOAD-ORDER INVARIANT` comment and one `*NeverExceeds*UnderLoad` `-race` test per counter; add both when you add a counter. Resolve top-N map pointers *inside* the mutex (R31: prune reassigns them). A purge resets the tallies and the timeline, never the counters, because a counter reset under load breaks the invariant. The per-minute timeline (`timeline.go`) is lock-free (atomic fields, CAS on the minute) and outside the invariant: it shows counts, not ratios.
 - `blocklist.Store.Replace` swaps the map pointer under lock, so readers see old or new set, never partial.
 - `querylog.DBLogger` and `querylog.FileLogger` drop on a full channel rather than blocking DNS; drops surface as `shole_query_log_dropped_total` and `shole_query_log_file_dropped_total`. A purge runs inside each writer goroutine, so no queued entry is written after it. The SQLite pool is pinned to one connection (`SetMaxOpenConns(1)`) so the async writer, the retention prune, and a purge can't collide with `SQLITE_BUSY` (b/038); don't reintroduce a multi-connection pool.
 - **Package-level test seams** (`blocklist.maxBodyBytes`, the `swapLogger` and `captureLogs` logger swaps, and the `trustTLS` swap of `httpClient.Transport`, all in `blocklist`; `querylog.walFreeHook` and `walCheckpointHook`) are mutated only by tests and are safe only because each package runs its tests sequentially (no `t.Parallel`). Production never writes them. If you add `t.Parallel` to a package that mutates a package-level var, pass the value in instead of mutating the global, or the write races the production read under `-race`.

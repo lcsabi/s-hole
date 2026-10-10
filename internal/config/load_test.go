@@ -63,6 +63,7 @@ func wantDefaults() *Config {
 			ReplyTTLSeconds: 300,
 			RefreshInterval: 24 * time.Hour,
 			CacheDir:        ".",
+			CNAMEInspection: true,
 		},
 		QueryLog: QueryLog{
 			Mode:          "none",
@@ -207,6 +208,7 @@ blocking:
   reply_ttl_seconds: 4294967295
   refresh_interval: 6h
   cache_dir: "cache"
+  cname_inspection: false
 query_log:
   mode: blocked
   clients: subnet
@@ -243,6 +245,9 @@ stats_interval: 1m
 			ReplyTTLSeconds: 4294967295,
 			RefreshInterval: 6 * time.Hour,
 			CacheDir:        "cache",
+			// CL 117: the non-default value, so the test fails if the key is
+			// not read.
+			CNAMEInspection: false,
 		},
 		QueryLog: QueryLog{
 			Mode:          "blocked",
@@ -286,6 +291,7 @@ func scalarCases(t *testing.T) []scalarCase {
 		{"blocking.reply_ttl_seconds", "S_HOLE_BLOCKING_REPLY_TTL_SECONDS", "60", "0", func(c *Config) any { return c.Blocking.ReplyTTLSeconds }, uint32(60), uint32(0), uint32(300)},
 		{"blocking.refresh_interval", "S_HOLE_BLOCKING_REFRESH_INTERVAL", "1h", "2h", func(c *Config) any { return c.Blocking.RefreshInterval }, time.Hour, 2 * time.Hour, 24 * time.Hour},
 		{"blocking.cache_dir", "S_HOLE_BLOCKING_CACHE_DIR", "a", "b", func(c *Config) any { return c.Blocking.CacheDir }, "a", "b", "."},
+		{"blocking.cname_inspection", "S_HOLE_BLOCKING_CNAME_INSPECTION", "false", "true", func(c *Config) any { return c.Blocking.CNAMEInspection }, false, true, true},
 		{"query_log.mode", "S_HOLE_QUERY_LOG_MODE", "all", "blocked", func(c *Config) any { return c.QueryLog.Mode }, "all", "blocked", "none"},
 		{"query_log.clients", "S_HOLE_QUERY_LOG_CLIENTS", "full", "subnet", func(c *Config) any { return c.QueryLog.Clients }, "full", "subnet", "drop"},
 		{"query_log.database", "S_HOLE_QUERY_LOG_DATABASE", "a.db", "b.db", func(c *Config) any { return c.QueryLog.Database }, "a.db", "b.db", ""},
@@ -353,6 +359,7 @@ func TestLoad_BadEnvironmentValueKeepsYAMLValue(t *testing.T) {
 		{"admin:\n  pprof: true\n", "S_HOLE_ADMIN_PPROF", "maybe", func(c *Config) any { return c.Admin.Pprof }, true},
 		{"stats_interval: 1m\n", "S_HOLE_STATS_INTERVAL", "0s", func(c *Config) any { return c.StatsInterval }, time.Minute},
 		{"blocking:\n  reply_ttl_seconds: 9\n", "S_HOLE_BLOCKING_REPLY_TTL_SECONDS", "-9", func(c *Config) any { return c.Blocking.ReplyTTLSeconds }, uint32(9)},
+		{"blocking:\n  cname_inspection: false\n", "S_HOLE_BLOCKING_CNAME_INSPECTION", "sometimes", func(c *Config) any { return c.Blocking.CNAMEInspection }, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.env, func(t *testing.T) {
@@ -595,6 +602,8 @@ func TestLoad_InvalidValuesKeepDefault(t *testing.T) {
 		{"duration negative", "stats_interval", "-1m", func(c *Config) any { return c.StatsInterval }},
 		{"boolean other word", "dns.local_ptr", "maybe", func(c *Config) any { return c.DNS.LocalPTR }},
 		{"boolean other number", "admin.pprof", "2", func(c *Config) any { return c.Admin.Pprof }},
+		{"cname_inspection other word", "blocking.cname_inspection", "off", func(c *Config) any { return c.Blocking.CNAMEInspection }},
+		{"cname_inspection a list", "blocking.cname_inspection", "[false]", func(c *Config) any { return c.Blocking.CNAMEInspection }},
 	}
 	def := wantDefaults()
 	for _, tc := range cases {
@@ -929,6 +938,7 @@ func TestSettings_CurrentDescribesTheValueInEffect(t *testing.T) {
 		"blocking.reply_ttl_seconds": "300",
 		"blocking.refresh_interval":  "24h0m0s",
 		"blocking.cache_dir":         `"."`,
+		"blocking.cname_inspection":  "true",
 		"query_log.mode":             `"none"`,
 		"query_log.clients":          `"drop"`,
 		"query_log.database":         "off",

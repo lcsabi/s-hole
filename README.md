@@ -40,6 +40,7 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
 - **Network-wide blocking.** Blocks ads and trackers at the DNS layer, before any connection is established.
 - **Private by default.** A fresh install records no queries and no device addresses, keeps no query history, and sends its upstream queries encrypted. Every setting that records more is an opt-in, and s-hole logs a warning for it at startup and with every stats line. See [Privacy](#privacy).
 - **Subdomain (suffix) blocking.** A blocked domain blocks its whole subtree, so `ads.example.com` also covers `x.ads.example.com`. Trackers cannot dodge a list entry by rotating subdomains.
+- **Hidden trackers behind a CNAME.** Some sites load a tracker from their own subdomain, such as `metrics.shop.example`. This subdomain points (CNAME) to the tracker's domain, so the tracker gets the site's cookies. s-hole checks the CNAME targets in each answer and blocks the query when a target is on a list. On by default.
 - **Community blocklists.** Downloads and auto-refreshes hosts-file, plain-domain, or wildcard (`*.example.com`) lists from any URL.
 - **DNS response cache.** Serves repeat queries from memory. Typical cache hit rates of 40–70% reduce upstream load and latency.
 - **Encrypted, resilient upstream forwarding.** Forwards over DNS-over-HTTPS (DoH) to Quad9, then Cloudflare, by default. For a public name, plain DNS is a fallback that s-hole uses only when every DoH upstream fails, and it warns when it does. Skips recently-failed resolvers until they recover.
@@ -66,10 +67,14 @@ For maintainer-facing material, see `docs/DESIGN.md` (design rationale), `docs/C
   networks and device telemetry well, but it cannot touch ads served from the
   same domain as the content. Run a browser content blocker alongside it for
   the first-party and element-level filtering it cannot do.
-- s-hole matches on the queried name and does not follow CNAME chains, so a
-  cloaked tracker disguised as a first-party subdomain can slip past a
-  blocklist entry. Following those chains (CNAME deep-inspection) is on the
-  roadmap.
+- **s-hole checks CNAME chains, but it cannot see every hidden tracker.** A
+  tracker can hide behind a subdomain of a site (such as
+  `metrics.shop.example`) that points (CNAME) to the tracker's domain. s-hole
+  checks the CNAME targets in each answer and blocks the query when a target
+  is on a list (`blocking.cname_inspection`). It cannot see a CNAME that the
+  site's DNS provider resolves and returns as plain addresses (CNAME
+  flattening). It also cannot see a site server that sends the data to a
+  tracker. A browser with tracker protection helps against these two methods.
 - **Faster browsing comes from blocking, not acceleration.** s-hole usually
   makes pages feel faster because the browser has less to load, not because
   your network is faster. A blocked ad or tracker domain returns `0.0.0.0`, so
@@ -300,6 +305,7 @@ All configuration lives in `config.yaml`, in four sections (`dns`, `blocking`, `
 | `blocking.reply_ttl_seconds` | `300` | `0` to `4294967295` | TTL of a blocked answer; `0` tells clients not to cache it | |
 | `blocking.refresh_interval` | `"24h"` | positive duration | How often to download the blocklists again | |
 | `blocking.cache_dir` | `"."` | directory | Where downloaded blocklists are kept, so a restart does not download them. s-hole creates the directory (mode `700`) if it does not exist | |
+| `blocking.cname_inspection` | `true` | `true`, `false` | Block a query when a CNAME target in its answer is on a list, so a tracker behind a subdomain of a site is blocked. s-hole does not check an allowlisted name | when `false` |
 | `query_log.mode` | `"none"` | `"none"`, `"blocked"`, `"all"` | Which queries s-hole records, in the database, the log file, and the Top lists | when not `"none"` |
 | `query_log.clients` | `"drop"` | `"drop"`, `"subnet"`, `"full"` | How much of the client address a recorded query keeps: nothing, IPv4 /24 and IPv6 /64, or all of it. While the mode records queries, the allowlist audit line masks the requester the same way | when not `"drop"` and mode is not `"none"` |
 | `query_log.database` | `"off"` | `"off"` or a file path | SQLite file for the query history (Recent Queries, Stored list, 7-day graph) | |
@@ -531,9 +537,9 @@ The server answers only requests addressed to an IP address, to `localhost`, or 
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/stats` | Live stats: uptime, query totals, block rate, cache hit rate, blocklist size, per-source blocklist health, top domains/clients (each client carries an optional `client_names` `label`), a `privacy` object (`mode`, `clients`, `database`, `file`, `retention_days`), the `warnings` in effect, and a `dot` object with the DNS-over-TLS certificate state (`enabled`, `listen`, `names`, `not_after`, `expires_in_days`, `state` = `ok`/`expiring`/`expired`/`reload_failed`, and the last reload result) |
-| `GET` | `/api/check?domain=NAME` | Why a domain is blocked: the decision plus the full suffix walk (matched block entry, overriding allowlist entry). Diagnostic; changes no state and does not count in stats |
-| `GET` | `/api/queries?limit=N` | Last N stored queries, newest first (default: 50, max: 1000). Filter with `?domain=` (substring), `?client=` (exact match on the stored value), `?blocked=true`/`false`, or `?outcome=unresolved`/`upstream-error` (failed queries). Each row carries a computed `outcome` (`allowed`/`blocked`/`unresolved`/`upstream_error`) and an optional `client_names` `label`. Empty when `query_log.database` is off |
+| `GET` | `/api/stats` | Live stats: uptime, query totals, block rate, cache hit rate, blocklist size, per-source blocklist health, the queries blocked through a CNAME (`cname_blocked_count`), top domains/clients (each client carries an optional `client_names` `label`), a `privacy` object (`mode`, `clients`, `database`, `file`, `retention_days`), the `warnings` in effect, and a `dot` object with the DNS-over-TLS certificate state (`enabled`, `listen`, `names`, `not_after`, `expires_in_days`, `state` = `ok`/`expiring`/`expired`/`reload_failed`, and the last reload result) |
+| `GET` | `/api/check?domain=NAME` | Why a domain is blocked: the decision plus the full suffix walk (matched block entry, overriding allowlist entry). It checks the name only; a block through a CNAME target shows only in the query history (`blocked_by: "cname"`). Diagnostic; changes no state and does not count in stats |
+| `GET` | `/api/queries?limit=N` | Last N stored queries, newest first (default: 50, max: 1000). Filter with `?domain=` (substring), `?client=` (exact match on the stored value), `?blocked=true`/`false`, or `?outcome=unresolved`/`upstream-error` (failed queries). Each row carries a computed `outcome` (`allowed`/`blocked`/`unresolved`/`upstream_error`), on a blocked row `blocked_by` (`name`: the name is on a list; `cname`: a CNAME target in its answer is), and an optional `client_names` `label`. Empty when `query_log.database` is off |
 | `GET` | `/api/queries/export?format=csv` | Download the stored queries. `?format=csv` (default) or `json`, streamed. Reuses the `/api/queries` filters; uncapped unless `?limit=N` is set. The `X-Shole-Query-Log-Clients` and `X-Shole-Query-Log-Mode` headers (and the JSON `clients` and `mode` fields) say what the rows hold. Empty (valid) file when `query_log.database` is off |
 | `GET` | `/api/top-blocked?limit=N` | Most-blocked domains in the stored history (default: 50, max: 1000); empty when `query_log.database` is off |
 | `GET` | `/api/history?window=24h&bucket=1h` | Per-bucket total, blocked, cached, unresolved, and upstream-error counts. A window up to 24 hours comes from per-minute counts kept in memory (`source: "memory"`), which follow `query_log.mode` (`logging`): all zeros under `"none"`, blocked queries only under `"blocked"`. A longer window comes from the stored history (`source: "database"`) when the database is on and records queries; under `query_log.mode: "blocked"` it holds blocked queries only (`logging: "blocked"`). Bucket count capped at 1000 |
@@ -544,7 +550,7 @@ The server answers only requests addressed to an IP address, to `localhost`, or 
 | `POST` | `/api/purge` | Delete everything s-hole stored (see [Delete the query history](#delete-the-query-history)). Body: `{"confirm": true}`, JSON. Accepted only from the s-hole host itself (loopback or one of its own addresses); returns a report of each step |
 | `GET`  | `/healthz` | Liveness probe. Always 200 OK while the HTTP server is responsive |
 | `GET`  | `/readyz` | Readiness probe. 200 OK once the blocklist has loaded at least one entry, 503 otherwise |
-| `GET`  | `/metrics` | Prometheus text exposition of the `shole_*` series: query, cache, blocklist, upstream-failure, forward-limit, refused-query, plaintext-fallback, DoT certificate (when DoT is on), and Go-runtime metrics. See the [Metrics reference](docs/DESIGN.md#metrics-reference) for the full list. |
+| `GET`  | `/metrics` | Prometheus text exposition of the `shole_*` series: query, block (also through a CNAME), cache, blocklist, upstream-failure, forward-limit, refused-query, plaintext-fallback, DoT certificate (when DoT is on), and Go-runtime metrics. See the [Metrics reference](docs/DESIGN.md#metrics-reference) for the full list. |
 | `GET`  | `/debug/pprof/*` | Standard Go pprof endpoints. Registered **only** when `admin.pprof: true` is set (or `S_HOLE_ADMIN_PPROF=1`); s-hole warns while it is on. Keep `admin.listen` on localhost while you use it. |
 
 Runtime allowlist changes take effect immediately but do not persist across restarts. To make an allowlist entry permanent, add it to `blocking.allowlist` in `config.yaml`.
@@ -960,6 +966,7 @@ $env:GOOS=""; $env:GOARCH=""
      │   │    3. blocklist  → sinkhole reply            │   │
      │   │    4. cache hit  → cached reply              │   │
      │   │    5. cache miss → fresh upstream query      │   │
+     │   │    6. CNAME target blocked → sinkhole reply  │   │
      │   └──────────────────────────────────────────────┘   │
      │                                                      │
      │   ┌───────────┐   ┌──────────┐   ┌───────────┐       │

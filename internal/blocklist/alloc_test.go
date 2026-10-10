@@ -46,3 +46,38 @@ func TestStore_IsBlocked_ZeroAlloc(t *testing.T) {
 		})
 	}
 }
+
+// TestStore_IsAllowlisted_ZeroAlloc pins the CL 117 req 12 property that
+// IsAllowlisted does not allocate: the DNS handler calls it for every served
+// answer with a CNAME chain. It covers a hit on a parent (an early return
+// after one step), a miss that walks every label, and the lowercase FQDN with
+// a trailing dot that the handler passes.
+func TestStore_IsAllowlisted_ZeroAlloc(t *testing.T) {
+	s := NewStore()
+	s.Replace([]string{"tracker.example.com"})
+	s.SetAllowlist([]string{"shop.example"})
+
+	cases := []struct {
+		probe string
+		want  bool
+	}{
+		{"metrics.shop.example", true},
+		{"metrics.shop.example.", true},
+		{"deep.sub.domain.example.org", false},
+		{"deep.sub.domain.example.org.", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.probe, func(t *testing.T) {
+			var got bool
+			allocs := testing.AllocsPerRun(1000, func() {
+				got = s.IsAllowlisted(tc.probe)
+			})
+			if got != tc.want {
+				t.Fatalf("IsAllowlisted(%q) = %v, want %v", tc.probe, got, tc.want)
+			}
+			if allocs != 0 {
+				t.Errorf("IsAllowlisted(%q) allocated %v times per call, want 0", tc.probe, allocs)
+			}
+		})
+	}
+}

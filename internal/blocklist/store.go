@@ -152,6 +152,27 @@ func (s *Store) IsBlocked(domain string) bool {
 	}
 }
 
+// IsAllowlisted reports whether domain or any parent of it is on the
+// allowlist: the allowlist half of the IsBlocked walk. The DNS handler calls
+// it before CNAME inspection, so an allowlisted name keeps its answer even
+// when its CNAME chain leads to a blocked domain. Like IsBlocked it does not
+// allocate.
+func (s *Store) IsAllowlisted(domain string) bool {
+	name := normalize(domain)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for {
+		if _, ok := s.allowlist[name]; ok {
+			return true
+		}
+		i := strings.IndexByte(name, '.')
+		if i < 0 {
+			return false
+		}
+		name = name[i+1:]
+	}
+}
+
 // LevelResult is one label-suffix visited by Explain, with its block-set and
 // allowlist membership at that level.
 type LevelResult struct {

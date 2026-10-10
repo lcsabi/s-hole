@@ -20,8 +20,8 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   what matched (`blocked_by`: `name` or `cname`) in `/api/queries`, in the
   exports (a new last CSV column), on the dashboard, and in the query log file
   (` CNAME` at the end of a BLOCK line). The CNAME target is not recorded.
-  New metric `shole_cname_blocked_total`; `/api/stats` has
-  `cname_blocked_count`. A query history from an older version gets the new
+  New metric `shole_cname_blocked_total`, also drawn in the "Queries over time"
+  panel of the Grafana dashboard; `/api/stats` has `cname_blocked_count`. A query history from an older version gets the new
   column at startup. (CL 117)
 
 - **The October 2026 privacy and security review is public.**

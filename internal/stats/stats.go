@@ -47,15 +47,18 @@ const topNMaxEntries = 4096
 // incremented after total, maintaining total ≥ localPTR + localName at all times.
 //
 // LOAD-ORDER INVARIANT (read this before adding a counter). Every per-query
-// counter below (blocked, localPTR, localName, cacheHit, forwardFailures,
-// upstreamErrors) is incremented AFTER RecordQuery bumps total. Snapshot must
-// therefore read each of them BEFORE it reads total; otherwise a query
-// completing between the two atomic loads makes the counter exceed the total
-// captured alongside it, surfacing as a >100 % ratio on the dashboard. This exact mistake has
-// regressed three times: b/021 (blocked), b/033 (localPTR), b/036 (cacheHit).
-// If you add a counter that a query increments after total, load it before
-// total in Snapshot and add a `*NeverExceeds*UnderLoad` regression test next to
-// the existing ones.
+// counter below (blocked, cnameBlocked, localPTR, localName, cacheHit,
+// forwardFailures, upstreamErrors) is incremented AFTER RecordQuery bumps
+// total. Snapshot must therefore read each of them BEFORE it reads total;
+// otherwise a query completing between the two atomic loads makes the counter
+// exceed the total captured alongside it, surfacing as a >100 % ratio on the
+// dashboard. This exact mistake has regressed three times: b/021 (blocked),
+// b/033 (localPTR), b/036 (cacheHit). If you add a counter that a query
+// increments after total, load it before total in Snapshot and add a
+// `*NeverExceeds*UnderLoad` regression test next to the existing ones.
+// cnameBlocked is also a subset of blocked (RecordCNAMEBlocked runs after
+// RecordQuery has counted the query as blocked), so Snapshot reads it before
+// blocked as well.
 type Counter struct {
 	total           atomic.Int64
 	cacheHit        atomic.Int64
@@ -63,6 +66,7 @@ type Counter struct {
 	localName       atomic.Int64 // local-only names answered here (CL 94)
 	forwardFailures atomic.Int64 // queries s-hole could not resolve (synthesized SERVFAIL)
 	upstreamErrors  atomic.Int64 // relayed SERVFAIL/REFUSED from a live upstream
+	cnameBlocked    atomic.Int64 // blocked because a CNAME target is blocked (CL 117)
 	start           time.Time
 
 	mu         sync.Mutex
@@ -104,6 +108,10 @@ type Summary struct {
 	// of TotalQueries.
 	ForwardFailures int64 `json:"forward_failures"`
 	UpstreamErrors  int64 `json:"upstream_errors"`
+	// CNAMEBlockedCount counts the blocked queries whose own name is on no
+	// list but whose answer has a CNAME target on one. It is a subset of
+	// BlockedCount.
+	CNAMEBlockedCount int64 `json:"cname_blocked_count"`
 	// BlocklistSize is the current number of domains in the block set.
 	// Set by the API handler (not Counter.Snapshot) because the stats
 	// package does not depend on the blocklist package.
@@ -213,6 +221,13 @@ func (c *Counter) RecordCacheHit() {
 	}
 }
 
+// RecordCNAMEBlocked records that a query was blocked because a CNAME target
+// in its answer is blocked. The handler calls it after RecordQuery has counted
+// the query as blocked, so it is a subset of the blocked counter.
+func (c *Counter) RecordCNAMEBlocked() {
+	c.cnameBlocked.Add(1)
+}
+
 // RecordLocalPTR increments the local-PTR counter. Called from the DNS
 // handler after RecordQuery when a PTR query for a private reverse zone or
 // the LAN's own IPv6 prefix is answered locally instead of being forwarded
@@ -274,16 +289,20 @@ const (
 // path additionally calls RecordLocalPTR after RecordQuery, and the
 // local-name path calls RecordLocalName after RecordQuery; the cache-hit path
 // calls RecordCacheHit after RecordQuery; the forward path calls
-// RecordForwardFailure or RecordUpstreamError after RecordQuery. So blocked,
-// localPTR, localName, cacheHit, forwardFailures, and upstreamErrors are all
-// read before total, the b/021 fix, extended to localPTR (b/033), cacheHit
-// (b/036), the two failure counters (CL 77), and localName (CL 94). This keeps
-// total ≥ blocked + localPTR + localName and hits ≤ forwardable on every
-// snapshot, so forwardable below can never go negative and CacheHitPct can
-// never exceed 100 %. The cache-hit denominator excludes blocked, localPTR,
-// and localName because none of these classes ever reaches the cache or
-// upstream.
+// RecordForwardFailure or RecordUpstreamError after RecordQuery; the CNAME
+// path calls RecordCNAMEBlocked after RecordQuery counted it as blocked. So
+// blocked, localPTR, localName, cacheHit, forwardFailures, and upstreamErrors
+// are all read before total, the b/021 fix, extended to localPTR (b/033),
+// cacheHit (b/036), the two failure counters (CL 77), and localName (CL 94),
+// and cnameBlocked is read before blocked (CL 117). This keeps
+// total ≥ blocked + localPTR + localName, cnameBlocked ≤ blocked, and
+// hits ≤ forwardable on every snapshot, so forwardable below can never go
+// negative and CacheHitPct can never exceed 100 %. The cache-hit denominator
+// excludes blocked, localPTR, and localName because none of these queries is
+// served as an allowed answer: a query blocked by its CNAME target reads the
+// cache or the upstream, but it is counted as blocked, never as a cache hit.
 func (c *Counter) Snapshot(topN int) Summary {
+	cnameBlocked := c.cnameBlocked.Load()
 	c.mu.Lock()
 	blocked := c.blocked
 	c.mu.Unlock()
@@ -303,18 +322,19 @@ func (c *Counter) Snapshot(topN int) Summary {
 		hitPct = float64(hits) / float64(forwardable) * 100
 	}
 	return Summary{
-		Uptime:          time.Since(c.start).Round(time.Second).String(),
-		TotalQueries:    total,
-		BlockedCount:    blocked,
-		BlockedPct:      blockPct,
-		LocalPTRCount:   localPTR,
-		LocalNameCount:  localName,
-		CacheHits:       hits,
-		CacheHitPct:     hitPct,
-		ForwardFailures: forwardFailures,
-		UpstreamErrors:  upstreamErrors,
-		TopDomains:      c.topN(topNDomains, topN),
-		TopClients:      c.topN(topNClients, topN),
+		Uptime:            time.Since(c.start).Round(time.Second).String(),
+		TotalQueries:      total,
+		BlockedCount:      blocked,
+		BlockedPct:        blockPct,
+		LocalPTRCount:     localPTR,
+		LocalNameCount:    localName,
+		CacheHits:         hits,
+		CacheHitPct:       hitPct,
+		ForwardFailures:   forwardFailures,
+		UpstreamErrors:    upstreamErrors,
+		CNAMEBlockedCount: cnameBlocked,
+		TopDomains:        c.topN(topNDomains, topN),
+		TopClients:        c.topN(topNClients, topN),
 	}
 }
 

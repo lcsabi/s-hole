@@ -149,6 +149,13 @@ blocking:
   # them again. s-hole creates it if it does not exist.
   cache_dir: "."
 
+  # When true, s-hole checks the CNAME targets in each answer. A tracker can
+  # hide behind a subdomain of a site: the name is on no list, but it points
+  # (CNAME) to a tracker domain that is. When a target is on a list, s-hole
+  # blocks the query. To keep one site working, add its name to the
+  # allowlist. s-hole warns while this is false.
+  cname_inspection: true
+
 query_log:
   # Which queries s-hole records: "none", "blocked", or "all".
   # This covers every place a queried domain is kept: the database, the log

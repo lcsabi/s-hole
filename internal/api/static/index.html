@@ -118,6 +118,13 @@
       color: var(--red);
     }
 
+    .card-sub {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 4px;
+      font-variant-numeric: tabular-nums;
+    }
+
     /* ── Panels ──────────────────────────────────────────────── */
     .two-col {
       display: grid;
@@ -595,6 +602,7 @@
     <div class="card">
       <div class="card-label">Blocked</div>
       <div class="card-value num red" id="stat-blocked">–</div>
+      <div class="card-sub" id="stat-cname" title="Blocked because the name points (CNAME) to a blocked domain">–</div>
     </div>
     <div class="card">
       <div class="card-label">Block Rate</div>

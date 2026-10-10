@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS queries (
 	blocked     INTEGER NOT NULL,
 	cache_hit   INTEGER NOT NULL DEFAULT 0,
 	rcode       INTEGER NOT NULL DEFAULT 0,
-	synthesized INTEGER NOT NULL DEFAULT 0
+	synthesized INTEGER NOT NULL DEFAULT 0,
+	block_source INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_queries_ts      ON queries(ts);
 CREATE INDEX IF NOT EXISTS idx_queries_blocked ON queries(blocked);
@@ -37,8 +38,10 @@ CREATE INDEX IF NOT EXISTS idx_queries_domain  ON queries(domain);
 // no "ADD COLUMN IF NOT EXISTS", so each additive column is gated on a
 // table_info probe (ensureColumn). A newly created database already has every
 // column, so migrate is a no-op on it. Existing rows take the column DEFAULT,
-// so cache_hit reads 0 (not cached), and rcode/synthesized read 0 (so an old
-// row is never counted as a failed query), for rows written before the upgrade.
+// so cache_hit reads 0 (not cached), rcode/synthesized read 0 (so an old
+// row is never counted as a failed query), and block_source reads 0 (a block
+// on the queried name, the only kind before CL 117), for rows written before
+// the upgrade.
 //
 // It also rewrites rows from builds before CL 93 into today's form. Those
 // stored ts in the host's local time with an offset, which compares wrongly
@@ -56,6 +59,9 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 	if err := ensureColumn(db, "queries", "synthesized", "ALTER TABLE queries ADD COLUMN synthesized INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "queries", "block_source", "ALTER TABLE queries ADD COLUMN block_source INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	res, err := db.Exec(`UPDATE queries SET ts = strftime('%Y-%m-%dT%H:%M:%SZ', ts)
@@ -107,6 +113,7 @@ type entry struct {
 	cacheHit    bool
 	rcode       int
 	synthesized bool
+	blockSource BlockSource
 }
 
 // Tuning constants for the async writer. flushBatchSize is the largest
@@ -571,7 +578,7 @@ func (d *DBLogger) Log(rec Record) {
 		return
 	}
 	select {
-	case d.ch <- entry{ts: time.Now(), clientIP: rec.ClientIP, domain: rec.Domain, blocked: rec.Blocked, cacheHit: rec.CacheHit, rcode: rec.Rcode, synthesized: rec.Synthesized}:
+	case d.ch <- entry{ts: time.Now(), clientIP: rec.ClientIP, domain: rec.Domain, blocked: rec.Blocked, cacheHit: rec.CacheHit, rcode: rec.Rcode, synthesized: rec.Synthesized, blockSource: rec.BlockSource}:
 	default:
 		// Drop under extreme load rather than blocking a DNS goroutine.
 		// The counter is surfaced via /metrics so operators see when this
@@ -670,7 +677,7 @@ func (d *DBLogger) flush(batch []entry) {
 		logger.Error("query log begin failed, dropping batch", "entries", len(batch), "err", err)
 		return
 	}
-	stmt, err := tx.Prepare("INSERT INTO queries(ts,client_ip,domain,blocked,cache_hit,rcode,synthesized) VALUES(?,?,?,?,?,?,?)")
+	stmt, err := tx.Prepare("INSERT INTO queries(ts,client_ip,domain,blocked,cache_hit,rcode,synthesized,block_source) VALUES(?,?,?,?,?,?,?,?)")
 	if err != nil {
 		logger.Error("query log prepare failed, dropping batch", "entries", len(batch), "err", err)
 		_ = tx.Rollback() // the Prepare error above is the actionable one
@@ -679,7 +686,7 @@ func (d *DBLogger) flush(batch []entry) {
 	defer stmt.Close()
 
 	for _, e := range batch {
-		if _, err := stmt.Exec(e.ts.UTC().Format(time.RFC3339), e.clientIP, e.domain, b2i(e.blocked), b2i(e.cacheHit), e.rcode, b2i(e.synthesized)); err != nil {
+		if _, err := stmt.Exec(e.ts.UTC().Format(time.RFC3339), e.clientIP, e.domain, b2i(e.blocked), b2i(e.cacheHit), e.rcode, b2i(e.synthesized), int(e.blockSource)); err != nil {
 			logger.Warn("query log insert failed", "err", err)
 		}
 	}
@@ -704,6 +711,10 @@ type QueryRow struct {
 	Blocked     bool   `json:"blocked"`
 	Rcode       int    `json:"rcode"`
 	Synthesized bool   `json:"synthesized"`
+	// BlockedBy says what matched a blocked query: "name" (the queried name
+	// is on a list) or "cname" (a CNAME target in its answer is). It is empty
+	// on an allowed row.
+	BlockedBy string `json:"blocked_by,omitempty"`
 }
 
 // Outcome collapses the row's stored columns into the operator-facing status:
@@ -780,7 +791,7 @@ func (f QueryFilter) where() (clause string, args []any) {
 
 // selectColumns is the column list every recent-query read returns, shared by
 // Search and Export so the row shape and scanRows stay in one place.
-const selectColumns = "SELECT ts, client_ip, domain, blocked, rcode, synthesized FROM queries"
+const selectColumns = "SELECT ts, client_ip, domain, blocked, rcode, synthesized, block_source FROM queries"
 
 // Search returns the last n queries that match f, ordered newest-first. ctx is
 // honored as a query deadline; HTTP handlers pass r.Context() so an aborted
@@ -829,11 +840,15 @@ func (d *DBLogger) Export(ctx context.Context, f QueryFilter, n int, yield func(
 	for rows.Next() {
 		var r QueryRow
 		var blocked, synthesized int
-		if err := rows.Scan(&r.TS, &r.ClientIP, &r.Domain, &blocked, &r.Rcode, &synthesized); err != nil {
+		var source BlockSource
+		if err := rows.Scan(&r.TS, &r.ClientIP, &r.Domain, &blocked, &r.Rcode, &synthesized, &source); err != nil {
 			return err
 		}
 		r.Blocked = blocked == 1
 		r.Synthesized = synthesized == 1
+		if r.Blocked {
+			r.BlockedBy = source.String()
+		}
 		if err := yield(r); err != nil {
 			return err
 		}
@@ -981,11 +996,15 @@ func scanRows(rows *sql.Rows) ([]QueryRow, error) {
 	for rows.Next() {
 		var r QueryRow
 		var blocked, synthesized int
-		if err := rows.Scan(&r.TS, &r.ClientIP, &r.Domain, &blocked, &r.Rcode, &synthesized); err != nil {
+		var source BlockSource
+		if err := rows.Scan(&r.TS, &r.ClientIP, &r.Domain, &blocked, &r.Rcode, &synthesized, &source); err != nil {
 			return nil, err
 		}
 		r.Blocked = blocked == 1
 		r.Synthesized = synthesized == 1
+		if r.Blocked {
+			r.BlockedBy = source.String()
+		}
 		out = append(out, r)
 	}
 	return out, rows.Err()

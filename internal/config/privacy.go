@@ -94,6 +94,10 @@ func (c *Config) Warnings() []Warning {
 		add("dns.upstreams", "every upstream is plain DNS: the internet provider can read and change every forwarded query",
 			"put a DoH upstream first, such as https://9.9.9.9/dns-query")
 	}
+	if !c.Blocking.CNAMEInspection {
+		add("blocking.cname_inspection", "s-hole does not check CNAME targets, so it does not block a tracker behind a subdomain of a site",
+			"set blocking.cname_inspection to true")
+	}
 	for _, u := range c.Blocking.Lists {
 		if strings.HasPrefix(strings.ToLower(u), "http://") {
 			add("blocking.lists", fmt.Sprintf("%s is downloaded over plain HTTP: anyone on the network path can change the list and unblock trackers", redact.URL(u)),

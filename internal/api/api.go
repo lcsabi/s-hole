@@ -28,7 +28,7 @@
 //	POST   /api/purge            delete the query history and other stored data ({"confirm": true}; from this machine only)
 //	GET    /healthz              liveness probe (always 200 when running)
 //	GET    /readyz               readiness probe (200 once blocklist > 0)
-//	GET    /metrics              Prometheus text exposition (queries, blocked, local_ptr, local_names, cache, failures, forward limit, refused, plaintext fallbacks, query-log drops, blocklist, allowlist, DoT certificate, runtime gauges)
+//	GET    /metrics              Prometheus text exposition (queries, blocked, cname_blocked, local_ptr, local_names, cache, failures, forward limit, refused, plaintext fallbacks, query-log drops, blocklist, allowlist, DoT certificate, runtime gauges)
 //	GET    /debug/pprof/*        net/http/pprof handlers (/symbol also POST); opt-in via EnablePprof
 //	GET    /                     embedded SPA from internal/api/static/ (index.html, app.js)
 package api
@@ -503,9 +503,10 @@ func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleCheck answers "why is this domain blocked?" by running the name through
-// the same block decision as a real query and returning the outcome plus the
-// full suffix walk (which parent matched, which allowlist entry overrode). It
-// is a diagnostic: it bumps no stats counter and writes no query-log row,
+// the same name check as a real query (IsBlocked) and returning the outcome
+// plus the full suffix walk (which parent matched, which allowlist entry
+// overrode). It does not run the CNAME check (CL 117), which needs an answer
+// from the upstream. It is a diagnostic: it bumps no stats counter and writes no query-log row,
 // because it never touches the DNS handler path. It reveals nothing the UI
 // could not already infer from the block set and allowlist, so it does not
 // widen the read surface.
@@ -543,7 +544,8 @@ func parseLimit(r *http.Request) int {
 // resolved from the masked ClientIP, so the recent-queries list never exposes
 // more than query_log.clients allows. Outcome ("blocked"/"allowed"/"unresolved"/
 // "upstream_error") is computed once here from the row so the dashboard and any
-// export read a name instead of decoding rcode and the synthesized flag.
+// export read a name instead of decoding rcode and the synthesized flag. The
+// embedded row also carries blocked_by ("name" or "cname") on a blocked row.
 type queryRow struct {
 	querylog.QueryRow
 	Label   string `json:"label,omitempty"`
@@ -682,7 +684,8 @@ func (s *Server) handleQueriesExport(w http.ResponseWriter, r *http.Request) {
 
 // exportCSVColumns is the fixed CSV header, emitted every export so a downstream
 // parser sees one schema regardless of whether client_names is configured.
-var exportCSVColumns = []string{"ts", "client_ip", "label", "domain", "blocked", "outcome", "rcode", "synthesized"}
+// blocked_by (CL 117) comes last, so the columns before it keep their place.
+var exportCSVColumns = []string{"ts", "client_ip", "label", "domain", "blocked", "outcome", "rcode", "synthesized", "blocked_by"}
 
 // exportCSV writes the filtered rows as CSV: the fixed header, then one row per
 // query. Each field is passed through csvSanitize so a client-influenced value
@@ -707,6 +710,7 @@ func (s *Server) exportCSV(w http.ResponseWriter, r *http.Request, f querylog.Qu
 				row.Outcome(),
 				strconv.Itoa(row.Rcode),
 				strconv.FormatBool(row.Synthesized),
+				row.BlockedBy,
 			}
 			if err := cw.Write(rec); err != nil {
 				return err

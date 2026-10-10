@@ -33,7 +33,7 @@ rails.
 | 11 | Install script prints the installed version/commit | Low | done (CL 35) |
 | 12 | `uninstall-linux.sh` companion to the installer | Low | done (CL 40) |
 | 13 | Persist runtime allowlist across restarts | Medium | not started |
-| 14 | CNAME deep-inspection (block cloaked trackers) | Medium | not started |
+| 14 | CNAME deep-inspection (block cloaked trackers) | Medium | done (CL 117) |
 | 15 | Local DNS records (host overrides) | High | not started |
 | 16 | Conditional / split-horizon forwarding | Medium | not started |
 | 17 | Per-source blocklist health in `/api/stats` + dashboard | Medium | done (CL 55) |
@@ -505,13 +505,13 @@ Design decisions to settle in the CL:
 Rated Medium: a user-visible robustness win (the allowlist behaves the way
 operators expect across restarts) that changes no filtering semantics.
 
-## 14. CNAME deep-inspection
+## 14. CNAME deep-inspection (done, CL 117)
 
 Trackers increasingly hide behind first-party subdomains. A name such as
 `metrics.example.com` is CNAME'd to a tracker domain, so the client sees a
-first-party name while the data still flows to the tracker. s-hole blocks on the
-queried name today, so it misses these: the visible name is on no blocklist, and
-the CNAME target in the upstream answer is never checked. Pi-hole added this
+first-party name while the data still flows to the tracker. s-hole blocked on the
+queried name only, so it missed these: the visible name was on no blocklist, and
+the CNAME target in the upstream answer was never checked. Pi-hole added this
 under the name "CNAME deep inspection".
 
 The fix needs no new dependency (miekg/dns already parses the answer section)
@@ -519,7 +519,7 @@ and slots in after the forward step in the handler: read the returned records,
 and if any CNAME target in the chain is on the block set, return a sinkhole reply
 instead of the upstream answer.
 
-Design points to settle in the CL:
+Design points that the CL had to settle:
 
 - Whether to check only CNAME targets or also the final A/AAAA target.
 - Whether a reply blocked by chain inspection counts as a "blocked" query in the
@@ -532,6 +532,26 @@ Rated Medium. It closes a real and growing evasion, but only for the subset of
 trackers that use cloaking. The third-party trackers s-hole already blocks still
 dominate real traffic, so the practical reach is narrower than the subdomain
 blocking of CL 30.
+
+Settled in CL 117:
+
+- Only CNAME targets are checked, not the final A/AAAA address (s-hole has no
+  address lists, and CDN addresses are shared). A DNAME is covered by the CNAME
+  that the resolver makes from it. An HTTPS/SVCB target is covered by the name
+  check, because the client looks it up through s-hole.
+- A query blocked through its chain counts as blocked, never as a cache hit,
+  and the allowlist works as for a name: an allowlisted queried name skips the
+  check, and an allowlisted target does not count.
+- The raw answer is cached, and the chain is checked on every serve, so a list
+  or allowlist change applies to the next query. This replaced the planned rule
+  that a blocked reply must not enter the cache: caching the sinkhole reply
+  would make a list change wait for the TTL.
+- On by default (`blocking.cname_inspection`), with a warning when off. The
+  query history records the block source (`block_source`, `blocked_by`), never
+  the target. `shole_cname_blocked_total` counts these blocks.
+- s-hole still cannot see CNAME flattening (the site's DNS provider returns A
+  records only) or a site server that sends data on to a tracker. The README
+  "Scope & limitations" section says so.
 
 ## 15. Local DNS records (host overrides)
 
@@ -950,6 +970,8 @@ Design decisions to settle in the CL:
   names the offending line (`-check-config` fails), not an error at the first
   query.
 - **Stats attribution.** A pattern-blocked query counts as blocked like any other.
+  The query history can record it as a new `block_source` value (CL 117), with
+  no new column.
   Whether to distinguish the reason in the #18 `/api/check` output.
 
 Rated High: a user-visible filtering win for the cases exact and suffix matching

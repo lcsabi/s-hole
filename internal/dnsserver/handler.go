@@ -11,14 +11,17 @@
 //     .alt) locally, and LAN-only names (such as "printer" or "nas.lan")
 //     locally while no upstream is on the LAN (see localnames.go).
 //  3. Consults the blocklist and writes a sinkhole reply for blocked domains.
-//  4. Checks the in-memory response cache and returns cached replies. The
-//     cache key holds the query's CD and DO bits as well as the question.
+//  4. Checks the in-memory response cache for a reply. The cache key holds
+//     the query's CD and DO bits as well as the question.
 //  5. Forwards cache misses upstream in a fresh query that carries nothing
 //     from the client but the question and a few flags (see edns.go). A
 //     LAN-only name goes only to upstreams on the LAN. A reply that does not
 //     match the query is a failed attempt (see checkReply in upstream.go). At
 //     most maxForwards queries wait for an upstream; a query over the limit
 //     gets SERVFAIL at once.
+//  6. Checks the CNAME targets in the reply, from the cache or the upstream,
+//     and writes a sinkhole reply when one is blocked (see cname.go).
+//     Otherwise it relays the reply.
 //
 // UDP and TCP listeners (and the optional DNS-over-TLS listener, see dot.go)
 // run in parallel and share this handler; clients fall back to TCP
@@ -256,6 +259,9 @@ type Handler struct {
 	// forwardSlots holds one token for each query that waits for an
 	// upstream; its capacity is maxForwards.
 	forwardSlots chan struct{}
+	// cnameInspection is blocking.cname_inspection: when true, a reply with
+	// a blocked CNAME target gets a sinkhole reply (see cname.go).
+	cnameInspection bool
 }
 
 // NewHandler wires together all dependencies needed to answer a query.
@@ -295,6 +301,8 @@ func NewHandler(
 		lan:          newLANACL(),
 		upstreamIPs:  ips,
 		forwardSlots: make(chan struct{}, maxForwards),
+		// On until SetCNAMEInspection turns it off: the most private choice.
+		cnameInspection: true,
 	}
 }
 
@@ -303,6 +311,13 @@ func NewHandler(
 // the server starts.
 func (h *Handler) SetLocalDomains(domains []string) {
 	h.localDomains = localSuffixes(domains)
+}
+
+// SetCNAMEInspection sets blocking.cname_inspection. Call it before the
+// server starts. Until it is called, inspection is on, the most private
+// choice.
+func (h *Handler) SetCNAMEInspection(on bool) {
+	h.cnameInspection = on
 }
 
 // SetQueryLogMode sets query_log.mode ("none", "blocked", or "all"). Call it
@@ -339,7 +354,8 @@ func (h *Handler) tally(clientIP, domain string, blocked bool) (string, string) 
 // ServeDNS satisfies miekg/dns.Handler. It intercepts private and
 // own-prefix PTR queries (when localPTR is enabled) and local-only names,
 // returns a sinkhole reply for blocked domains, and otherwise serves from
-// cache or forwards upstream.
+// cache or forwards upstream. A reply with a blocked CNAME target gets a
+// sinkhole reply too (see cname.go).
 func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// Answer the LAN only (see lan.go). This runs first, so a query from
 	// outside leaves no trace in the stats, the cache, or the query log. A
@@ -392,8 +408,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// addresses are in use. Checked before the blocklist so these queries are never counted
 	// as blocked.
 	if h.localPTR && (isPrivatePTR(q.Qtype, domain) || h.ownPrefixPTR(q.Qtype, domain)) {
-		ptrClient, ptrDomain := h.tally(clientIP, domain, false)
-		h.counter.RecordQuery(ptrClient, ptrDomain, false)
+		h.recordQuery(clientIP, domain, false)
 		h.counter.RecordLocalPTR()
 		h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Rcode: dns.RcodeNameError, Synthesized: true})
 		h.writeLocalNXDOMAIN(w, req)
@@ -410,8 +425,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		upstreams = h.lanUpstreams()
 	}
 	if class == localhostName || class == neverResolved || (class == lanOnlyName && len(upstreams) == 0) {
-		localClient, localDomain := h.tally(clientIP, domain, false)
-		h.counter.RecordQuery(localClient, localDomain, false)
+		h.recordQuery(clientIP, domain, false)
 		h.counter.RecordLocalName()
 		if class == localhostName {
 			h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Rcode: dns.RcodeSuccess, Synthesized: true})
@@ -423,31 +437,31 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
-	blocked := h.store.IsBlocked(domain)
-	tallyClient, tallyDomain := h.tally(clientIP, domain, blocked)
-	h.counter.RecordQuery(tallyClient, tallyDomain, blocked)
-
-	// Log at the point each outcome is decided, so the query-log row records
-	// the cache-hit flag (cache_hit) and the outcome (rcode + synthesized). A
-	// blocked query short-circuits before the cache, and a local-PTR or
-	// local-name answer never reaches it, so each logs CacheHit=false; total =
-	// blocked + localPTR + localName + cached + forwarded (the remainder,
-	// including forward-limited queries). The block reply is
-	// synthesized locally: NXDOMAIN in "nxdomain" mode, NOERROR otherwise
-	// (matching writeSinkhole), neither a failure rcode.
-	if blocked {
-		blockRcode := dns.RcodeSuccess
-		if h.blockMode == "nxdomain" {
-			blockRcode = dns.RcodeNameError
-		}
-		h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Blocked: true, Rcode: blockRcode, Synthesized: true})
-		h.writeSinkhole(w, req, q)
+	if h.store.IsBlocked(domain) {
+		h.writeBlocked(w, req, q, clientIP, domain, querylog.BlockedByName)
 		return
 	}
+
+	// From here on the query is recorded once its outcome is known. A reply
+	// from the cache or the upstream can still be blocked by a CNAME target
+	// (step 6 in the package doc), and that query counts as blocked, not as a cache hit or a
+	// forward. Each path calls recordQuery before the counter for its
+	// outcome, so total is bumped first (the LOAD-ORDER INVARIANT on
+	// stats.Counter). Each path also logs at the point its outcome is
+	// decided, so the query-log row records the cache-hit flag (cache_hit)
+	// and the outcome (rcode + synthesized). A local-PTR or local-name answer
+	// never reaches the cache, so each logs CacheHit=false; total = blocked +
+	// localPTR + localName + cached + forwarded (the remainder, including
+	// forward-limited queries).
 
 	// Serve from cache if available; avoids upstream round-trip entirely.
 	if h.cache != nil {
 		if cached, ok := h.cache.Get(req); ok {
+			if h.chainBlocked(domain, cached) {
+				h.writeBlocked(w, req, q, clientIP, domain, querylog.BlockedByCNAME)
+				return
+			}
+			h.recordQuery(clientIP, domain, false)
 			h.counter.RecordCacheHit()
 			// Relayed from cache, not synthesized. The cache stores only
 			// NOERROR-with-answers replies, so cached.Rcode is NOERROR.
@@ -487,27 +501,63 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		// not a per-query WARN, and the summary holds no name, so the system
 		// log gets no query data.
 		h.failures.record(err)
+		h.recordQuery(clientIP, domain, false)
 		h.counter.RecordForwardFailure()
 		h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Rcode: dns.RcodeServerFailure, Synthesized: true})
 		h.writeRcode(w, req, dns.RcodeServerFailure)
 		return
 	}
 
-	// A live upstream answered. If it relayed a failure rcode (SERVFAIL or
-	// REFUSED), that is an upstream error, distinct from an unresolved query:
-	// s-hole relayed it, it did not synthesize it.
-	if resp.Rcode == dns.RcodeServerFailure || resp.Rcode == dns.RcodeRefused {
-		h.counter.RecordUpstreamError()
-	}
-	h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Rcode: resp.Rcode})
-
 	// The upstream's OPT record goes before the cache stores the reply, so a
-	// cached reply holds no options; send gives each client its own.
+	// cached reply holds no options; send gives each client its own. A reply
+	// is cached even when a CNAME target blocks it below. The chain is checked
+	// again on each cache hit, so a list or allowlist change applies to the
+	// next query, and a repeated query does not go upstream again.
 	stripOPT(resp)
 	if h.cache != nil {
 		h.cache.Set(req, resp)
 	}
+	if h.chainBlocked(domain, resp) {
+		h.writeBlocked(w, req, q, clientIP, domain, querylog.BlockedByCNAME)
+		return
+	}
+
+	// A live upstream answered. If it relayed a failure rcode (SERVFAIL or
+	// REFUSED), that is an upstream error, distinct from an unresolved query:
+	// s-hole relayed it, it did not synthesize it.
+	h.recordQuery(clientIP, domain, false)
+	if resp.Rcode == dns.RcodeServerFailure || resp.Rcode == dns.RcodeRefused {
+		h.counter.RecordUpstreamError()
+	}
+	h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Rcode: resp.Rcode})
 	h.send(w, req, resp)
+}
+
+// recordQuery counts one query in the stats. The client and the domain go
+// into the Top Clients and Top Domains tallies only when query_log.mode
+// records the query (see tally).
+func (h *Handler) recordQuery(clientIP, domain string, blocked bool) {
+	tallyClient, tallyDomain := h.tally(clientIP, domain, blocked)
+	h.counter.RecordQuery(tallyClient, tallyDomain, blocked)
+}
+
+// writeBlocked counts, logs, and answers a blocked query. A block on the
+// queried name and a block on a CNAME target in its reply get the same
+// sinkhole reply and the same stats; the query-log row records which one
+// matched (source). The row holds the queried name only, never the CNAME
+// target. The reply is synthesized locally: NXDOMAIN in "nxdomain" mode,
+// NOERROR otherwise (matching writeSinkhole), neither a failure rcode.
+func (h *Handler) writeBlocked(w dns.ResponseWriter, req *dns.Msg, q dns.Question, clientIP, domain string, source querylog.BlockSource) {
+	h.recordQuery(clientIP, domain, true)
+	if source == querylog.BlockedByCNAME {
+		h.counter.RecordCNAMEBlocked()
+	}
+	blockRcode := dns.RcodeSuccess
+	if h.blockMode == "nxdomain" {
+		blockRcode = dns.RcodeNameError
+	}
+	h.logger.Log(querylog.Record{ClientIP: clientIP, Domain: domain, Blocked: true, Rcode: blockRcode, Synthesized: true, BlockSource: source})
+	h.writeSinkhole(w, req, q)
 }
 
 func (h *Handler) writeSinkhole(w dns.ResponseWriter, req *dns.Msg, q dns.Question) {

@@ -10,6 +10,20 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
 
 ### Added
 
+- **s-hole blocks trackers that hide behind a CNAME.** A tracker can use a
+  subdomain of a site, such as `metrics.shop.example`, that points (CNAME) to
+  the tracker's domain. s-hole now checks the CNAME targets in each answer.
+  When a target is on a list, s-hole blocks the query, also when the answer
+  comes from the cache. New setting `blocking.cname_inspection`, default
+  `true`; s-hole warns while it is `false`. If a site stops working, add the
+  name that the device asks for to the allowlist. The query history records
+  what matched (`blocked_by`: `name` or `cname`) in `/api/queries`, in the
+  exports (a new last CSV column), on the dashboard, and in the query log file
+  (` CNAME` at the end of a BLOCK line). The CNAME target is not recorded.
+  New metric `shole_cname_blocked_total`; `/api/stats` has
+  `cname_blocked_count`. A query history from an older version gets the new
+  column at startup. (CL 117)
+
 - **The October 2026 privacy and security review is public.**
   `docs/SECURITY-REVIEW-2026-10.md` lists what the review of 2.0.0 found,
   what 2.0.1, 2.1.0, and 2.1.1 changed, the recommendations that needed no

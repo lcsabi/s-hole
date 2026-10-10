@@ -29,6 +29,16 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   what 2.0.1, 2.1.0, and 2.1.1 changed, the recommendations that needed no
   change, and what is still open. `SECURITY.md` links to it. (CL 116)
 
+### Fixed
+
+- **The Linux installer no longer reports a service that does not start as
+  installed.** Its health check could pass when s-hole started and
+  crashed at once, for example when the `systemd-resolved` stub held port 53. The
+  installer then printed the success banners and exited 0, while systemd
+  restarted s-hole every 5 seconds. Now s-hole must run for 5 seconds without a
+  restart. If it does not, the installer prints the last log lines, stops the
+  service (it stays enabled), and exits 1. (b/107, CL 118)
+
 ## [2.1.1] - 2026-10-09
 
 A patch release. It updates one dependency so that a vulnerability scan of

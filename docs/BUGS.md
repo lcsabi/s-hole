@@ -3202,3 +3202,47 @@ URL before it measures. `recordSuccess` does not reset the failure count, so
 the test still measures the difference. The stress run passes, and a planted
 log line with the client address, its port, or the query name still fails
 the leak scans.
+
+---
+
+## b/107: deploy: the installer reported a crash-looping service as active
+
+**Priority:** P2
+**Component:** deploy
+**Status:** Fixed in CL 118
+**Filed:** 2026-10-10
+
+### Description
+
+On the Debian 13 VM, `install-linux.sh` (without `--free-port-53`) printed the
+port-53 warning for the `systemd-resolved` stub, started the service, printed
+`(service is active)`, the "Installed build" and "Router setup" boxes, and
+exited 0. s-hole could not bind port 53: each start failed with `dns listen
+failed ... address already in use`, and systemd restarted it every 5 s (27
+times in about two minutes). The admin UI was never up, because s-hole exits at
+the port-53 bind, before the admin server starts. The operator found the
+problem only because the dashboard did not open.
+
+### Root Cause
+
+The health check from CL 66 polled `systemctl is-active` and passed at the
+first `active`. The unit is `Type=simple`, so systemd reports `active` as soon
+as the process starts, before s-hole tries the bind. After the crash,
+`Restart=on-failure` keeps the unit in `activating (auto-restart)` for
+`RestartSec=5s`, never in `failed`, so the check's fail branch could not run
+either. The result depended on timing: the check passed only when a poll came while
+the process was up. The same port-53 conflict failed the install in b/058 and
+passed here, so the check did not reliably catch the case that it was written
+for.
+
+### Fix
+
+The health check is a function, `wait_for_stable_service`. It passes only
+when the unit runs (`active/running`) for 5 s in a row with no automatic
+restart, within 30 s. It fails at once on the `auto-restart` sub-state, on a
+higher `NRestarts` than at the start, or on a failed or stopped unit. s-hole
+binds port 53 first at startup, so a bind failure shows within the window, and
+a slow first blocklist download does not fail a good install. On failure the
+installer prints the last log lines, stops the service so that it does not
+restart every 5 s (it stays enabled), says to re-run with `--free-port-53`
+while the stub holds port 53, and exits 1.

@@ -46,7 +46,7 @@ rails.
 | 24 | Query-log export (CSV / JSON) | Medium | done (CL 81) |
 | 25 | Regex / pattern blocking | High | not started |
 | 26 | Grafana dashboard + Prometheus scrape/alert examples | Low | done (CL 79) |
-| 27 | Install/uninstall robustness hardening (preflight, health check, shellcheck) | Medium | done (CL 66) |
+| 27 | Install/uninstall robustness hardening (preflight, health check, shellcheck) | Medium | done (CL 66; health check corrected in CL 118) |
 | 28 | Validate the upstreams at config time (format check + single-upstream note) | Low | done (CL 82) |
 | 29 | "Cached" line on the query-volume graph (record cache-hit per query) | Medium | done (CL 76) |
 | 30 | Go runtime gauges (goroutines, heap) in `/metrics` | Medium | done (CL 78) |
@@ -1041,6 +1041,11 @@ structural check then a `-version` exec), a `-check-config` dry-run before the
 start, a port-53 preflight that warns by default and frees the port under
 `--free-port-53`, and a post-install health check that polls `systemctl
 is-active` and, on failure, prints the last journal lines and exits non-zero.
+That check passed a crash-looping service (b/107): a `Type=simple` unit is
+`active` as soon as the process starts, and a crash under `Restart=on-failure`
+shows as `activating (auto-restart)`, never `failed`. Since CL 118 the check
+requires 5 s of `active/running` with no automatic restart, and on failure the
+installer also stops the service.
 shellcheck runs in CI and via `make lint-sh` (folded into `make check`). The
 systemd unit body was not touched, and the installer stays non-transactional (a
 re-run after fixing the cause is the recovery path).

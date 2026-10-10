@@ -131,6 +131,22 @@ journalctl -u s-hole -b -p err
 If the start fails, systemd tries again every 5 seconds. `systemctl status
 s-hole` then shows `activating (auto-restart)`.
 
+## The installer says that s-hole did not start
+
+After it starts the service, `install-linux.sh` waits until s-hole runs for 5
+seconds without a restart. If s-hole stops or restarts, or does not run for 5
+seconds in a row within 30 seconds, the installer prints the reason,
+`error: s-hole did not start`, and the last log lines. Then it stops the
+service, so that systemd does not restart it every 5 seconds. The service
+stays enabled.
+
+1. Read the log lines that the installer printed. The table in
+   [s-hole does not start](#s-hole-does-not-start) explains the usual errors.
+2. If the installer says that `systemd-resolved` still listens on port 53, run
+   the installer again with `--free-port-53`.
+3. When you have corrected the cause, run `sudo systemctl restart s-hole`, or
+   run the installer again.
+
 ## The installer stops at the config check
 
 `install-linux.sh` checks the config with the new binary before it installs

@@ -309,31 +309,84 @@ systemctl restart s-hole
 # crash-loop (port 53 taken, wrong-arch binary, a config the dry-run above
 # could not catch) would otherwise reach the "Router setup" banner at exit 0,
 # so a dead service would look green (ROADMAP #27; the b/030 intent that a bad
-# deploy must not look installed). Poll is-active for a bounded window; a
-# Type=simple unit reports `active` as soon as the process is up, and `failed`
-# on a crash, so the timeout only needs to cover the RestartSec=5s cycle.
-echo "==> waiting for the service to become active"
-state=""
-active=false
-for _ in $(seq 1 15); do
-  state=$(systemctl is-active s-hole || true)
-  if [[ "$state" == "active" ]]; then
-    active=true
-    break
-  fi
-  if [[ "$state" == "failed" ]]; then
-    break
-  fi
-  sleep 1
-done
+# deploy must not look installed).
+#
+# `is-active` alone cannot tell reliably (b/107). The unit is Type=simple, so systemd
+# reports `active` as soon as the process starts, before s-hole binds port 53.
+# After a crash, Restart=on-failure keeps the unit in `activating`
+# (auto-restart) for RestartSec, never in `failed`. The first install with the
+# resolved stub on port 53 passed the old check that way and exited 0 while
+# s-hole restarted every 5 s; the same conflict failed it in b/058, so the
+# result depended on when a poll came.
+#
+# wait_for_stable_service polls once a second, after a one-second wait. It
+# passes only when the unit runs (active/running) for STABLE polls in a row
+# with no automatic restart, within TIMEOUT polls.
+# It fails at once on the auto-restart state, on a higher NRestarts than at
+# the start, or on a stopped or failed unit. s-hole binds port 53 first at
+# startup, before the blocklist download, so a bind failure shows within
+# the window; a slow first download does not fail a good install, because
+# s-hole runs while it downloads. On failure it prints the reason to stderr.
+wait_for_stable_service() {
+  local unit=$1 stable=$2 timeout=$3
+  local base_restarts restarts active sub key value
+  local up=0 elapsed=0
+  base_restarts=$(systemctl show -p NRestarts --value "$unit" 2>/dev/null || true)
+  [[ $base_restarts =~ ^[0-9]+$ ]] || base_restarts=0
+  while (( elapsed < timeout )); do
+    sleep 1
+    elapsed=$((elapsed + 1))
+    active="" sub="" restarts=""
+    while IFS='=' read -r key value; do
+      case "$key" in
+        ActiveState) active=$value ;;
+        SubState)    sub=$value ;;
+        NRestarts)   restarts=$value ;;
+      esac
+    done < <(systemctl show -p ActiveState -p SubState -p NRestarts "$unit" 2>/dev/null || true)
+    if [[ $restarts =~ ^[0-9]+$ ]] && (( restarts > base_restarts )); then
+      echo "s-hole stopped and systemd restarted it (state: $active/$sub)." >&2
+      return 1
+    fi
+    case "$active/$sub" in
+      active/running)
+        up=$((up + 1))
+        if (( up >= stable )); then
+          return 0
+        fi
+        ;;
+      */auto-restart|failed/*|inactive/*)
+        echo "s-hole is not running (state: $active/$sub)." >&2
+        return 1
+        ;;
+      *)
+        up=0
+        ;;
+    esac
+  done
+  echo "s-hole did not run for ${stable} s in a row within ${timeout} s (state: ${active:-unknown}/${sub:-unknown})." >&2
+  return 1
+}
 
-if ! $active; then
-  echo "error: s-hole did not become active (state: ${state:-unknown})." >&2
+echo "==> waiting for the service to run for 5 s without a restart"
+if ! wait_for_stable_service s-hole 5 30; then
+  echo "error: s-hole did not start." >&2
   echo "       recent log lines:" >&2
   journalctl -u s-hole -n 20 --no-pager >&2 || true
+  # Stop the restart loop, so the unit does not fill the journal every
+  # RestartSec. The unit stays enabled; the operator fixes the cause and
+  # starts it again.
+  systemctl stop s-hole || true
+  if resolved_stub_on_53; then
+    echo "       systemd-resolved still listens on port 53. To free the port," >&2
+    echo "       re-run this installer with --free-port-53." >&2
+  fi
+  echo "       s-hole is stopped and still enabled. Correct the cause, then run:" >&2
+  echo "         systemctl restart s-hole" >&2
+  echo "       or re-run this installer." >&2
   exit 1
 fi
-echo "    (service is active)"
+echo "    (service is running)"
 
 # The Admin UI line must honor where the API is actually bound: with the
 # localhost-only default, printing http://<lan-ip>:8080 would advertise a

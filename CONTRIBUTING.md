@@ -100,15 +100,61 @@ go test ./internal/privacylint -run TestRepository -update
 Then commit the changed `exceptions.txt`. A new line in that file is a
 privacy decision: say why in the CL.
 
-To add a rule, add a `Rule` to the `rules` list in
-`internal/privacylint/privacylint.go` and give it fixtures that it must flag
-and fixtures that it must pass (`TestFixtures_EveryRuleHasBoth` fails a rule
-that does not have both kinds). Add its ID to `TestRules_AreTheFourRules`.
-Add the rule to the package doc, this section, the "Privacy first" section
-of `CLAUDE.md`, `PRIVACY.md` ("How the code is checked against the privacy
-rules"), the `SECURITY.md` "Privacy lint" bullet, the README "Privacy rules
-as code" bullet, the DESIGN "Privacy lint" paragraph, and ROADMAP #45. If
-you fix a privacy bug that a rule could have found, add the rule in the
+#### How to add a rule
+
+Each lint rule enforces a policy that already exists. The lint does not make
+policy. A lint rule is one `Rule` value and one check function in
+`internal/privacylint`.
+
+1. Find the policy. Name the line in the "Privacy first" section of
+   `CLAUDE.md` that the rule enforces, or the `b/NNN` bug that the rule
+   would have found. If no line covers it, agree the policy with the
+   maintainer and add it to `CLAUDE.md` first.
+2. Write the check in a new file, `internal/privacylint/rule_<name>.go`.
+   Match functions, variables, and types by their full name (such as
+   `net/http.Get`), not by how the code spells them. Use the helpers in
+   `privacylint.go`: `calleeName`, `typeName`, `derefName`,
+   `constructions`, and `containsCall`. The message of `p.report` tells
+   what is wrong. The lint adds the policy to it.
+
+   ```go
+   var heapDumpRule = &Rule{
+   	ID:     RuleHeapDump,
+   	Policy: "a heap dump holds the cache and the tallies, so it holds query data (CLAUDE.md, Privacy first)",
+   	check:  checkHeapDump,
+   }
+
+   // checkHeapDump reports each call of debug.WriteHeapDump.
+   func checkHeapDump(p *pass) {
+   	ast.Inspect(p.file.ast, func(n ast.Node) bool {
+   		if call, ok := n.(*ast.CallExpr); ok && calleeName(p.info, call) == "runtime/debug.WriteHeapDump" {
+   			p.report(call, "debug.WriteHeapDump writes the process memory to a file.")
+   		}
+   		return true
+   	})
+   }
+   ```
+
+3. Register the rule. Add its ID as a `Rule...` constant and add the rule
+   to the `rules` list in `privacylint.go`.
+4. Get the tests written. Under the process in `CLAUDE.md`, a separate
+   sub-agent writes them from the rule's requirements, not from your code.
+   The rule needs at least one fixture that it must flag and one that it
+   must pass, or `TestFixtures_EveryRuleHasBoth` fails. The tests also add
+   the new ID to the rule list that `TestRules_AreTheFourRules` pins.
+5. Run the lint on the repository with `make privacy-lint`. For each
+   finding, change the code so that it obeys the rule. If the code must
+   stay, get the maintainer's agreement, add a `//privacy:allow` comment
+   with an ID and a reason, and run the `-update` command above.
+6. Update the docs that list the rules: the package doc (`doc.go`), this
+   section, the "Privacy first" section of `CLAUDE.md`, `PRIVACY.md` ("How
+   the code is checked against the privacy rules"), the `SECURITY.md`
+   "Privacy lint" bullet, the README "Privacy rules as code" bullet, the
+   DESIGN "Privacy lint" paragraph, and ROADMAP #45.
+7. Write the CL. Give the policy line, the fixtures, each exception that the
+   rule needed and why, and the new ROADMAP #45 status.
+
+If you fix a privacy bug that a rule could have found, add the rule in the
 same CL.
 
 ### Running the binary

@@ -26,6 +26,8 @@ const cacheMaxAge = 24 * time.Hour
 // httpClient has a generous timeout to handle slow mirrors; 256 MiB cap prevents
 // a runaway download from filling the disk. checkRedirect keeps an HTTPS
 // download on HTTPS (b/097).
+//
+//privacy:allow outbound CL 1: downloads the configured blocklist URLs
 var httpClient = &http.Client{Timeout: 60 * time.Second, CheckRedirect: checkRedirect}
 
 // maxRedirects is the limit of Go's default policy, which checkRedirect

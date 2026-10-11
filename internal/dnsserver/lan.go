@@ -199,6 +199,8 @@ func RefusedQueries() uint64 {
 
 // remoteIP returns the query's source address, or the zero Addr when the
 // transport gives none.
+//
+//privacy:source client-address CL 93: the query source for the LAN check; ServeDNS masks it with querylog.MaskClientIP
 func remoteIP(w dns.ResponseWriter) netip.Addr {
 	switch a := w.RemoteAddr().(type) {
 	case *net.UDPAddr:

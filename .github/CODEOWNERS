@@ -10,3 +10,4 @@
 /internal/api/           @lcsabi
 /internal/dnsserver/     @lcsabi
 /internal/blocklist/     @lcsabi
+/internal/privacylint/   @lcsabi

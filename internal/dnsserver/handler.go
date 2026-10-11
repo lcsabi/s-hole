@@ -361,6 +361,7 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// outside leaves no trace in the stats, the cache, or the query log. A
 	// source that s-hole cannot read is not on the LAN either: the check
 	// fails closed (b/100).
+	//privacy:allow client-address CL 93: the one read of the client address; the LAN check uses it, then MaskClientIP masks it
 	ip := remoteIP(w).Unmap().WithZone("")
 	if !ip.IsValid() || !h.lan.allows(ip) {
 		refuse(w, req)

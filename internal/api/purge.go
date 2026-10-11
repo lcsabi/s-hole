@@ -52,6 +52,7 @@ const purgeTimeout = 25 * time.Second
 // dashboard button and `s-hole -purge` both reach it. The body must be the
 // JSON {"confirm": true}, so a stray POST does nothing.
 func (s *Server) handlePurge(w http.ResponseWriter, r *http.Request) {
+	//privacy:allow client-address CL 93: decides whether the request comes from this machine; the address is not stored, shown, or logged
 	if !fromThisMachine(r.RemoteAddr) {
 		http.Error(w, "the query history can be deleted only from the s-hole host: open the dashboard there, or run `s-hole -purge` (in Docker: docker exec <container> s-hole -purge)", http.StatusForbidden)
 		return

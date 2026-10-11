@@ -18,7 +18,7 @@ GOLANGCI_LINT_VERSION ?= v2.14.0
 # On Windows use: $env:GOOS="linux"; $env:GOARCH="arm64"; go build ...
 # or run these targets from WSL / Git Bash.
 
-.PHONY: all pi pi32 linux clean test test-race bench fmt vet lint lint-windows lint-sh vuln check install help version tools-install
+.PHONY: all pi pi32 linux clean test test-race bench fmt vet lint lint-windows lint-sh privacy-lint vuln check install help version tools-install
 
 ## help: show this help text (default target)
 help:
@@ -48,6 +48,10 @@ install:
 ## test: run the full test suite
 test:
 	go test -count=1 ./...
+
+## privacy-lint: check the code against the privacy rules of CLAUDE.md; `make test` runs it too
+privacy-lint:
+	go test -count=1 -run TestRepository ./internal/privacylint/
 
 ## test-race: run tests under the race detector (requires CGO)
 test-race:

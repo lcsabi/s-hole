@@ -1,0 +1,19 @@
+# Privacy lint exceptions: every //privacy:allow and //privacy:source comment
+# that the code needs. This file is generated. Do not edit it. When you add,
+# move, or remove such a comment, run:
+#
+#   go test ./internal/privacylint -run TestRepository -update
+#
+# Then review the change to this file like any other privacy change.
+# Columns (separated by tabs): file, function, kind, rule, ID.
+cmd/s-hole/purge.go	purgeViaAPI	allow	outbound	CL 93
+cmd/s-hole/purge.go	runHealthcheck	allow	outbound	CL 93
+internal/api/api.go	(*Server).auditAttrs	allow	client-address	CL 99
+internal/api/api.go	clientIP	source	client-address	CL 99
+internal/api/purge.go	(*Server).handlePurge	allow	client-address	CL 93
+internal/blocklist/loader.go	-	allow	outbound	CL 1
+internal/dnsserver/handler.go	(*Handler).ServeDNS	allow	client-address	CL 93
+internal/dnsserver/lan.go	remoteIP	source	client-address	CL 93
+internal/dnsserver/upstream.go	-	allow	outbound	CL 1
+internal/dnsserver/upstream.go	-	allow	outbound	CL 85
+internal/privacylint/load.go	goList	allow	outbound	CL 119

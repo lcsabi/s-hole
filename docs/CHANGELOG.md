@@ -24,6 +24,15 @@ tagged release, `v0.1.0`. Detailed per-CL descriptions live under `cls/`, indexe
   panel of the Grafana dashboard; `/api/stats` has `cname_blocked_count`. A query history from an older version gets the new
   column at startup. (CL 117)
 
+- **A privacy lint checks the code in every test run.** A test reads the
+  source code. It fails when the code reads a device address outside the one
+  place that masks it, or adds a new outbound connection. It also fails when
+  the admin web server does not use the filter that removes device addresses
+  from its error lines, and when a metric label can name a device or a domain.
+  Each allowed exception has a comment with a reason, and
+  `internal/privacylint/exceptions.txt` lists them all. `PRIVACY.md` has a new
+  section, "How the code is checked against the privacy rules". (CL 119)
+
 - **The October 2026 privacy and security review is public.**
   `docs/SECURITY-REVIEW-2026-10.md` lists what the review of 2.0.0 found,
   what 2.0.1, 2.1.0, and 2.1.1 changed, the recommendations that needed no

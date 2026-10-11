@@ -1090,6 +1090,7 @@ func (s *Server) auditAttrs(r *http.Request, domain string) []any {
 	if s.privacy.Mode != "all" && s.privacy.Mode != "blocked" {
 		return attrs
 	}
+	//privacy:allow client-address CL 99: the audit line names the requester only while query_log.mode records queries, masked with MaskClientIP
 	if client := querylog.MaskClientIP(clientIP(r), s.privacy.Clients); client != "" {
 		attrs = append(attrs, "client", client)
 	}
@@ -1099,6 +1100,8 @@ func (s *Server) auditAttrs(r *http.Request, domain string) []any {
 // clientIP returns the requester address for an audit-log line. It drops
 // the ephemeral source port from RemoteAddr and falls back to the raw
 // value if the address carries no port.
+//
+//privacy:source client-address CL 99: the requester of an allowlist change; auditAttrs masks it with MaskClientIP
 func clientIP(r *http.Request) string {
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return host

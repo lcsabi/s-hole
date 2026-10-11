@@ -64,6 +64,7 @@ rails.
 | 42 | Admin authentication by device pairing | Medium | not started (reopened in CL 93; requirements set in CL 112) |
 | 43 | Adblock-format blocklists (`\|\|example.com^`), with `@@` exceptions | Low | not started |
 | 44 | DNS admission control: global caps on in-flight forwards and plain-TCP connections | Low | done (CL 102); no rate limit for each client (see the #44 notes) |
+| 45 | Privacy lint: check the privacy rules in CI (`internal/privacylint`) | Medium | first part done (CL 119): client address, outbound connections, admin server error log, metric labels; the application-log rule (CL 120) and the storage inventory (CL 121) not started |
 
 Items 19-26 came out of a 2026-08-24 feature-ideas session. Items 21-24 are a
 dependent group: #21 (privacy) sets the write-time masked row that #22, #23, and
@@ -2184,8 +2185,61 @@ A rate limit for each client is not planned. A token bucket for each client
 would keep raw client addresses in memory, which the first design rule does
 not allow without a need. Revisit it only if a real deployment needs it.
 
+## 45. Privacy lint (first part done, CL 119)
+
+Review and behavior tests enforced the privacy rules in `CLAUDE.md`. A
+reviewer has to remember every rule on every diff, and a behavior test pins
+only the code that exists. Neither one catches a new log line, a new
+outbound client, or a new metric label that is added next year. The privacy
+lint is a Go test that reads the source code with `go/types` and fails when
+code breaks a rule. It runs in `make test`, so it runs in `make check` and in
+CI. It uses only the standard library.
+
+The work has three CLs:
+
+- **CL 119 (done):** the loader (`go list -export` and `go/types`, for the
+  host and for Windows), the `//privacy:` comments, the generated
+  `exceptions.txt`, and four rules: `client-address` (no read of a client
+  address outside the one place that masks it), `outbound` (no new outbound
+  connection), `server-errorlog` (each `http.Server` logs through
+  `newErrorLog`, b/103), and `metric-labels` (label keys on an allowlist,
+  URL values through `redact.URL`).
+- **CL 120:** `log-query-data`. Query data (a `*dns.Msg`, a question, a
+  client address, a type marked `//privacy:source query-data`) must not reach
+  the application log. The rule follows data inside each function (assignment,
+  composite literals, calls with a tainted argument), with return summaries
+  (a function that returns query data is a source) and argument summaries (a
+  call that passes query data to a parameter that reaches a log call is a
+  finding). If the argument summaries give more than a few false positives on
+  the current code, they move back to this item instead of getting exceptions.
+  `MaskClientIP` does not clean data for the log: under `clients: "full"` it
+  returns the raw address, which is why the allowlist audit line is an
+  exception. Open question: does a SQLite insert error (`querylog/db.go`)
+  hold the bound values?
+- **CL 121:** `store-inventory`. Each place that creates stored data (a file
+  with `O_CREATE`, `sql.Open`, `CREATE TABLE`, query data to standard output)
+  carries `//privacy:store <id>`, and each id is in `PRIVACY.md` as an HTML
+  comment (`<!-- privacy:store <id> -->`) next to its row. The lint checks
+  both directions.
+
+Exceptions are visible on purpose. Each one is a comment with an ID and a
+reason, and `internal/privacylint/exceptions.txt` lists them all, so a new
+exception shows in the diff of that file. In a team, CODEOWNERS on that file
+sends each new exception to the privacy owner.
+
+Limits: the lint finds accidents, not deliberate evasion. CL 119 matches
+calls, types, and string literals only. The data flow of CL 120 does not
+follow data through struct fields, channels, interface calls, function values,
+or reflect. Full data-flow analysis needs SSA from `golang.org/x/tools`, which
+is a new dependency (see Pending decisions). When a privacy bug is fixed and
+a rule could have found it, the fix adds the rule.
+
 ## Pending decisions
 
+- **SSA for the privacy lint (#45).** Data flow across struct fields,
+  interface calls, and function values needs SSA from `golang.org/x/tools`,
+  a new dependency (test-only, like `goleak`). Decide after CL 120 shows how
+  many leaks the per-function data flow misses.
 - **Cache eviction beyond drop-on-full.** Now that `shole_cache_dropped_total`
   (CL 54) and expired-slot reclaim ship, watch the counter on real traffic. A
   sustained non-zero drop rate at a sensible `dns.cache_entries` is the trigger to add

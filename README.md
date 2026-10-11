@@ -934,6 +934,7 @@ $env:GOOS=""; $env:GOARCH=""
 - **Local PTR answering (RFC 6303, RFC 6598).** Reverse queries for the private and special ranges, and for the LAN's own IPv6 prefix, are answered locally and do not go to the upstream resolver.
 - **A minimal upstream query.** s-hole never relays the client's message: it builds a new query from the question, so no client EDNS option (cookie, Client Subnet) or query ID leaves the LAN, and local-only names go to LAN upstreams only. ([`internal/dnsserver/edns.go`](internal/dnsserver/edns.go), [`localnames.go`](internal/dnsserver/localnames.go))
 - **Private by default, and loud when it is not.** Every default records the least, every config mistake falls back to the most private value, and each setting that records more gives a warning that repeats until it is changed. Query data stays out of the application log, and the retention prune erases rows from the file, not only from the table.
+- **Privacy rules as code.** A test reads the source with `go/types` and fails the tests (and so CI) when code reads a client address outside the one place that masks it, opens a new outbound connection, starts a web server that would log client addresses, or adds a metric label that could name a client or a domain. Each allowed exception is a comment with an ID and a reason, and one generated file lists them all, so a new exception shows in review. Each rule has fixtures that it must report and fixtures that it must pass. ([`internal/privacylint`](internal/privacylint))
 - **Deliberate non-decisions.** Case-insensitive caching was rejected because it would break dns-0x20 downstream resolvers. Knowing what *not* to build is recorded in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 - **A tiny dependency graph and pure-Go SQLite.** No CGO, so cross-compiling for every release target stays a one-liner and the binary is fully static.
 
@@ -943,7 +944,7 @@ $env:GOOS=""; $env:GOARCH=""
 - **Every change is a small, self-contained change-list** with motivation, files touched, and testing notes ([`docs/cls/`](docs/cls)).
 - **A bug tracker with priorities and structured root-cause/fix records** ([`docs/BUGS.md`](docs/BUGS.md)), including entries deliberately marked *Won't Fix (by design)*.
 - **Documentation drift is treated as a bug.** Code and docs are updated in the same change.
-- **CI gate on every push**: `gofmt`, `go vet`, `golangci-lint` with the `gosec` security checks (for the Linux and the Windows build), race-enabled tests, `govulncheck`, and a cross-compile of every release target. GitHub CodeQL also analyzes each push to `master` and each pull request; its alerts do not block a merge. The core `internal/` packages meet the coverage targets (see the [targets under Development](#development)).
+- **CI gate on every push**: `gofmt`, `go vet`, `golangci-lint` with the `gosec` security checks (for the Linux and the Windows build), the privacy lint, race-enabled tests, `govulncheck`, and a cross-compile of every release target. GitHub CodeQL also analyzes each push to `master` and each pull request; its alerts do not block a merge. The core `internal/` packages meet the coverage targets (see the [targets under Development](#development)).
 - **Verifiable releases**: every action pinned to a commit SHA, least-privilege workflow tokens, signed build provenance for each archive and the container image, an image SBOM, and a weekly `govulncheck` of the latest release's binaries.
 
 ---
@@ -1030,6 +1031,7 @@ All implementation packages live under `internal/` so they cannot be imported by
 | `internal/config` | YAML loading with defaults, config problems, and the privacy and security warnings |
 | `internal/redact` | Hides secrets (user info, query strings) in URLs that s-hole shows |
 | `internal/service` | Windows Service integration (the SCM calls are build-tagged; the access-list rules and the event-log handler are not) |
+| `internal/privacylint` | The privacy lint: a test that checks the code against the privacy rules (not part of the binary) |
 
 ### Dependencies
 
@@ -1051,16 +1053,17 @@ The indirect modules in `go.mod` are almost all pulled in by the pure-Go SQLite 
 The `Makefile` is the canonical entry point for every routine task. Run `make help` for the full list. The most useful targets:
 
 ```bash
-make check       # gofmt + go vet + golangci-lint + shellcheck + go test
-make test        # plain test run
-make test-race   # tests under the race detector (CGO toolchain required)
-make bench       # one iteration of each benchmark
-make lint        # golangci-lint (with gosec), for this OS and for Windows
-make lint-sh     # shellcheck the deploy and CI scripts
-make vuln        # govulncheck: scan deps + code for known CVEs
-make fmt         # gofmt -s -w
-make install     # go install into $GOBIN
-make version     # print the version that the next build would embed
+make check        # gofmt + go vet + golangci-lint + shellcheck + go test
+make test         # plain test run
+make test-race    # tests under the race detector (CGO toolchain required)
+make bench        # one iteration of each benchmark
+make lint         # golangci-lint (with gosec), for this OS and for Windows
+make lint-sh      # shellcheck the deploy and CI scripts
+make privacy-lint # check the code against the privacy rules (make test runs it too)
+make vuln         # govulncheck: scan deps + code for known CVEs
+make fmt          # gofmt -s -w
+make install      # go install into $GOBIN
+make version      # print the version that the next build would embed
 ```
 
 Coverage targets (checked in review, not a strict CI gate; run
@@ -1071,6 +1074,7 @@ Coverage targets (checked in review, not a strict CI gate; run
 | `internal/stats`, `internal/config`, `internal/version`, `internal/redact` | 100 % |
 | `internal/logging` | ≥ 95 % |
 | `internal/cache` | ≥ 94 % |
+| `internal/privacylint` | ≥ 90 % |
 | `internal/api`, `internal/blocklist`, `internal/dnsserver`, `internal/querylog` | ≥ 85 % |
 
 The `cmd/s-hole` bootstrap and the platform-specific `internal/service` glue sit

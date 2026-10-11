@@ -242,6 +242,13 @@ Out of scope:
   the Go code, the workflows, and the dashboard script for each push to
   `master`, each pull request, and once a week. It reports its findings as
   code scanning alerts.
+- **Privacy lint.** `internal/privacylint` checks the code against the
+  privacy rules of `CLAUDE.md` in every test run, so in every CI run. It
+  fails a read of a client address outside the one place that masks it, a
+  new outbound connection, an admin web server that does not remove client
+  addresses from its error lines, and a metric label that could name a
+  client or a domain. Each exception is a `//privacy:allow` or
+  `//privacy:source` comment with an ID and a reason, and `internal/privacylint/exceptions.txt` lists them all.
 - **Client name labels are read-only and privacy-bounded.** The optional
   `client_names` map adds device labels to the admin API, so it is device-
   identity PII on the unauthenticated read surface. The label is resolved from

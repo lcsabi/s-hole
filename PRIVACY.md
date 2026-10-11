@@ -157,6 +157,24 @@ to another provider. s-hole does not see those queries, so it does not block
 ads or trackers for them. s-hole does not try to stop these features: the
 person who turned one on chose that privacy.
 
+## How the code is checked against the privacy rules
+
+A test, the privacy lint, checks the source code against the privacy rules in
+`CLAUDE.md`. It runs with the other tests, and so in every CI run of a change.
+The test fails when the code does one of these things:
+
+- It reads the address of a device outside the one place that masks it.
+- It adds a new way to connect out, other than the code that connects to the
+  upstreams and the blocklist URLs.
+- It starts the admin web server without the filter that removes device
+  addresses from its error lines.
+- It adds a metric label that can name a device or a domain.
+
+Some code must do one of these things, for example the code that connects to
+the upstreams. Each such place has a comment with a reason, and the file
+`internal/privacylint/exceptions.txt` lists them all. The lint finds mistakes.
+It does not replace review, and it cannot find every way to break a rule.
+
 ## Changes to this page
 
 A change that adds, moves, or removes personal data updates this page in the

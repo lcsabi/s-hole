@@ -38,6 +38,7 @@ make test-race     # tests with the race detector (CGO toolchain required)
 make bench         # one iteration of each benchmark
 make lint          # golangci-lint (with gosec), for this OS and for Windows
 make lint-sh       # shellcheck the deploy and CI scripts
+make privacy-lint  # the privacy rules (internal/privacylint); make test runs it too
 make fmt           # gofmt -s -w .
 make install       # go install into $GOBIN
 make version       # show the version metadata the next build will embed
@@ -54,6 +55,107 @@ the binaries of the latest release. GitHub CodeQL also analyzes each pull
 request (a repository setting, not a workflow). If gosec reports a finding,
 fix it, or put `//nolint:gosec // G<NNN>: <why>` on its line; do not
 exclude a rule in `.golangci.yml`.
+
+### The privacy lint
+
+`internal/privacylint` is a test that checks the code against the
+"Privacy first" rules of `CLAUDE.md`. `make test` runs it, and
+`make privacy-lint` runs it alone. It checks the code for the host OS and
+for Windows (on a Windows host, for Windows only; CI checks Linux and
+Windows), and it does not check test files. On a fresh module cache it
+downloads the modules that only the Windows build uses, so the first
+`make test` needs the network. Its rules are:
+
+- `client-address`: no read of a client address (a `RemoteAddr` method, the
+  `RemoteAddr` field of an `http.Request`, or a function marked
+  `//privacy:source client-address`) outside the one place that masks it.
+- `outbound`: no new outbound connection, system resolver lookup, or started
+  program.
+- `server-errorlog`: each `http.Server` sets `ErrorLog: newErrorLog()`.
+- `metric-labels`: a metric label key is on the allowlist (`upstream`,
+  `url`), and a URL value goes through `redact.URL`.
+
+If the lint reports a finding, change the code so that it obeys the rule.
+If the code must do it, get the maintainer's agreement first (a new outbound
+connection also needs a ROADMAP decision). Then add a comment that names the
+rule, an ID, and the reason. Put it on the line above the statement or at
+the end of its line:
+
+```go
+//privacy:allow outbound CL 85: DNS-over-HTTPS to the configured upstreams
+var dohClient = &http.Client{ /* ... */ }
+```
+
+The ID is `PRIV-NN`, `SEC-NN`, `b/NNN`, or `CL NN`. A function that returns
+the raw client address gets `//privacy:source client-address <ID>: <reason>`
+in its doc comment. Then a call of it is a read of the address. The lint
+fails a comment with no ID or no reason, and a comment that allows nothing.
+`internal/privacylint/exceptions.txt` lists every exception. After you add,
+move, or remove a comment, run:
+
+```bash
+go test ./internal/privacylint -run TestRepository -update
+```
+
+Then commit the changed `exceptions.txt`. A new line in that file is a
+privacy decision: say why in the CL.
+
+#### How to add a rule
+
+Each lint rule enforces a policy that already exists. The lint does not make
+policy. A lint rule is one `Rule` value and one check function in
+`internal/privacylint`.
+
+1. Find the policy. Name the line in the "Privacy first" section of
+   `CLAUDE.md` that the rule enforces, or the `b/NNN` bug that the rule
+   would have found. If no line covers it, agree the policy with the
+   maintainer and add it to `CLAUDE.md` first.
+2. Write the check in a new file, `internal/privacylint/rule_<name>.go`.
+   Match functions, variables, and types by their full name (such as
+   `net/http.Get`), not by how the code spells them. Use the helpers in
+   `privacylint.go`: `calleeName`, `typeName`, `derefName`,
+   `constructions`, and `containsCall`. The message of `p.report` tells
+   what is wrong. The lint adds the policy to it.
+
+   ```go
+   var heapDumpRule = &Rule{
+   	ID:     RuleHeapDump,
+   	Policy: "a heap dump holds the cache and the tallies, so it holds query data (CLAUDE.md, Privacy first)",
+   	check:  checkHeapDump,
+   }
+
+   // checkHeapDump reports each call of debug.WriteHeapDump.
+   func checkHeapDump(p *pass) {
+   	ast.Inspect(p.file.ast, func(n ast.Node) bool {
+   		if call, ok := n.(*ast.CallExpr); ok && calleeName(p.info, call) == "runtime/debug.WriteHeapDump" {
+   			p.report(call, "debug.WriteHeapDump writes the process memory to a file.")
+   		}
+   		return true
+   	})
+   }
+   ```
+
+3. Register the rule. Add its ID as a `Rule...` constant and add the rule
+   to the `rules` list in `privacylint.go`.
+4. Get the tests written. Under the process in `CLAUDE.md`, a separate
+   sub-agent writes them from the rule's requirements, not from your code.
+   The rule needs at least one fixture that it must flag and one that it
+   must pass, or `TestFixtures_EveryRuleHasBoth` fails. The tests also add
+   the new ID to the rule list that `TestRules_AreTheFourRules` pins.
+5. Run the lint on the repository with `make privacy-lint`. For each
+   finding, change the code so that it obeys the rule. If the code must
+   stay, get the maintainer's agreement, add a `//privacy:allow` comment
+   with an ID and a reason, and run the `-update` command above.
+6. Update the docs that list the rules: the package doc (`doc.go`), this
+   section, the "Privacy first" section of `CLAUDE.md`, `PRIVACY.md` ("How
+   the code is checked against the privacy rules"), the `SECURITY.md`
+   "Privacy lint" bullet, the README "Privacy rules as code" bullet, the
+   DESIGN "Privacy lint" paragraph, and ROADMAP #45.
+7. Write the CL. Give the policy line, the fixtures, each exception that the
+   rule needed and why, and the new ROADMAP #45 status.
+
+If you fix a privacy bug that a rule could have found, add the rule in the
+same CL.
 
 ### Running the binary
 
@@ -358,6 +460,7 @@ strictly, but the per-package targets are:
 - `internal/stats`, `internal/config`, `internal/version`, `internal/redact`: 100 %
 - `internal/logging`: ≥ 95 %
 - `internal/cache`: ≥ 94 %
+- `internal/privacylint`: ≥ 90 %
 - `internal/api`, `internal/blocklist`, `internal/dnsserver`,
   `internal/querylog`: ≥ 85 %
 

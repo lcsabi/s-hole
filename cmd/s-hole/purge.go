@@ -155,6 +155,7 @@ func purgeViaAPI(adminListen string) (api.PurgeReport, error) {
 		return api.PurgeReport{}, err
 	}
 	url := "http://" + addr + "/api/purge"
+	//privacy:allow outbound CL 93: s-hole -purge asks the s-hole on this host, at its admin address
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Post(url, "application/json", bytes.NewReader([]byte(`{"confirm": true}`)))
 	if err != nil {
@@ -308,6 +309,7 @@ func runHealthcheck(path string) int {
 		fmt.Println("unhealthy: admin.listen:", err)
 		return 1
 	}
+	//privacy:allow outbound CL 93: s-hole -healthcheck asks the s-hole on this host, at its admin address
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Get("http://" + addr + "/readyz")
 	if err != nil {

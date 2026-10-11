@@ -268,6 +268,8 @@ func checkReply(req, resp *dns.Msg) error {
 // concurrency-safe config object with no per-call state, so one of each
 // suffices instead of allocating a fresh pair per cache-miss query (matching
 // forwardTracker's package-level lifetime above).
+//
+//privacy:allow outbound CL 1: plain DNS to the configured upstreams
 var (
 	udpClient = &dns.Client{Timeout: perUpstreamTimeout}
 	tcpClient = &dns.Client{Net: "tcp", Timeout: perUpstreamTimeout}
@@ -280,6 +282,8 @@ var (
 // per-attempt deadline rides on the request context (like the UDP/TCP path), so
 // no Client.Timeout is set. It follows no redirect (see refuseRedirect). Tests
 // swap this var to trust an httptest TLS server.
+//
+//privacy:allow outbound CL 85: DNS-over-HTTPS to the configured upstreams
 var dohClient = &http.Client{
 	Transport: &http.Transport{
 		ForceAttemptHTTP2:   true,

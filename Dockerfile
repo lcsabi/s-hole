@@ -13,7 +13,7 @@
 # The builder runs on the build host's platform and cross-compiles for the
 # target platform. Go needs no emulation to cross-compile, so a multi-arch
 # build does not run the compiler under QEMU.
-FROM --platform=$BUILDPLATFORM golang:1.26.9-alpine3.24@sha256:cdfd4fe2da6b225d8b40c6b7a105736e548e83ff56d5d8f9394446eeb5eb84e0 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS builder
 
 WORKDIR /build
 

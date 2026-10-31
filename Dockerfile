@@ -54,7 +54,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH GOARM=${TARGETVARIANT#v} go 
 RUN setcap cap_net_bind_service=+ep s-hole
 
 # ── Runtime stage ─────────────────────────────────────────────
-FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 
 # ca-certificates: required for HTTPS blocklist downloads and DoH upstreams.
 # Container logs default to UTC (matches log/slog), so tzdata is not
